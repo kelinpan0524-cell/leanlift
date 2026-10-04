@@ -129,6 +129,10 @@ class TrainingForegroundService : Service() {
         ch.setSound(null, null)
         ch.enableVibration(false)
         ch.setShowBadge(false)
+        // 锁屏全内容可见（2026-10-04）：用户开了"锁屏隐藏敏感内容"时，
+        // 默认 PRIVATE 通道在锁屏只显示"内容已隐藏"——计时卡不是敏感信息，
+        // 显式 PUBLIC 保证锁屏上完整可见。
+        ch.lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         nm.createNotificationChannel(ch)
     }
 
@@ -138,6 +142,7 @@ class TrainingForegroundService : Service() {
         val text = i?.getStringExtra("text") ?: ""
         val paused = i?.getBooleanExtra("paused", false) ?: false
         val chronoBase = i?.getLongExtra("chronoBase", 0L) ?: 0L
+        val restEndAt = i?.getLongExtra("restEndAt", 0L) ?: 0L
         val remaining = i?.getIntExtra("remaining", -1) ?: -1
         val total = i?.getIntExtra("total", 0) ?: 0
 
@@ -159,14 +164,23 @@ class TrainingForegroundService : Service() {
             .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_WORKOUT)
             .setShowWhen(true)
-        if (!resting && chronoBase > 0) {
-            // 动作态：系统 chronometer 自己走秒，Dart 无需每次推送
-            b.setUsesChronometer(true).setWhen(chronoBase)
-        } else {
-            b.setUsesChronometer(false)
-            if (resting && remaining >= 0 && total > 0) {
-                b.setProgress(total, remaining.coerceAtMost(total), false)
+        when {
+            // 休息态：系统 chronometer 倒数到 restEndAt——锁屏上由系统自己
+            // 走秒（2026-10-04），不依赖 Dart 每秒推送；±10 秒/暂停/继续时
+            // Dart 会推新卡换 when。暂停态冻结，走普通文本。
+            resting && !paused && restEndAt > 0 -> {
+                b.setUsesChronometer(true)
+                    .setChronometerCountDown(true)
+                    .setWhen(restEndAt)
             }
+            // 动作态：chronometer 正数累计训练时长，系统自己走秒
+            !resting && chronoBase > 0 -> {
+                b.setUsesChronometer(true).setWhen(chronoBase)
+            }
+            else -> b.setUsesChronometer(false)
+        }
+        if (resting && remaining >= 0 && total > 0) {
+            b.setProgress(total, remaining.coerceAtMost(total), false)
         }
         if (resting) {
             b.addAction(0, if (paused) "继续" else "暂停", actionPi(if (paused) ACTION_RESUME else ACTION_PAUSE))

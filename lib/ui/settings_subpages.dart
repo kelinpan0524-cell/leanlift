@@ -158,6 +158,21 @@ class TrainingPrefsPage extends StatelessWidget {
             const Divider(height: 1, thickness: 1, color: AppTheme.cardHi),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
+              title: Text(tx('错过训练日自动顺延', en: 'Auto-shift missed days')),
+              subtitle: Text(
+                tx('训练日过了还没练，下次打开 App 计划自动往后推一天（每错一天推一天），并会提示',
+                    en: 'If a training day passes without a workout, the plan shifts a day later (one day per miss) with a note when you open the app'),
+                style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+              ),
+              value: s.autoShiftOnMiss,
+              activeThumbColor: AppTheme.primary,
+              onChanged: (v) {
+                s.autoShiftOnMiss = v;
+                s.save();
+              },
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
               title: Text(tx('练前提醒', en: 'Training day reminder')),
               subtitle: Text(
                 tx('训练日到了设定时刻还没练，发通知叫一声（不配飞书也有兜底）',

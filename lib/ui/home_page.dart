@@ -57,6 +57,32 @@ class _HomePageState extends State<HomePage> {
       _todayDay = today;
       _loading = false;
     });
+    _maybeShowAutoShiftNotice(c);
+  }
+
+  /// 自动顺延提示（2026-10-04）：启动时扫描到错过的训练日并已顺延，
+  /// 这里弹一次提示后清空。训练进行中不弹（不打断红线），提示留到
+  /// 下次进首页/下拉刷新再弹。
+  void _maybeShowAutoShiftNotice(AppContainer c) {
+    final missed = c.pendingAutoShiftDates;
+    if (missed.isEmpty) return;
+    if (c.session.hasActive) return;
+    c.pendingAutoShiftDates = const [];
+    final dates = missed.map((d) => '${d.month}/${d.day}').join('、');
+    final msg = missed.length == 1
+        ? tx('${missed.first.month}/${missed.first.day} 未训练，计划已自动顺延一天',
+            en:
+                'No workout on ${missed.first.month}/${missed.first.day} — the plan shifted one day later')
+        : tx('$dates 共 ${missed.length} 天未训练，计划已自动顺延 ${missed.length} 天',
+            en:
+                'No workout on $dates — the plan shifted ${missed.length} days later');
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 6),
+      ));
   }
 
   @override

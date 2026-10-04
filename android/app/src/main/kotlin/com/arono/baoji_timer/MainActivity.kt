@@ -182,6 +182,8 @@ class MainActivity : FlutterActivity() {
         ch.description = "组间休息结束的提醒（声音+震动，勿扰下穿透）"
         ch.enableVibration(true)
         ch.setBypassDnd(true)
+        // 锁屏全内容可见（2026-10-04）：休息结束的提醒在锁屏直接可读
+        ch.lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
         nm().createNotificationChannel(ch)
     }
 

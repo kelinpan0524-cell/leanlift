@@ -7,6 +7,7 @@ import '../db/db.dart';
 import '../l10n/lang.dart';
 import '../presets/exercise_library.dart';
 import '../services/ai_service.dart';
+import '../services/auto_shift.dart';
 import '../services/export_service.dart';
 import '../services/focus_service.dart';
 import '../services/lark_service.dart';
@@ -66,6 +67,9 @@ class AppContainer {
     // 练前提醒（2026-09-26）：训练日傍晚未练的本地兜底通知。
     // 训练结束/放弃、计划或排程变化都会触发全量重排（幂等，失败静默）。
     trainReminders = TrainingReminderService(this.db, planRepo, settings);
+    // 错过训练日自动顺延（2026-10-04）：扫描昨天及更早错过的训练日并顺延；
+    // 结果留给首页弹一次提示（pendingAutoShiftDates）。
+    autoShift = AutoShiftService(planRepo, prefs);
     session.onSessionClosed = () {
       unawaited(trainReminders.reschedule());
     };
@@ -91,6 +95,10 @@ class AppContainer {
   late final LarkService lark;
   late final ExportService export;
   late final TrainingReminderService trainReminders;
+  late final AutoShiftService autoShift;
+
+  /// 本次启动自动顺延掉的训练日（首页读过一次即清空；空 = 无提示）。
+  List<DateTime> pendingAutoShiftDates = const [];
 
   bool _inForeground = true;
 
@@ -132,6 +140,16 @@ class AppContainer {
     await planRepo.reload();
     await _syncAiSedimentLibrary();
     await session.restore();
+    // 错过训练日自动顺延：扫描失败不挡启动（下次打开再补扫）。
+    // 有跨天恢复中的会话先不扫：那天的会话还没定性（active 不算练过），
+    // 等收工/放弃后下次打开再按最终状态判断。
+    if (!session.hasActive) {
+      try {
+        final missed =
+            await autoShift.run(enabled: settings.autoShiftOnMiss);
+        if (missed.isNotEmpty) pendingAutoShiftDates = missed;
+      } catch (_) {}
+    }
     // 练前提醒：计划加载完成后排一轮（planRepo 监听会覆盖后续变化）
     unawaited(trainReminders.reschedule());
     // 联网补写飞书离线队列（失败静默，下轮再试）
