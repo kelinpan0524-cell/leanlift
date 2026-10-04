@@ -1,0 +1,43 @@
+name: baoji_timer
+description: "薄肌训练计时器 — 防分心的力量训练计时与记录工具（本地优先，飞书日历联动）"
+publish_to: "none"
+version: 1.3.14+3
+
+environment:
+  sdk: ^3.13.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  sqflite: ^2.4.1
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  shared_preferences: ^2.3.4
+  intl: ^0.20.1
+  package_info_plus: ^8.0.0
+  fl_chart: ^0.70.2
+  flutter_svg: ^2.0.10
+  wakelock_plus: ^1.2.10
+  permission_handler: ^11.3.1
+  http: ^1.2.2
+  flutter_local_notifications: ^18.0.1
+  timezone: ^0.10.0
+  share_plus: ^10.1.2
+  flutter_markdown_plus: ^1.0.12
+  video_player: ^2.9.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  sqflite_common_ffi: ^2.3.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/illustrations/
+    - assets/branding/
+    - assets/exercises/
+    - assets/videos/
