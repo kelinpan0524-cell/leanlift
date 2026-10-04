@@ -143,6 +143,8 @@ class SessionController extends ChangeNotifier {
         remaining: restTotalMs > 0 ? remainSec : -1,
         total: (restTotalMs / 1000).round(),
         chronoStartMs: s.startedAt,
+        // 暂停态无到点可数（剩余冻结在 Dart 侧），传 0 关掉原生倒数
+        restEndAtMs: _restPaused ? 0 : restEndAt,
       );
     }
     // 组号语义与页面流同口径（workout_flow.currentPage）：计划内第 N/M 组，
@@ -1227,6 +1229,7 @@ class TrainingCard {
     required this.remaining,
     required this.total,
     required this.chronoStartMs,
+    this.restEndAtMs = 0,
   });
 
   const TrainingCard.inactive()
@@ -1237,7 +1240,8 @@ class TrainingCard {
       text = '',
       remaining = -1,
       total = 0,
-      chronoStartMs = 0;
+      chronoStartMs = 0,
+      restEndAtMs = 0;
 
   final bool active; // 会话进行中（false = 停前台服务）
   final bool resting; // 休息态：带暂停/±10 秒按钮与进度条
@@ -1248,6 +1252,10 @@ class TrainingCard {
   final int total;
   final int chronoStartMs;
 
+  /// 休息到点时刻（epoch ms；0=无）。原生侧用它渲染系统 chronometer
+  /// 倒数（锁屏上自己走秒），暂停态传 0（冻结值无到点可数）。
+  final int restEndAtMs;
+
   Map<String, Object?> toMap() => {
     'phase': resting ? 1 : 0,
     'title': title,
@@ -1256,5 +1264,6 @@ class TrainingCard {
     'remaining': remaining,
     'total': total,
     'chronoBase': chronoStartMs,
+    'restEndAt': restEndAtMs,
   };
 }

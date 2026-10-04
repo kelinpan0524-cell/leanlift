@@ -582,6 +582,44 @@ class PlanRepository extends ChangeNotifier {
     if (e != null) await _db.deleteScheduleEntry(e.id!);
   }
 
+  /// 自动顺延扫描（2026-10-04 Arono：「今天没练，计划自动顺延一日」）：
+  /// 逐日检查 (fromExclusive, today-1] 里"排了训练却整天没练"的日子，
+  /// 每错一个训练日调一次 [shiftScheduleOneDay]（链式：顺延改变后续推导，
+  /// 所以每轮重读计划行、按新推导判断下一天）。今天永不参与（还没过完）；
+  /// 显式休息墓碑与手动改期天然不触发（覆盖行优先命中 dayForDateOn）；
+  /// 排到"空模板日"（无动作）也不算错过。返回顺延掉的日期列表（升序）。
+  Future<List<DateTime>> autoShiftMissedDays(
+      Plan plan, DateTime fromExclusive, DateTime today) async {
+    if (plan.id == null) return const [];
+    final missed = <DateTime>[];
+    var cur = DateTime(fromExclusive.year, fromExclusive.month,
+            fromExclusive.day)
+        .add(const Duration(days: 1));
+    final last =
+        DateTime(today.year, today.month, today.day).subtract(
+            const Duration(days: 1));
+    while (!cur.isAfter(last)) {
+      // 每轮重读计划行：上一轮顺延已累加 shiftDays，后续日期要用新推导
+      final fresh =
+          (await _db.allPlans()).where((p) => p.id == plan.id).firstOrNull;
+      if (fresh == null) break;
+      final day = await dayForDateOn(fresh, cur);
+      if (day?.id != null) {
+        final exs = await _db.dayExercises(day!.id!);
+        if (exs.isNotEmpty) {
+          // done / quit 会话都算"练过"（quit 至少人到了、练了几组）
+          final sessions = await _db.sessionsOnDate(fmtDate(cur));
+          if (sessions.isEmpty) {
+            missed.add(cur);
+            await shiftScheduleOneDay(fresh, cur);
+          }
+        }
+      }
+      cur = cur.add(const Duration(days: 1));
+    }
+    return missed;
+  }
+
   /// 拖拉改期：把 from 日的训练挪到 to 日；to 日已有训练则两天内容互换。
   /// from 出发后落"显式休息"墓碑，推导不会再把训练填回来。
   Future<void> moveScheduleDay(Plan plan, DateTime from, DateTime to) async {

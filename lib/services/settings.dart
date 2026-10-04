@@ -66,6 +66,11 @@ class Settings extends ChangeNotifier {
   bool trainReminderOn = true;
   int trainReminderMinOfDay = 20 * 60;
 
+  // 错过训练日自动顺延（2026-10-04 Arono）：训练日过了 24 点还没练，
+  // 下次打开 App 自动把计划往后推一天（每错一个训练日推一天），
+  // 并在首页提示。默认开；关闭期间不扫描不推进检查点。
+  bool autoShiftOnMiss = true;
+
   // 锁屏时保持显示（调研条目 6，FitoTrack showOnLockScreen）：
   // 系统锁屏后训练计时仍显示在锁屏上（Android 8.1+ setShowWhenLocked）。
   // 默认关：与常亮（训练时屏幕不灭）是两个独立维度。
@@ -120,6 +125,7 @@ class Settings extends ChangeNotifier {
     trainReminderOn = _prefs.getBool('${_kprefix}trainRemindOn') ?? true;
     trainReminderMinOfDay =
         _prefs.getInt('${_kprefix}trainRemindMin') ?? 20 * 60;
+    autoShiftOnMiss = _prefs.getBool('${_kprefix}autoShiftOnMiss') ?? true;
     lockScreenKeepOn = _prefs.getBool('${_kprefix}lockScreenKeepOn') ?? false;
     ghUpdateToken = _prefs.getString('${_kprefix}ghToken') ?? '';
     larkAccessToken = _prefs.getString('${_kprefix}larkAccess') ?? '';
@@ -178,6 +184,7 @@ class Settings extends ChangeNotifier {
     await _prefs.setBool('${_kprefix}restCueHpOnly', restCueHeadphoneOnly);
     await _prefs.setBool('${_kprefix}trainRemindOn', trainReminderOn);
     await _prefs.setInt('${_kprefix}trainRemindMin', trainReminderMinOfDay);
+    await _prefs.setBool('${_kprefix}autoShiftOnMiss', autoShiftOnMiss);
     await _prefs.setBool('${_kprefix}lockScreenKeepOn', lockScreenKeepOn);
     await _prefs.setString('${_kprefix}ghToken', ghUpdateToken);
     await _prefs.setString('${_kprefix}larkAccess', larkAccessToken);

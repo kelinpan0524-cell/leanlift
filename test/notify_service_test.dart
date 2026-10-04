@@ -37,6 +37,7 @@ void main() {
       remaining: 90,
       total: 180,
       chronoStartMs: 123456,
+      restEndAtMs: 1770000000000,
     ));
     expect(calls, hasLength(1));
     expect(calls.single.method, 'start');
@@ -48,6 +49,8 @@ void main() {
       'remaining': 90,
       'total': 180,
       'chronoBase': 123456,
+      // 原生侧用它渲染系统 chronometer 倒数（锁屏自动走秒）
+      'restEndAt': 1770000000000,
     });
   });
 

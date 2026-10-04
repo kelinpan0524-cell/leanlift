@@ -89,6 +89,7 @@ A lean physique comes from low body fat, training 3× a week, and progressive ov
 
 ### ⏰ Staying consistent
 - Pre-workout reminder: a local notification if you have not trained by your chosen time on a training day
+- Auto-shift missed days: if a training day passes without a workout, the plan shifts one day later per missed day the next time you open the app, with a note; toggleable in settings
 - Four-layer rest audio cues with a headphones-only mode
 
 ### 📅 Feishu/Lark calendar sync
