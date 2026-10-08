@@ -215,7 +215,7 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
       backgroundColor: AppTheme.card,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => _ExerciseEditSheet(
+      builder: (ctx) => ExerciseEditSheet(
         initial: existing,
         knownMetas: _metaByName.values.toList(),
         initialMuscle:
@@ -739,8 +739,12 @@ class ExerciseFormResult {
   });
 }
 
-class _ExerciseEditSheet extends StatefulWidget {
-  const _ExerciseEditSheet({
+/// 动作编辑表单（2026-10-07 提为公有）：计划编辑器与今日开练编辑页
+/// （today_edit_sheet.dart）共用——表单只返回 ExerciseFormResult 数据，
+/// 写库发生在各调用方，天然可复用于「只影响当天」的编辑。
+class ExerciseEditSheet extends StatefulWidget {
+  const ExerciseEditSheet({
+    super.key,
     this.initial,
     required this.knownMetas,
     this.initialMuscle,
@@ -751,10 +755,10 @@ class _ExerciseEditSheet extends StatefulWidget {
   final String? initialMuscle;
 
   @override
-  State<_ExerciseEditSheet> createState() => _ExerciseEditSheetState();
+  State<ExerciseEditSheet> createState() => _ExerciseEditSheetState();
 }
 
-class _ExerciseEditSheetState extends State<_ExerciseEditSheet> {
+class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
   late final _nameCtrl =
       TextEditingController(text: widget.initial?.name ?? '');
   late int _sets = widget.initial?.sets ?? 3;

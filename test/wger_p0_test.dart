@@ -90,6 +90,12 @@ void main() {
       ];
       expect(sessionCols, contains('impression'));
 
+      // 现行 DAO（insertSet 自 v12 起写 is_extra）要能在本夹具上跑通：
+      // 夹具里只有 sets 被降级重建过、只缺 v12 的 is_extra；v8→v11 涉及的
+      // 其他表在夹具里本就是 createSchema 的现行结构，重跑会撞重复列。
+      // 完整升级链的回归由 db_migration_test 覆盖。
+      await Db.instance.upgradeV11to12(db);
+
       // 老组行读回：目标快照为 null（消费端据此不展示目标对比）
       final wrapper = Db.forTesting(db);
       // 重建后的 sessions 表为空，先补一条父行满足外键

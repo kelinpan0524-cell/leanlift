@@ -127,7 +127,7 @@ void main() {
       final p = f.currentPage(resting: false, curExIdx: 0);
       expect(p.extra, isTrue, reason: '计划 3 组已练满，继续记录即加练');
       expect(p.setNumber, 4, reason: '加练组号继续涨（第 4 组），不再夹回 3/3');
-      expect(p.setLabel(), '第 4 组 · 加练');
+      expect(p.setLabel(), '第 4 组（加练）');
       // 练满转休息（加练后组间）同样是休息页
       expect(f.currentPage(resting: true, curExIdx: 0).kind, FlowPageKind.rest);
     });

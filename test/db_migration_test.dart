@@ -492,4 +492,118 @@ void main() {
     expect(plan.shiftFrom, '');
     await db.close();
   });
+
+  test('v12 老库升级：sets 出现 is_extra、老行默认 false、写 1 读回 true', () async {
+    final db = await databaseFactory.openDatabase(dbPath);
+    // 模拟 v11 库：建全套新 schema 后，把 sets 换回没有 is_extra 的旧结构
+    await Db.instance.createSchema(db);
+    await db.execute('PRAGMA foreign_keys = OFF');
+    await db.execute('DROP TABLE sets');
+    await db.execute('''
+      CREATE TABLE sets(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_exercise_id INTEGER NOT NULL,
+        weight_kg REAL NOT NULL,
+        reps INTEGER NOT NULL,
+        rir INTEGER NOT NULL DEFAULT 2,
+        kind TEXT NOT NULL DEFAULT 'working',
+        done_at INTEGER NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        target_weight_kg REAL,
+        target_reps INTEGER
+      )''');
+    await db.insert('sets', {
+      'session_exercise_id': 1,
+      'weight_kg': 60.0,
+      'reps': 8,
+      'rir': 2,
+      'kind': 'working',
+      'done_at': 1000,
+    });
+    await db.execute('PRAGMA foreign_keys = ON');
+
+    // 生产路径同款迁移
+    await Db.instance.upgradeV11to12(db);
+
+    final cols = [
+      for (final c in await db.rawQuery('PRAGMA table_info(sets)'))
+        c['name'] as String
+    ];
+    expect(cols, contains('is_extra'));
+    // 老行默认 0 → model 读回 false（老数据不回溯标注）
+    final oldRow = (await db.query('sets')).first;
+    expect(SetEntry.fromMap(oldRow).isExtra, isFalse);
+
+    // 新行带 is_extra=1 落库读回 true
+    await db.insert('sets', {
+      'session_exercise_id': 1,
+      'weight_kg': 62.5,
+      'reps': 8,
+      'rir': 2,
+      'kind': 'working',
+      'done_at': 2000,
+      'is_extra': 1,
+    });
+    final rows = await db.query('sets', orderBy: 'id');
+    expect(SetEntry.fromMap(rows.last).isExtra, isTrue);
+    await db.close();
+  });
+
+  test('全新库 createSchema 含 is_extra', () async {
+    final db = await databaseFactory.openDatabase(dbPath);
+    await Db.instance.createSchema(db);
+    final cols = [
+      for (final c in await db.rawQuery('PRAGMA table_info(sets)'))
+        c['name'] as String
+    ];
+    expect(cols, contains('is_extra'));
+    await db.close();
+  });
+
+  test('restoreAll 兼容老备份（sets 行缺 is_extra 键回退 false，不丢行）', () async {
+    final db = await databaseFactory.openDatabase(dbPath);
+    await Db.instance.createSchema(db);
+    final wrapper = Db.forTesting(db);
+    await wrapper.restoreAll({
+      'sessions': [
+        {
+          'id': 3,
+          'date': '2026-09-01',
+          'plan_day_title': '推日',
+          'started_at': 1000,
+          'ended_at': 2000,
+          'status': 'done',
+        }
+      ],
+      'session_exercises': [
+        {
+          'id': 7,
+          'session_id': 3,
+          'name': '杠铃卧推',
+          'order_idx': 0,
+          'kind': 'compound',
+          'rest_sec': 120,
+          'rule': '{"reps_min":5,"reps_max":8}',
+          'trace': '',
+        }
+      ],
+      'sets': [
+        {
+          'id': 9,
+          'session_exercise_id': 7,
+          'weight_kg': 60.0,
+          'reps': 8,
+          'rir': 2,
+          'kind': 'working',
+          'done_at': 1500,
+          // 无 is_extra 键（v11 及更早版本导出的备份行）
+        }
+      ],
+    });
+    final sets = await wrapper.setsOfSession(3);
+    final flat = sets.values.expand((l) => l).toList();
+    expect(flat.length, 1, reason: '老备份行照常恢复');
+    expect(flat.first.isExtra, isFalse, reason: '缺键回退默认 false');
+    await db.close();
+  });
 }

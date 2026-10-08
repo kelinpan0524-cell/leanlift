@@ -69,12 +69,13 @@ class FlowPage {
   };
 
   /// 顶部『第 N/M 组』文案（起始/总结页为空串）。
-  /// 加练组不显示「/计划数」（第 4/3 组读不通），显示『第 4 组 · 加练』。
+  /// 加练组不显示「/计划数」（第 4/3 组读不通），显示绝对组号
+  /// 『第 4 组（加练）』（2026-10-08 口径统一：与跳页面板/训练卡/总结页
+  /// 一个写法）。
   String setLabel() {
     if (kind == FlowPageKind.record || kind == FlowPageKind.rest) {
       return extra
-          ? tx('第 $setNumber 组 · 加练',
-              en: 'Set $setNumber · extra')
+          ? tx('第 $setNumber 组（加练）', en: 'Set $setNumber (extra)')
           : tx('第 $setNumber/$plannedSets 组', en: 'Set $setNumber/$plannedSets');
     }
     return '';

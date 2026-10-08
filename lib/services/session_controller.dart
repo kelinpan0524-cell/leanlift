@@ -107,6 +107,14 @@ class SessionController extends ChangeNotifier {
   /// 结束层不从这里走（双通道互斥沿用 _onRestFinished 原有通道）。
   void Function(RestCue cue)? onRestCue;
 
+  /// 计划内最后一组完成后的收尾确认（2026-10-07 结束确认弹窗）：
+  /// 返回 true = 结束并保存（走原 finish 收尾）；false = 继续训练
+  /// （不清场，按原推进语义起加练态休息页）。属「结束时点」弹窗豁免
+  /// （先例 workout_page.dart _forgottenStopGuard 注释），不碰训练中禁弹窗。
+  /// null = 保持原自动结束语义（无 UI 宿主/旧测试路径不受影响）。
+  /// 由 WorkoutPage 挂载接线，dispose 时成对清空。
+  Future<bool> Function()? confirmAutoFinish;
+
   void notifyCard() => onCardChanged?.call(buildCard());
 
   /// 训练卡状态（从会话状态派生，对齐训练中三要素：当前动作/本组目标/剩余时间）。
@@ -148,12 +156,12 @@ class SessionController extends ChangeNotifier {
       );
     }
     // 组号语义与页面流同口径（workout_flow.currentPage）：计划内第 N/M 组，
-    // 加练组不封顶——「加练 第 X 组」，不再出现夹回「第 3/3 组」的旧 bug。
+    // 加练组不封顶——绝对组号「第 N 组（加练）」（2026-10-08 口径统一：
+    // 与跳页面板/总结页一个写法），不再出现夹回「第 3/3 组」的旧 bug。
     final planned = rule?.workingSets ?? 1;
     final doneRaw = workingSetsDone;
     final setPart = doneRaw >= planned
-        ? tx('加练 第 ${doneRaw - planned + 1} 组',
-            en: 'Extra set ${doneRaw - planned + 1}')
+        ? tx('第 ${doneRaw + 1} 组（加练）', en: 'Set ${doneRaw + 1} (extra)')
         : tx('第 ${doneRaw + 1}/$planned 组', en: 'Set ${doneRaw + 1}/$planned');
     return TrainingCard(
       active: true,
@@ -495,6 +503,16 @@ class SessionController extends ChangeNotifier {
   }) async {
     final ex = currentEx;
     if (ex == null) return false;
+    // 加练标注（v12，2026-10-08）：落库前先判定——只对正式组标注
+    // （kind==working 才参与判据：加练态下 kind chips 仍可选，计划满后
+    // 再记热身/力竭组不该被误标「加练」）；必须在 workingSetsDone++ 与
+    // insertSet 之前算，口径与 WorkoutFlow 只数正式组一致。仅展示标注，
+    // 不改渐进/PR/容量统计。
+    final planned = ex.rule.workingSets;
+    final doneBefore = (setsByEx[ex.id] ?? const <SetEntry>[])
+        .where((s) => s.kind == SetKind.working)
+        .length;
+    final isExtra = kind == SetKind.working && doneBefore >= planned;
     // 「当时处方」快照（wger 的 *_target 列，v8）：完成时把引擎给的
     // 推荐重量与链目标次数一并写进组行——用户手调过的重量与它对比，
     // 历史页就能回看「计划 vs 实际」。lastWorkout/historyBefore 在
@@ -511,6 +529,7 @@ class SessionController extends ChangeNotifier {
       note: note,
       targetWeightKg: _recommendFor(ex.name),
       targetReps: chainTarget.targetReps,
+      isExtra: isExtra,
     );
     final id = await _db.insertSet(entry);
     setsByEx
@@ -542,6 +561,18 @@ class SessionController extends ChangeNotifier {
       justIdx: curExIdx,
     );
     if (nextIdx == null) {
+      // 收尾确认（2026-10-07 结束确认弹窗）：计划内最后一组完成、即将
+      // 自动结束前先问一次「现在结束吗」。回答「继续训练」（false）时
+      // 不清场，按原推进语义起休息页（落在刚练满动作的加练态，自然给出
+      // 「再来一组/跳过休息」入口）；回答「结束并保存」（true）或回调
+      // 未挂（null = 保持原自动结束语义）走原收尾。弹窗 await 期间会话
+      // 仍 active（训练卡/常亮/心跳照常）。
+      final confirm = confirmAutoFinish;
+      if (confirm != null && !await confirm()) {
+        extraSetExerciseName = ex.name;
+        _beginRestFor(ex);
+        return pr;
+      }
       // 最后一个动作完成：直接结束会话；UI 检测到 !hasActive 后
       // 走 endTraining 展示总结页并回填飞书
       await finish();
@@ -648,7 +679,9 @@ class SessionController extends ChangeNotifier {
     );
     if (sec <= 0) return; // 双保险：热身组不触发计时
     final end = DateTime.now().millisecondsSinceEpoch + sec * 1000;
-    _startRestAt(end, notifyUi: true);
+    // totalMs 直接用处方秒数：两次读真实时钟相减会随机差出 1ms
+    //（119999ms → 119s），恢复/暂停路径不传则维持「按剩余重新起表」语义。
+    _startRestAt(end, notifyUi: true, totalMs: sec * 1000);
     // 预载（下一）动作上下文。重量只在换动作时刷新——同一动作继续时
     // 保留用户手动调过的重量，不再每组被冲回推荐值。换动作时起点与
     // _applyExerciseSwitch 同口径：该动作本会话已有实际组就接最后一组
@@ -666,9 +699,9 @@ class SessionController extends ChangeNotifier {
     });
   }
 
-  void _startRestAt(int endAtMs, {required bool notifyUi}) {
+  void _startRestAt(int endAtMs, {required bool notifyUi, int? totalMs}) {
     restEndAt = endAtMs;
-    restTotalMs = (endAtMs - DateTime.now().millisecondsSinceEpoch).clamp(
+    restTotalMs = (totalMs ?? (endAtMs - DateTime.now().millisecondsSinceEpoch)).clamp(
       0,
       1 << 31,
     );

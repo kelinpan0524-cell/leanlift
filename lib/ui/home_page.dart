@@ -9,6 +9,7 @@ import 'ai_coach_page.dart';
 import 'schedule_views.dart';
 import 'settings_subpages.dart';
 import 'theme.dart';
+import 'today_edit_sheet.dart';
 import 'widgets/common.dart';
 import 'workout_page.dart';
 
@@ -526,8 +527,14 @@ class _HomePageState extends State<HomePage> {
     }
     setState(() => _starting = true);
     try {
-      await c.planRepo.refreshRecommendations(exs.map((e) => e.name));
-      await c.session.startFromDay(day: day, planExercises: exs);
+      // 开练前编辑（2026-10-07）：对「今天练什么」做临时调整（增删/换动作、
+      // 拖拽排序、改组次），只影响今天、不写回长期计划。null = 取消不开练
+      //（return 在 try 内，finally 复位 _starting 回首页）。加练路径
+      // _pickExtraDay 汇入本方法，自动获得同能力。
+      final edited = await showTodayEditSheet(context, day: day, initial: exs);
+      if (edited == null || edited.isEmpty || !context.mounted) return;
+      await c.planRepo.refreshRecommendations(edited.map((e) => e.name));
+      await c.session.startFromDay(day: day, planExercises: edited);
       if (!context.mounted) return;
       await _openWorkout(context);
     } finally {

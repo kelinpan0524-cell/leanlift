@@ -358,6 +358,9 @@ List<Widget> buildSessionDetailRows(
     final se = ses[k];
     final sets = map[se.id!] ?? [];
     if (sets.isEmpty) continue;
+    // 加练组数（v12，2026-10-08）：「计划目标 3 组」下挂 4 行时，
+    // 多出来的那行要有解释——有加练就单列一行灰字。
+    final extraCount = sets.where((x) => x.isExtra).length;
     // 每个动作一张小表（别再一条长文字流）：列 = 组 | 重量 kg | 次数 | 余力；
     // 余力列头写明含义，不再用 "R2" 缩写。热身=热 / 力竭=竭。
     widgets.add(
@@ -406,15 +409,27 @@ List<Widget> buildSessionDetailRows(
                 ),
               );
             }),
+            // 有加练：紧跟「目标 vs 实际」行下面单列一行灰字说明
+            if (extraCount > 0)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  tx('含加练 $extraCount 组',
+                      en: 'Includes $extraCount extra set(s)'),
+                  style:
+                      const TextStyle(color: AppTheme.textDim, fontSize: 12),
+                ),
+              ),
             Table(
               border: const TableBorder(
                 horizontalInside: BorderSide(color: AppTheme.cardHi, width: 1),
               ),
-              columnWidths: const {
-                0: FixedColumnWidth(34),
-                1: FlexColumnWidth(3),
-                2: FlexColumnWidth(3),
-                3: FlexColumnWidth(3),
+              // 加练组号带「（加练）」括注，第一列放宽（34↔64），无加练维持原宽
+              columnWidths: {
+                0: FixedColumnWidth(extraCount > 0 ? 64 : 34),
+                1: const FlexColumnWidth(3),
+                2: const FlexColumnWidth(3),
+                3: const FlexColumnWidth(3),
               },
               children: [
                 TableRow(
@@ -440,7 +455,7 @@ List<Widget> buildSessionDetailRows(
                   TableRow(
                     children: [
                       for (final cell in [
-                        '${i + 1}',
+                        sets[i].isExtra ? '${i + 1}（加练）' : '${i + 1}',
                         fmtKg(sets[i].weightKg),
                         '${sets[i].reps}',
                         sets[i].kind == SetKind.warmup
