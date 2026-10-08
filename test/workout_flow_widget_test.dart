@@ -325,6 +325,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(progressBar(tester).value, closeTo(5 / 6, 1e-6));
 
+      // 测试闸门（2026-10-07 结束确认弹窗）：本用例验证「UI 最后一组 →
+      // 自动结束 → 总结页」管线，确认面板行为由专测覆盖——置 null 放行
+      // 原自动结束语义，否则最后一组会被确认面板挂住。
+      container.session.confirmAutoFinish = null;
       await tester.runAsync(() async {
         container.session.setWeightDraft(60);
         await pickRir2(tester);
@@ -435,7 +439,7 @@ void main() {
           reason: '休息页同时显示下一组的目标次数，防忘');
     });
 
-    testWidgets('加练态面板显示「加练 第 1 组」且组号不封顶', (tester) async {
+    testWidgets('加练态面板显示「第 2 组（加练）」且组号不封顶（绝对组号）', (tester) async {
       setSurface(tester, const Size(360, 1200));
       // 单动作 1 组：练满即加练态
       await tester.runAsync(() async {
@@ -447,6 +451,9 @@ void main() {
       await tester.pump(const Duration(milliseconds: 20));
       await tester.tap(find.text('开始训练'));
       await tester.pump(const Duration(milliseconds: 400));
+      // 测试闸门（2026-10-07 结束确认弹窗）：本用例只验加练态组号文案，
+      // 置 null 放行原自动结束语义（确认面板行为由专测覆盖）。
+      container.session.confirmAutoFinish = null;
       await tester.runAsync(() async {
         await pickRir2(tester);
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
@@ -455,8 +462,9 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 200));
       });
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.textContaining('加练 第 1 组'), findsWidgets,
-          reason: '加练的这一组要显性显示出来（旧 bug：永远显示 1/1）');
+      // 2026-10-08 口径统一：绝对组号 doneRaw+1（planned=1、已完成 1 → 第 2 组）
+      expect(find.textContaining('第 2 组（加练）'), findsWidgets,
+          reason: '加练的这一组按绝对组号显性显示（旧 bug：永远显示 1/1）');
       expect(find.textContaining('第 1/1 组'), findsNothing,
           reason: '不再被夹回计划组数');
     });
@@ -583,6 +591,129 @@ void main() {
           reason: '不允许停在占位页');
       expect(find.text('训练完成 💪'), findsOneWidget,
           reason: '兜底收尾把总结页接进页面流');
+    });
+  });
+
+  // ---------- 结束确认弹窗（2026-10-07）----------
+  // 计划内最后一组完成后不再静默自动结束：先弹收起面板问「现在结束吗」。
+  // 属「结束时点」弹窗豁免（先例忘停表守护），不碰训练中禁弹窗红线。
+  group('结束确认弹窗（最后一组完成先问「现在结束吗」）', () {
+    /// 单动作 1 计划组的新会话 + 进入训练页记录页。
+    Future<void> pumpSingleSetWorkout(WidgetTester tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('收尾日');
+        final a = await addEx(day, '卧推', 0, workingSets: 1);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await pumpWorkout(tester);
+    }
+
+    /// UI 记满唯一一组并等确认面板挂起（面板出现）。
+    Future<void> recordLastSetViaUi(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(container.session.hasActive, isTrue,
+          reason: '确认面板挂起：等用户拍板，不自动结束');
+    }
+
+    testWidgets('用例A 全部组完成：选「结束并保存」→ 落库 done 进总结页', (tester) async {
+      await pumpSingleSetWorkout(tester);
+      await recordLastSetViaUi(tester);
+      expect(find.text('全部组完成，结束训练吗？'), findsOneWidget);
+
+      await tester.runAsync(() async {
+        await tester.tap(find.text('结束并保存'));
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      // 面板退场动画要出帧才走完 → confirm 才返回 true；随后 completeSet
+      // 的收尾（finish 落库）在真实事件环上跑，还需再给真实时间
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('训练完成 💪'), findsOneWidget, reason: '收尾后进总结页');
+      expect(container.session.hasActive, isFalse);
+      expect(container.session.session!.status, 'done');
+    });
+
+    testWidgets('用例B 选「继续训练」：不结束落休息页；加练一组后面板再次出现', (tester) async {
+      await pumpSingleSetWorkout(tester);
+      await recordLastSetViaUi(tester);
+      expect(find.text('全部组完成，结束训练吗？'), findsOneWidget);
+
+      await tester.runAsync(() async {
+        await tester.tap(find.text('继续训练'));
+        await Future<void>.delayed(const Duration(milliseconds: 1000));
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(container.session.hasActive, isTrue, reason: '继续训练：会话不清场');
+      expect(container.session.phase, WorkoutPhase.resting,
+          reason: '按原推进语义落加练态休息页');
+      expect(find.text('跳过休息，直接开练'), findsOneWidget);
+      expect(find.text('训练完成 💪'), findsNothing);
+
+      // 休息页「再来一组」回加练态，记完这一组：面板再次出现（每组再问）
+      await tester.runAsync(() async {
+        await tester.tap(find.textContaining('再来一组'));
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      });
+      await tester.pump(const Duration(milliseconds: 400));
+      await recordLastSetViaUi(tester);
+      expect(find.text('全部组完成，结束训练吗？'), findsOneWidget,
+          reason: '无「本次不再问」状态：每组最后一组都要再问');
+    });
+
+    testWidgets('用例C 跳着做：末位动作练满即问，面板显示「还剩 N 组」，选结束落库 done',
+        (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('收尾日');
+        final a = await addEx(day, '卧推', 0, workingSets: 1);
+        final b = await addEx(day, '划船', 1, workingSets: 1);
+        await container.session.startFromDay(day: day, planExercises: [a, b]);
+      });
+      await pumpWorkout(tester);
+
+      // 跳过首位动作（卧推一组不做），直接做末位动作
+      await tester.runAsync(() async {
+        await tester.tap(find.text('跳过动作'));
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      });
+      // 换动作是真实异步（DB 读上下文）→ notify 落帧 → AnimatedSwitcher
+      // 动画走完还要再出一帧才拆掉 outgoing 旧记录页（否则新旧两页同时
+      // 在树上，「完成本组」按钮歧义命中两个）。两轮 settle 夹真实等待。
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pumpAndSettle();
+
+      await recordLastSetViaUi(tester);
+      expect(find.text('还剩 1 组没做，现在结束吗？'), findsOneWidget,
+          reason: '『跳着做』收尾前先看清还差谁');
+      expect(find.textContaining('已完成 0/1'), findsOneWidget,
+          reason: '逐动作灰字：卧推一组没做');
+
+      await tester.runAsync(() async {
+        await tester.tap(find.text('结束并保存'));
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('训练完成 💪'), findsOneWidget);
+      expect(container.session.hasActive, isFalse);
+      expect(container.session.session!.status, 'done');
     });
   });
 }

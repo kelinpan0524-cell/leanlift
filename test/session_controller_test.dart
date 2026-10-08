@@ -1207,7 +1207,7 @@ void main() {
   });
 
   group('组数显示（2026-09-26 Arono：第几组帮人记好，加练组不封顶）', () {
-    test('加练态训练卡显示「加练 第 N 组」，不再夹回计划组数', () async {
+    test('加练态训练卡显示「第 N 组（加练）」（绝对组号），不再夹回计划组数', () async {
       final day = await makePlanDay('日');
       final a = await addPlanEx(day, '动作甲', 0, sets: 1, workingSets: 1);
       final b = await addPlanEx(day, '动作乙', 1, sets: 1, workingSets: 1);
@@ -1219,12 +1219,13 @@ void main() {
       await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
       await c.startExtraSet(); // 回到动作甲加练
       final card = c.buildCard();
-      expect(card.text, contains('加练 第 1 组'), reason: '加练组显性计数');
+      // 2026-10-08 口径统一：绝对组号 doneRaw+1（与跳页面板/总结页一个写法）
+      expect(card.text, contains('第 2 组（加练）'), reason: '加练组按绝对组号显性计数');
       expect(card.text, isNot(contains('第 2/1 组')), reason: '不出现越界组号');
 
       await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
       await c.startExtraSet();
-      expect(c.buildCard().text, contains('加练 第 2 组'),
+      expect(c.buildCard().text, contains('第 3 组（加练）'),
           reason: '第二次加练组号继续涨');
     });
   });
@@ -1417,6 +1418,92 @@ void main() {
       await c.completeSet(weight: 40, reps: 8, rir: 2, kind: SetKind.working);
       expect(c.hasActive, isFalse);
       await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+  });
+
+  group('结束确认（2026-10-07：最后一组完成先问「现在结束吗」）', () {
+    // completeSet → _beginRestFor 的悬挂续体排干（与休息规则组同模式）
+    Future<void> drainContinuations() =>
+        Future<void>.delayed(const Duration(milliseconds: 120));
+
+    test('回调返回 false：唯一动作练满不自动结束，落加练态休息页；每组再问；改 true 后落库 done', () async {
+      final day = await makePlanDay('日');
+      final e = await addPlanEx(day, '动作甲', 0, workingSets: 2);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [e]);
+
+      var calls = 0;
+      var answer = false;
+      c.confirmAutoFinish = () async {
+        calls++;
+        return answer;
+      };
+
+      // 计划内前 1 组：推进语义不变，不触发确认
+      await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+      expect(calls, 0, reason: '未到最后一组不问');
+      // 第 2 组完成 = 唯一动作练满：回答「继续训练」→ 不结束，起休息页
+      await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+      expect(calls, 1);
+      expect(c.hasActive, isTrue, reason: '回答「继续训练」不清场');
+      expect(c.phase, WorkoutPhase.resting, reason: '按原推进语义起休息页');
+      expect(c.extraSetExerciseName, '动作甲',
+          reason: '休息页给出「再来一组」入口');
+
+      // 加练 1 组（休息页「再来一组」路径）：再次触发确认（每组再问）
+      await c.startExtraSet();
+      await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+      expect(calls, 2, reason: '加练组完成同样要问');
+      expect(c.hasActive, isTrue);
+
+      // 改回答「结束并保存」：下一组完成即按原收尾落库 done
+      answer = true;
+      await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+      expect(calls, 3);
+      expect(c.hasActive, isFalse);
+      expect(c.session!.status, 'done');
+      await drainContinuations();
+    });
+
+    test('跳着做：末位动作练满即触发确认，剩余组数 = 前面未做动作的组（WorkoutFlow 口径）', () async {
+      final day = await makePlanDay('日');
+      final a = await addPlanEx(day, '动作甲', 0, workingSets: 2);
+      final b = await addPlanEx(day, '动作乙', 1, workingSets: 1);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a, b]);
+
+      var calls = 0;
+      c.confirmAutoFinish = () async {
+        calls++;
+        return true;
+      };
+
+      // 跳过动作甲（页面流「跳过动作」的控制器入口），直接做末位动作
+      final jumped = await c.jumpToExercise(1);
+      expect(jumped, isTrue);
+      await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+      expect(calls, 1, reason: '末位动作练满即触发收尾确认（甲一组没做也问）');
+      expect(c.hasActive, isFalse, reason: '回答结束 → 落库 done');
+      expect(c.session!.status, 'done');
+
+      // 『还剩 N 组』提示的数据源（UI 面板同口径）：甲 2 组未做
+      final flow = WorkoutFlow(exercises: c.exercises, setsByEx: c.setsByEx);
+      expect(flow.totalPlannedSets, 3);
+      expect(flow.donePlannedSets, 1);
+      expect(flow.totalPlannedSets - flow.donePlannedSets, 2);
+      await drainContinuations();
+    });
+
+    test('回调 null（默认）保持原自动结束语义——回归锚点', () async {
+      final day = await makePlanDay('日');
+      final e = await addPlanEx(day, '动作甲', 0, workingSets: 1);
+      final c = makeController();
+      expect(c.confirmAutoFinish, isNull);
+      await c.startFromDay(day: day, planExercises: [e]);
+      await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+      expect(c.hasActive, isFalse, reason: '未接线时维持旧行为：练满即自动结束');
+      expect(c.session!.status, 'done');
+      await drainContinuations();
     });
   });
 }

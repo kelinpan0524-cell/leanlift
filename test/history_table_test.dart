@@ -84,4 +84,77 @@ void main() {
     expect(find.textContaining('备注'), findsOneWidget);
     expect(find.textContaining('热身偏轻'), findsOneWidget);
   });
+
+  testWidgets('加练标注：组号「N（加练）」+ 含加练行 + 列宽 64（无加练维持 34）',
+      (tester) async {
+    final withExtra = SessionExercise(
+      sessionId: 1,
+      name: '杠铃卧推',
+      orderIdx: 0,
+      kind: 'compound',
+      rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
+    ).copyWithId(7);
+    final withoutExtra = SessionExercise(
+      sessionId: 1,
+      name: '杠铃划船',
+      orderIdx: 1,
+      kind: 'compound',
+      rule: ProgressionRule.fallback,
+    ).copyWithId(8);
+    const s = Session(
+      id: 1,
+      date: '2026-10-08',
+      planDayTitle: '推日',
+      startedAt: 1000,
+      endedAt: 2000,
+      status: 'done',
+    );
+    final rows = buildSessionDetailRows(s, [withExtra, withoutExtra], {
+      7: [
+        // 计划 3 组 + 1 组加练（第 4 行标 isExtra）
+        for (var i = 0; i < 4; i++)
+          SetEntry(
+            sessionExerciseId: 7,
+            weightKg: 60,
+            reps: 8,
+            rir: 2,
+            kind: SetKind.working,
+            doneAt: 1100 + i,
+            isExtra: i >= 3,
+          ),
+      ],
+      8: [
+        const SetEntry(
+          sessionExerciseId: 8,
+          weightKg: 50,
+          reps: 8,
+          rir: 2,
+          kind: SetKind.working,
+          doneAt: 1300,
+        ),
+      ],
+    }, bodyWeightKg: 70);
+
+    tester.view.physicalSize = const Size(400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: ListView(children: rows),
+      ),
+    ));
+    await tester.pump();
+
+    // 加练动作块：第 4 行组号带「（加练）」括注 + 单列一行含加练说明
+    expect(find.text('4（加练）'), findsOneWidget);
+    expect(find.textContaining('含加练 1 组'), findsOneWidget);
+    final tables = tester.widgetList<Table>(find.byType(Table)).toList();
+    expect(tables.length, 2);
+    expect((tables[0].columnWidths![0] as FixedColumnWidth).value, 64,
+        reason: '有加练的动作：第一列放宽装下「N（加练）」');
+    expect((tables[1].columnWidths![0] as FixedColumnWidth).value, 34,
+        reason: '无加练的动作：列宽维持 34');
+    expect(find.text('1'), findsNWidgets(2),
+        reason: '两动作各一个组号 1（无加练的组号不带括注）');
+  });
 }

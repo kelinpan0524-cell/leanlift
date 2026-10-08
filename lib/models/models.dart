@@ -639,6 +639,11 @@ class SetEntry {
   final double? targetWeightKg;
   final int? targetReps;
 
+  /// 加练标注（v12，2026-10-08）：kind=working 且落库前该动作正式组数
+  /// 已 ≥ rule.workingSets = 超计划的加练组。仅展示标注，不改渐进/PR/
+  /// 容量统计口径。老行/老备份缺列回 false（老数据不回溯标注）。
+  final bool isExtra;
+
   const SetEntry({
     this.id,
     required this.sessionExerciseId,
@@ -650,6 +655,7 @@ class SetEntry {
     this.note = '',
     this.targetWeightKg,
     this.targetReps,
+    this.isExtra = false,
   });
 
   /// 训练容量 = 重量 × 次数（热身组不计入容量）。
@@ -669,6 +675,7 @@ class SetEntry {
         'note': note,
         'target_weight_kg': targetWeightKg,
         'target_reps': targetReps,
+        'is_extra': isExtra ? 1 : 0,
       };
 
   factory SetEntry.fromMap(Map<String, dynamic> m) => SetEntry(
@@ -682,6 +689,7 @@ class SetEntry {
         note: (m['note'] as String?) ?? '',
         targetWeightKg: (m['target_weight_kg'] as num?)?.toDouble(),
         targetReps: (m['target_reps'] as num?)?.toInt(),
+        isExtra: ((m['is_extra'] as num?)?.toInt() ?? 0) == 1,
       );
 }
 

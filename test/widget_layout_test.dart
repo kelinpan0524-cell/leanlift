@@ -396,6 +396,10 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 150));
       });
       await pumpWorkout(tester); // 已有 5 组记录：直接落到最后一个记录页
+      // 测试闸门（2026-10-07 结束确认弹窗）：本用例验证「自动结束→总结页」
+      // 收尾管线，确认面板行为由 workout_flow_widget_test 专测覆盖——
+      // 置 null 放行原自动结束语义，否则最后一组会被确认面板挂住。
+      container.session.confirmAutoFinish = null;
       expect(
         WorkoutFlow(
           exercises: container.session.exercises,
@@ -482,6 +486,10 @@ void main() {
       });
       await tester.tap(find.text('去训练'));
       await tester.pumpAndSettle();
+      // 测试闸门（2026-10-07 结束确认弹窗）：同 finishToSummary——本用例
+      // 验证收工按钮回入口页，置 null 放行原自动结束语义，否则最后一组
+      // 会被确认面板挂住。
+      container.session.confirmAutoFinish = null;
       await tester.runAsync(() async {
         container.session.setWeightDraft(60);
         // 余力没填写提醒上线后：落库前先选余力 2

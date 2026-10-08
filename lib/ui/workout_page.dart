@@ -32,6 +32,11 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
   WorkoutPhase? _lastPhase;
   Timer? _distractTimer;
 
+  /// 收尾确认回调挂载点（2026-10-07 结束确认弹窗）：initState 不能读
+  /// InheritedWidget，addPostFrameCallback 后取 app(context).session 接线；
+  /// dispose 成对清空，防泄漏到下个会话。
+  SessionController? _sc;
+
   // ---------- 页面流（调研条目 8，wger gym_mode 思路） ----------
   /// 当前展示的页：由「会话动作 + 已记组」库内真值推导（workout_flow.dart），
   /// 不维护手工导航堆栈——保存一组→写库→状态机重算当前页→这里自动翻页。
@@ -57,6 +62,16 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     WidgetsBinding.instance.addObserver(this);
+    // 收尾确认接线（2026-10-07 结束确认弹窗）：initState 不能同步读
+    // InheritedWidget，首帧后再取 AppContainer 的会话控制器挂回调
+    // （addPostFrameCallback 为全仓通用写法，先例 home_page.dart /
+    // plan_editor_page.dart）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final s = app(context).session;
+      _sc = s;
+      s.confirmAutoFinish = _confirmAutoFinish;
+    });
     _distractTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _checkDistractingApp();
       // 常驻通知文案由 SessionController 心跳驱动（秒级、屏幕内外都更新）
@@ -107,6 +122,7 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _sc?.confirmAutoFinish = null; // 成对解绑：页面卸载后不再拦截自动结束
     _distractTimer?.cancel();
     _markTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -304,6 +320,84 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
       default:
         return true; // 照原样保存 / 下拉取消
     }
+  }
+
+  /// 计划内最后一组完成后的收尾确认（2026-10-07 结束确认弹窗）：
+  /// 属「结束时点」弹窗豁免（先例 _forgottenStopGuard），不碰训练中
+  /// 禁弹窗红线。返回 true = 结束并保存；false = 继续训练。上滑关闭/
+  /// 点外部得 null → 按继续训练处理（最稳妥可逆：误关面板不会把会话
+  /// 结束掉，用户随时可再长按顶栏收尾）。弹窗 await 期间会话仍 active，
+  /// 训练卡/常亮/心跳照常。
+  Future<bool> _confirmAutoFinish() async {
+    final s = _sc;
+    if (s == null) return true; // 防御：未接线时保持原自动结束语义
+    final flow = WorkoutFlow(exercises: s.exercises, setsByEx: s.setsByEx);
+    final remaining = flow.totalPlannedSets - flow.donePlannedSets;
+    // 「还剩 N 组」档逐动作灰字（口径照抄跳页面板：只列未练满动作，
+    // 已完成数封顶在各自计划组数上，加练不虚报）。
+    final unfinishedLines = <String>[];
+    if (remaining > 0) {
+      for (final ex in s.exercises) {
+        final raw = (s.setsByEx[ex.id] ?? const <SetEntry>[])
+            .where((x) => x.kind == SetKind.working)
+            .length;
+        final done = raw > ex.rule.workingSets ? ex.rule.workingSets : raw;
+        if (done < ex.rule.workingSets) {
+          unfinishedLines.add(tx(
+            '${exname(ex.name)} 已完成 $done/${ex.rule.workingSets}',
+            en: '${exname(ex.name)} $done/${ex.rule.workingSets} done',
+          ));
+        }
+      }
+    }
+    if (!mounted) return true;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppTheme.card,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Text(
+                remaining > 0
+                    ? tx('还剩 $remaining 组没做，现在结束吗？',
+                        en: '$remaining set(s) left — finish now?')
+                    : tx('全部组完成，结束训练吗？',
+                        en: 'All sets done — finish the workout?'),
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+            ),
+            for (final line in unfinishedLines)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(line,
+                      style: const TextStyle(
+                          color: AppTheme.textDim, fontSize: 13)),
+                ),
+              ),
+            ListTile(
+              leading: const Icon(Icons.play_arrow, color: AppTheme.primary),
+              title: Text(tx('继续训练', en: 'Keep Training')),
+              onTap: () => Navigator.pop(ctx, 'continue'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.check_circle, color: AppTheme.primary),
+              title: Text(tx('结束并保存', en: 'Finish & Save')),
+              onTap: () => Navigator.pop(ctx, 'finish'),
+            ),
+          ],
+        ),
+      ),
+    );
+    return choice == 'finish';
   }
 
   /// 跳页面板（收起面板，红线禁弹窗）：列出全程每个计划组页，已完成的
@@ -1790,8 +1884,9 @@ class _ActionPanelState extends State<_ActionPanel> {
         mainAxisSize: MainAxisSize.min,
         children: [
           // 组数 + 目标常显（2026-09-26 Arono：帮人数组、防忘目标）：
-          // 放在动作面板视线主区第一行；加练态显示「加练 第 N 组」，
-          // 组号继续涨，不再被夹回计划数。
+          // 放在动作面板视线主区第一行；加练态显示绝对组号
+          // 「第 N 组（加练）」（2026-10-08 口径统一），组号继续涨，
+          // 不再被夹回计划数。
           Builder(
             builder: (context) {
               final planned = ex.rule.workingSets;
@@ -1801,8 +1896,8 @@ class _ActionPanelState extends State<_ActionPanel> {
                   : tx('目标 ${ex.rule.repsMin}-${ex.rule.repsMax} 次',
                       en: 'Target ${ex.rule.repsMin}-${ex.rule.repsMax} reps');
               final setText = s.workingSetsDone >= planned
-                  ? tx('加练 第 ${s.workingSetsDone - planned + 1} 组',
-                      en: 'Extra set ${s.workingSetsDone - planned + 1}')
+                  ? tx('第 ${s.workingSetsDone + 1} 组（加练）',
+                      en: 'Set ${s.workingSetsDone + 1} (extra)')
                   : tx('第 ${s.workingSetsDone + 1}/$planned 组',
                       en: 'Set ${s.workingSetsDone + 1}/$planned');
               return Padding(
@@ -2844,99 +2939,124 @@ class _SummaryPage extends StatelessWidget {
     return Scaffold(
       backgroundColor: AppTheme.bg,
       body: SafeArea(
-        // 非惰性滚动（SingleChildScrollView）：总结页内容一页半以内，全部
-        // 构建没开销，且保证「收工」永远可被 find/ensureVisible 命中——
-        // ListView 惰性构建在大字号下会把按钮留出构建边界。
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 24),
-              Text(
-                tx('训练完成 💪', en: 'Workout Complete 💪'),
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontSize: 32, fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                dname(title),
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: AppTheme.textDim, fontSize: 16),
-              ),
-              const SizedBox(height: 24),
-              Row(
-                children: [
-                  _statCell(
-                      tx('总容量', en: 'Total Volume'), fmtVolume(stats.volume)),
-                  _statCell(tx('正式组', en: 'Working Sets'),
-                      '${stats.workingSets}'),
-                  _statCell(tx('动作数', en: 'Exercises'),
-                      '${stats.exercises.length}'),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                durationMin > 0
-                    ? (activeMin > 0 || restMin > 0
-                          ? tx('总时长 $durationMin 分钟 · 训练 $activeMin 分 · 休息 $restMin 分',
-                              en: 'Total $durationMin min · Active $activeMin min · Rest $restMin min')
-                          : tx('训练时长 $durationMin 分钟',
-                              en: 'Duration $durationMin min'))
-                    : tx('训练完成', en: 'Workout complete'),
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: AppTheme.textDim),
-              ),
-              const SizedBox(height: 24),
-              // 主观自评（wger 的 impression 三档）：总结页点选即存、可改选；
-              // 不弹窗不打断——出现在训练结束之后，收工前顺手一击。
-              _ImpressionSelector(s: s),
-              const SizedBox(height: 16),
-              if (prNames.isNotEmpty) ...[
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: AppTheme.warn.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Text(
-                    tx('🏆 PR 突破：${prNames.map(exname).join('、')}',
-                        en: '🏆 New PR: ${prNames.map(exname).join(', ')}'),
-                    style: const TextStyle(
-                      color: AppTheme.warn,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-              ],
-              SectionCard(
-                title: tx('渐进建议（下次训练）', en: 'Progression (Next Workout)'),
+        // 收工按钮钉底常驻（拇指可达红线；2026-10-08 v12「本次组数」卡片
+        // 加高后，滚动内容末尾的按钮在 360×800 会被顶出屏）。内容区仍为
+        // 非惰性 SingleChildScrollView，一页半以内全量构建。
+        child: Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    for (final v in verdicts)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
+                    const SizedBox(height: 24),
+                    Text(
+                      tx('训练完成 💪', en: 'Workout Complete 💪'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 32, fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      dname(title),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: AppTheme.textDim, fontSize: 16),
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        _statCell(
+                            tx('总容量', en: 'Total Volume'), fmtVolume(stats.volume)),
+                        _statCell(tx('正式组', en: 'Working Sets'),
+                            '${stats.workingSets}'),
+                        _statCell(tx('动作数', en: 'Exercises'),
+                            '${stats.exercises.length}'),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      durationMin > 0
+                          ? (activeMin > 0 || restMin > 0
+                                ? tx('总时长 $durationMin 分钟 · 训练 $activeMin 分 · 休息 $restMin 分',
+                                    en: 'Total $durationMin min · Active $activeMin min · Rest $restMin min')
+                                : tx('训练时长 $durationMin 分钟',
+                                    en: 'Duration $durationMin min'))
+                          : tx('训练完成', en: 'Workout complete'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: AppTheme.textDim),
+                    ),
+                    const SizedBox(height: 24),
+                    // 主观自评（wger 的 impression 三档）：总结页点选即存、可改选；
+                    // 不弹窗不打断——出现在训练结束之后，收工前顺手一击。
+                    _ImpressionSelector(s: s),
+                    const SizedBox(height: 16),
+                    if (prNames.isNotEmpty) ...[
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: AppTheme.warn.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                         child: Text(
-                          '· $v',
-                          style: const TextStyle(fontSize: 15),
+                          tx('🏆 PR 突破：${prNames.map(exname).join('、')}',
+                              en: '🏆 New PR: ${prNames.map(exname).join(', ')}'),
+                          style: const TextStyle(
+                            color: AppTheme.warn,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
+                      const SizedBox(height: 16),
+                    ],
+                    // 本次组数（v12 加练标注，2026-10-08）：逐动作一行，加练组
+                    // 单列出来——「计划目标 3 组」下挂 4 行不再没有解释。数据源
+                    // 是控制器内存（finish 不清 exercises/setsByEx），收工前
+                    // 加练组确认在。
+                    SectionCard(
+                      title: tx('本次组数', en: 'Sets This Session'),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final ex in s.exercises)
+                            if ((s.setsByEx[ex.id] ?? const <SetEntry>[])
+                                .isNotEmpty)
+                              _sessionSetsRow(ex),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    SectionCard(
+                      title: tx('渐进建议（下次训练）', en: 'Progression (Next Workout)'),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final v in verdicts)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Text(
+                                '· $v',
+                                style: const TextStyle(fontSize: 15),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
               ),
-              const SizedBox(height: 24),
-              BigButton(
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+              child: BigButton(
                 label: tx('收工', en: 'Finish'),
                 height: 72,
                 onPressed: () =>
                     Navigator.of(context).popUntil((r) => r.isFirst),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -2958,6 +3078,24 @@ class _SummaryPage extends StatelessWidget {
           const SizedBox(height: 4),
           Text(label, style: const TextStyle(color: AppTheme.textDim)),
         ],
+      ),
+    );
+  }
+
+  /// 『本次组数』逐动作一行：「动作名 · N 组（含加练 X 组）」。
+  Widget _sessionSetsRow(SessionExercise ex) {
+    final sets = s.setsByEx[ex.id] ?? const <SetEntry>[];
+    final extra = sets.where((x) => x.isExtra).length;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Text(
+        tx(
+          '${exname(ex.name)} · ${sets.length} 组'
+          '${extra > 0 ? '（含加练 $extra 组）' : ''}',
+          en: '${exname(ex.name)} · ${sets.length} set(s)'
+              '${extra > 0 ? ' (incl. $extra extra set(s))' : ''}',
+        ),
+        style: const TextStyle(fontSize: 15),
       ),
     );
   }

@@ -51,8 +51,9 @@ class Db {
     final dir = getDatabasesPath();
     final future = dir.then((d) => openDatabase(
           p.join(d, 'baoji_timer.db'),
-          // v9=超级组（superset_tag），v10=全计划顺延（plans.shift_*）。
-          version: 11,
+          // v9=超级组（superset_tag），v10=全计划顺延（plans.shift_*），
+          // v11=动作库 gear，v12=加练标注（sets.is_extra）。
+          version: 12,
           onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
           onCreate: (db, v) => createSchema(db),
           onUpgrade: _onUpgrade,
@@ -133,6 +134,9 @@ class Db {
     if (oldV < 11) {
       await upgradeV10to11(db);
     }
+    if (oldV < 12) {
+      await upgradeV11to12(db);
+    }
   }
 
   /// v10：plans 加全计划顺延字段（shift_days / shift_from）。
@@ -151,6 +155,17 @@ class Db {
   Future<void> upgradeV10to11(Database db) async {
     await db.execute(
         "ALTER TABLE exercise_meta ADD COLUMN gear TEXT NOT NULL DEFAULT ''");
+  }
+
+  /// v12：加练组标注（2026-10-08）——sets 加 is_extra 列：计划内正式组
+  /// 练满后继续记的组（kind=working 且落库前正式组数已 ≥ workingSets）
+  /// 标 1，训练后历史页/总结页才看得出哪组是加练（修复①②之后的第三块）。
+  /// 纯加列 DEFAULT 0 平滑兼容老行；老数据不回溯标注（加练身份落库时
+  /// 已丢失的旧记录维持原样）。
+  @visibleForTesting
+  Future<void> upgradeV11to12(Database db) async {
+    await db.execute(
+        'ALTER TABLE sets ADD COLUMN is_extra INTEGER NOT NULL DEFAULT 0');
   }
 
   /// v6：计划模板目标参数快照进训练记录（调研条目 14）。
@@ -296,7 +311,8 @@ class Db {
         done_at INTEGER NOT NULL,
         note TEXT NOT NULL DEFAULT '',
         target_weight_kg REAL,
-        target_reps INTEGER
+        target_reps INTEGER,
+        is_extra INTEGER NOT NULL DEFAULT 0
       )''');
     await db.execute(
         'CREATE INDEX idx_sets_se ON sets(session_exercise_id)');
