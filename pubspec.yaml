@@ -1,7 +1,7 @@
 name: baoji_timer
 description: "薄肌训练计时器 — 防分心的力量训练计时与记录工具（本地优先，飞书日历联动）"
 publish_to: "none"
-version: 1.3.15+4
+version: 1.3.16+4
 
 environment:
   sdk: ^3.13.4

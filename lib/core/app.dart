@@ -208,6 +208,9 @@ class AppContainer {
       await notify.cancelRestEnd();
     } else {
       await notify.scheduleRestEnd(endAtMs);
+      // 剩 30 秒预警（2026-10-11）：人刷别的 App 时提前拉回准备下一组；
+      // 剩余不足 30 秒时内部静默跳过（只剩结束提醒一条）。
+      await notify.scheduleRestPre(endAtMs);
     }
   }
 
