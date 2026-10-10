@@ -8,7 +8,8 @@ import 'rest_cue.dart';
 import 'session_controller.dart' show TrainingCard;
 
 /// 通知与通知栏训练卡（调研条目 1/2/3/4）：
-/// - 休息结束精确提醒（系统闹钟，锁屏/杀进程也响）——休息态原有能力保留；
+/// - 休息结束精确提醒（系统闹钟，锁屏/杀进程也响）+ 剩 30 秒 heads-up
+///   预警（2026-10-11，人刷别的 App 时提前拉回）——休息态能力保留；
 /// - 训练卡常驻通知（原生前台服务承载，当前动作/本组目标/剩余时间+进度，
 ///   休息态带暂停/±10 秒按钮，点通知回训练页）；
 /// - 双通道互斥：人在屏上时休息到点只走屏内提示（由 App 容器按生命周期
@@ -172,13 +173,59 @@ class NotifyService {
     if (!_ready) return;
     await _plugin.cancel(1);
     await _plugin.cancel(2);
+    await _plugin.cancel(3);
   }
 
-  /// 只取消休息结束的精确提醒（id=2）。
+  /// 只取消休息结束提醒族（id=2 结束提醒 + id=3 剩 30 秒预警）。
   /// 休息暂停/提前跳过/人在屏上时调用：到点不应再由系统提醒。
   Future<void> cancelRestEnd() async {
     if (!_ready) return;
     await _plugin.cancel(2);
+    await _plugin.cancel(3);
+  }
+
+  // ---------- 剩 30 秒预警（2026-10-11） ----------
+
+  /// 剩 30 秒预警的提前量。
+  static const int restPreAlertMs = 30000;
+
+  /// 休息还差 [restPreAlertMs] 到点时的一次性 heads-up 预警
+  /// （rest_timer 通道：声音+震动+勿扰穿透）——人在刷别的 App 时
+  /// 提前拉回准备下一组；与结束提醒同 id 族，暂停/跳过/回前台时
+  /// 由 cancelRestEnd 一并清掉。
+  ///
+  /// 剩余不足约 30.5 秒时静默跳过：预警时点已过或贴脸，预约过去
+  /// 时间插件会直接抛异常（validateDateIsInTheFuture）；500ms 缓冲
+  /// 吸收闹钟派发延迟，避免"还剩 30 秒"弹在还剩 29 秒。
+  Future<void> scheduleRestPre(int endAtMs) async {
+    if (!_ready) return;
+    final fireAtMs = endAtMs - restPreAlertMs;
+    if (fireAtMs - DateTime.now().millisecondsSinceEpoch < 500) return;
+    await _plugin.zonedSchedule(
+      3,
+      tx('还剩 30 秒', en: '30 seconds left'),
+      tx(
+        '休息快结束了，放下手机准备下一组！',
+        en: 'Rest is almost over — get ready for the next set!',
+      ),
+      tz.TZDateTime.from(
+        DateTime.fromMillisecondsSinceEpoch(fireAtMs),
+        tz.local,
+      ),
+      NotificationDetails(
+        android: AndroidNotificationDetails(
+          _restChannel.id,
+          _restChannel.name,
+          channelDescription: _restChannel.description,
+          importance: Importance.max,
+          priority: Priority.max,
+          fullScreenIntent: false,
+        ),
+      ),
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      uiLocalNotificationDateInterpretation:
+          UILocalNotificationDateInterpretation.absoluteTime,
+    );
   }
 
   // ---------- 空闲提醒（条目 4） ----------

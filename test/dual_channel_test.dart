@@ -191,4 +191,49 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 400));
     expect(c.session.phase, WorkoutPhase.lifting);
   });
+
+  /// zonedSchedule 预约的通知 id 列表（Android 平台实现发 Map，见
+  /// platform_flutter_local_notifications.dart:211）。
+  List<int> scheduledIds() => [
+        for (final call in notifCalls)
+          if (call.method == 'zonedSchedule') (call.arguments as Map)['id'] as int,
+      ];
+
+  /// cancel 携带的通知 id 列表。
+  List<int> cancelledIds() => [
+        for (final call in notifCalls)
+          if (call.method == 'cancel') (call.arguments as Map)['id'] as int,
+      ];
+
+  test('D5 离开前台：除休息结束提醒外，同时预约「剩 30 秒」预警', () async {
+    final day = await makePlanDay('推日');
+    final e = await addPlanEx(day, '卧推', 0, restSec: 120);
+    await enterRest(day, e);
+
+    c.onAppLifecycleChanged(AppLifecycleState.paused);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(scheduledIds(), containsAll([2, 3]),
+        reason: '后台休息必须双提醒：剩 30 秒预警（id=3）把刷别的 App 的人'
+            '提前拉回，结束提醒（id=2）兜底到点');
+
+    // 回前台：预警与结束提醒一并取消（屏内提示接管，不残留系统闹钟）
+    notifCalls.clear();
+    c.onAppLifecycleChanged(AppLifecycleState.resumed);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(cancelledIds(), containsAll([2, 3]),
+        reason: '回前台后休息提醒族（结束+预警）都要清，否则到点双响');
+  });
+
+  test('D6 短休息（< 30 秒）：离开前台只挂结束提醒，不预约预警', () async {
+    final day = await makePlanDay('推日');
+    final e = await addPlanEx(day, '卧推', 0, restSec: 20);
+    await enterRest(day, e);
+
+    c.onAppLifecycleChanged(AppLifecycleState.paused);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(scheduledIds(), contains(2), reason: '结束提醒照挂');
+    expect(scheduledIds(), isNot(contains(3)),
+        reason: '预警时点已过：预约过去时间插件直接抛异常，'
+            '守卫必须静默跳过（20 秒休息只剩一条结束提醒）');
+  });
 }
