@@ -49,9 +49,11 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        // rest_timer 通道要支持勿扰穿透（Flexify 做法，条目 2）：通道的 bypassDnd
+        // 休息提醒通道要支持勿扰穿透（Flexify 做法，条目 2）：通道的 bypassDnd
         // 只在创建时生效（已存在通道不可改），所以必须在 flutter_local_notifications
         // 的 Dart init 之前由原生先建好；插件随后同 id 创建时只更新名称/描述。
+        // id 用 rest_timer_v2：通道属性冻结在首次创建，换 ID 让升级安装拿到
+        // 后补的锁屏可见性（见 ensureRestChannel 注释）。
         ensureRestChannel()
         // 训练卡前台服务（条目 1/3）：Dart 推送内容，原生启停；通知栏按钮回传 Dart。
         trainingChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, trainingChannelName)
@@ -173,11 +175,16 @@ class MainActivity : FlutterActivity() {
     private fun nm(): NotificationManager =
         getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-    /** rest_timer 通道：重要性高 + 勿扰穿透（bypassDnd 只在首次创建时生效）。 */
+    /**
+     * rest_timer 通道：重要性高 + 勿扰穿透（bypassDnd 只在首次创建时生效）。
+     * v2（2026-10-11）：通道属性冻结在首次创建——老 ID 在升级安装上拿不到
+     * 后补的 VISIBILITY_PUBLIC（2026-10-04），换新 ID 让所有用户拿全属性；
+     * 旧通道留在系统设置里无害。
+     */
     private fun ensureRestChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val ch = android.app.NotificationChannel(
-            "rest_timer", "组间休息提醒", NotificationManager.IMPORTANCE_HIGH
+            "rest_timer_v2", "组间休息提醒", NotificationManager.IMPORTANCE_HIGH
         )
         ch.description = "组间休息结束的提醒（声音+震动，勿扰下穿透）"
         ch.enableVibration(true)

@@ -758,7 +758,7 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> _onRestFinished() async {
-    // 屏内提示只在前台做：人在后台时系统精确提醒（rest_timer 通道）已带
+    // 屏内提示只在前台做：人在后台时系统精确提醒（休息提醒通道）已带
     // 声音+震动，这里再来一遍就是双重打扰。
     if (inForeground) {
       await _vibrate();

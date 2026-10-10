@@ -37,8 +37,10 @@ class NotifyService {
   /// 通知栏按钮动作回调（App 容器接到 SessionController）
   void Function(String action)? onNotifAction;
 
+  // v2（2026-10-11）：通道属性冻结在首次创建，老 ID 在升级安装上拿不到
+  // 后补的锁屏可见性；与原生 ensureRestChannel 的 ID 必须保持一致。
   static final _restChannel = AndroidNotificationChannel(
-    'rest_timer',
+    'rest_timer_v2',
     tx('组间休息提醒', en: 'Rest timer'),
     description: tx(
       '组间休息结束的提醒（声音+震动，勿扰下穿透）',
@@ -81,7 +83,7 @@ class NotifyService {
         >()
         ?.createNotificationChannel(_idleChannel);
     _ready = true;
-    // rest_timer 的勿扰穿透由原生侧在通道首次创建时设置（bypassDnd 只在
+    // rest_timer_v2 的勿扰穿透由原生侧在通道首次创建时设置（bypassDnd 只在
     // 创建时生效），这里无需也不应重复设置。
   }
 
@@ -190,7 +192,7 @@ class NotifyService {
   static const int restPreAlertMs = 30000;
 
   /// 休息还差 [restPreAlertMs] 到点时的一次性 heads-up 预警
-  /// （rest_timer 通道：声音+震动+勿扰穿透）——人在刷别的 App 时
+  /// （休息提醒通道：声音+震动+勿扰穿透）——人在刷别的 App 时
   /// 提前拉回准备下一组；与结束提醒同 id 族，暂停/跳过/回前台时
   /// 由 cancelRestEnd 一并清掉。
   ///
