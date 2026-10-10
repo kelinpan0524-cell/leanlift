@@ -28,7 +28,11 @@ class TrainingForegroundService : Service() {
 
     companion object {
         private const val TAG = "TrainingFgs"
-        const val CHANNEL_ID = "training_ongoing"
+        // v2（2026-10-11）：Android 8+ 通道属性只在首次创建时生效，老 ID
+        // "training_ongoing"（IMPORTANCE_LOW、无锁屏可见性）在升级安装上
+        // 冻结，2026-10-07 加的 VISIBILITY_PUBLIC 对老用户静默无效。换新 ID
+        // 让所有用户拿到新属性（DEFAULT+PUBLIC）；旧通道留在系统设置里无害。
+        const val CHANNEL_ID = "training_ongoing_v2"
         const val NOTIF_ID = 10
 
         const val ACTION_START = "com.arono.baoji_timer.training.START"
@@ -122,15 +126,18 @@ class TrainingForegroundService : Service() {
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // DEFAULT（2026-10-11）：LOW 会被 ROM 归入"静默"桶，ColorOS 等锁屏
+        // 对静默通知更保守（可整档不显示）。无声由下面 setSound(null)+
+        // enableVibration(false)+setOnlyAlertOnce 保证，重要性升档不出声。
         val ch = NotificationChannel(
-            CHANNEL_ID, "训练进行中", NotificationManager.IMPORTANCE_LOW
+            CHANNEL_ID, "训练进行中", NotificationManager.IMPORTANCE_DEFAULT
         )
-        ch.description = "训练中的常驻卡片（无声，不提醒）"
+        ch.description = "训练中的常驻卡片（无声常驻，不响铃）"
         ch.setSound(null, null)
         ch.enableVibration(false)
         ch.setShowBadge(false)
         // 锁屏全内容可见（2026-10-04）：用户开了"锁屏隐藏敏感内容"时，
-        // 默认 PRIVATE 通道在锁屏只显示"内容已隐藏"——计时卡不是敏感信息，
+        // PRIVATE 通道在锁屏只显示"内容已隐藏"——计时卡不是敏感信息，
         // 显式 PUBLIC 保证锁屏上完整可见。
         ch.lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         nm.createNotificationChannel(ch)
@@ -161,7 +168,8 @@ class TrainingForegroundService : Service() {
             .setContentIntent(contentPi)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setSilent(true)
+            // 不设 setSilent：静默标记会让 ROM 把卡归入"静默"组，锁屏
+            // 展示更保守；无声已由通道 setSound(null) + 无振动保证。
             .setCategory(NotificationCompat.CATEGORY_WORKOUT)
             .setShowWhen(true)
         when {
