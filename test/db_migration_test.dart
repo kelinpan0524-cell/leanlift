@@ -606,4 +606,177 @@ void main() {
     expect(flat.first.isExtra, isFalse, reason: '缺键回退默认 false');
     await db.close();
   });
+
+  test('v14 老库升级：logging/load_type/duration_sec 出现、老行回默认', () async {
+    final db = await databaseFactory.openDatabase(dbPath);
+    // 模拟 v13 库：建全套新 schema 后，把三张表换回没有 v14 列的旧结构
+    await Db.instance.createSchema(db);
+    await db.execute('PRAGMA foreign_keys = OFF');
+    await db.execute('DROP TABLE sets');
+    await db.execute('DROP TABLE session_exercises');
+    await db.execute('DROP TABLE plan_exercises');
+    await db.execute('''
+      CREATE TABLE plan_exercises(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        day_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        order_idx INTEGER NOT NULL DEFAULT 0,
+        sets INTEGER NOT NULL DEFAULT 3,
+        reps_min INTEGER NOT NULL DEFAULT 5,
+        reps_max INTEGER NOT NULL DEFAULT 8,
+        rest_sec INTEGER NOT NULL DEFAULT 120,
+        kind TEXT NOT NULL DEFAULT 'assistance',
+        rule TEXT NOT NULL DEFAULT '{}',
+        superset_tag TEXT NOT NULL DEFAULT ''
+      )''');
+    await db.execute('''
+      CREATE TABLE session_exercises(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        order_idx INTEGER NOT NULL DEFAULT 0,
+        kind TEXT NOT NULL DEFAULT 'assistance',
+        rest_sec INTEGER NOT NULL DEFAULT 0,
+        rule TEXT NOT NULL DEFAULT '{}',
+        target_sets INTEGER NOT NULL DEFAULT 0,
+        target_reps_min INTEGER NOT NULL DEFAULT 0,
+        target_reps_max INTEGER NOT NULL DEFAULT 0,
+        trace TEXT NOT NULL DEFAULT '',
+        superset_tag TEXT NOT NULL DEFAULT ''
+      )''');
+    await db.execute('''
+      CREATE TABLE sets(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_exercise_id INTEGER NOT NULL,
+        weight_kg REAL NOT NULL,
+        reps INTEGER NOT NULL,
+        rir INTEGER NOT NULL DEFAULT 2,
+        kind TEXT NOT NULL DEFAULT 'working',
+        done_at INTEGER NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        target_weight_kg REAL,
+        target_reps INTEGER,
+        is_extra INTEGER NOT NULL DEFAULT 0
+      )''');
+    final peId = await db.insert('plan_exercises',
+        {'day_id': 1, 'name': '平板支撑', 'order_idx': 0, 'rule': '{}'});
+    final seId = await db.insert('session_exercises',
+        {'session_id': 1, 'name': '平板支撑', 'order_idx': 0, 'rule': '{}'});
+    await db.insert('sets', {
+      'session_exercise_id': seId,
+      'weight_kg': 0.0,
+      'reps': 45,
+      'rir': 2,
+      'kind': 'working',
+      'done_at': 1000,
+    });
+    await db.execute('PRAGMA foreign_keys = ON');
+
+    // 生产路径同款迁移（v12/v13 直升 v14 均走本函数）
+    await Db.instance.upgradeV13to14(db);
+
+    for (final entry in {
+      'plan_exercises': ['logging', 'load_type'],
+      'session_exercises': ['logging', 'load_type'],
+      'sets': ['duration_sec'],
+    }.entries) {
+      final cols = [
+        for (final c in await db.rawQuery('PRAGMA table_info(${entry.key})'))
+          c['name'] as String
+      ];
+      expect(cols, containsAll(entry.value), reason: entry.key);
+    }
+
+    // 老行回默认：按次数 + 常规负重；duration_sec 可空回 null（老行为不变）
+    final plan = PlanExercise.fromMap(
+        (await db.query('plan_exercises', where: 'id = ?', whereArgs: [peId]))
+            .first);
+    expect(plan.logging, LoggingMode.reps);
+    expect(plan.loadType, LoadMode.weighted);
+    final se = SessionExercise.fromMap((await db
+            .query('session_exercises', where: 'id = ?', whereArgs: [seId]))
+        .first);
+    expect(se.logging, LoggingMode.reps);
+    expect(se.loadType, LoadMode.weighted);
+    expect(SetEntry.fromMap((await db.query('sets')).first).durationSec, isNull);
+
+    // 升级后可正常写入带新值的行并读回
+    await db.insert('plan_exercises', {
+      'day_id': 1,
+      'name': '箭步蹲',
+      'order_idx': 1,
+      'rule': '{}',
+      'logging': LoggingMode.repsPerSide,
+      'load_type': LoadMode.bodyweight,
+    });
+    final newPlan = PlanExercise.fromMap((await db.query('plan_exercises',
+            where: 'logging = ?', whereArgs: [LoggingMode.repsPerSide]))
+        .first);
+    expect(newPlan.logging, LoggingMode.repsPerSide);
+    expect(newPlan.loadType, LoadMode.bodyweight);
+    await db.close();
+  });
+
+  test('全新库 createSchema 含 v14 列', () async {
+    final db = await databaseFactory.openDatabase(dbPath);
+    await Db.instance.createSchema(db);
+    Future<List<String>> colsOf(String t) async => [
+          for (final c in await db.rawQuery('PRAGMA table_info($t)'))
+            c['name'] as String
+        ];
+    expect(await colsOf('plan_exercises'),
+        containsAll(['logging', 'load_type']));
+    expect(await colsOf('session_exercises'),
+        containsAll(['logging', 'load_type']));
+    expect(await colsOf('sets'), contains('duration_sec'));
+    await db.close();
+  });
+
+  test('restoreAll 兼容老备份（v14 键缺失回默认，不丢行）', () async {
+    final db = await databaseFactory.openDatabase(dbPath);
+    await Db.instance.createSchema(db);
+    final wrapper = Db.forTesting(db);
+    await wrapper.restoreAll({
+      'sessions': [
+        {
+          'id': 3,
+          'date': '2026-09-01',
+          'plan_day_title': '核心日',
+          'started_at': 1000,
+          'ended_at': 2000,
+          'status': 'done',
+        }
+      ],
+      'session_exercises': [
+        {
+          'id': 7,
+          'session_id': 3,
+          'name': '平板支撑',
+          'order_idx': 0,
+          'kind': 'assistance',
+          'rule': '{"reps_min":30,"reps_max":60}',
+          'trace': '',
+          // 无 logging / load_type 键（v13 及更早版本导出的备份行）
+        }
+      ],
+      'sets': [
+        {
+          'id': 9,
+          'session_exercise_id': 7,
+          'weight_kg': 0.0,
+          'reps': 45,
+          'rir': 2,
+          'kind': 'working',
+          'done_at': 1500,
+          // 无 duration_sec 键
+        }
+      ],
+    });
+    final ses = await wrapper.sessionExercises(3);
+    expect(ses.single.logging, LoggingMode.reps, reason: '缺键回默认 reps');
+    expect(ses.single.loadType, LoadMode.weighted, reason: '缺键回默认 weighted');
+    final flat = (await wrapper.setsOfSession(3)).values.expand((l) => l);
+    expect(flat.single.durationSec, isNull, reason: '缺键回默认 null');
+    await db.close();
+  });
 }

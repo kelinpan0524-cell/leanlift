@@ -52,8 +52,9 @@ class Db {
     final future = dir.then((d) => openDatabase(
           p.join(d, 'baoji_timer.db'),
           // v9=超级组（superset_tag），v10=全计划顺延（plans.shift_*），
-          // v11=动作库 gear，v12=加练标注（sets.is_extra）。
-          version: 12,
+          // v11=动作库 gear，v12=加练标注（sets.is_extra），
+          // v14=动作记录形态（logging/load_type/duration_sec）。
+          version: 14,
           onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
           onCreate: (db, v) => createSchema(db),
           onUpgrade: _onUpgrade,
@@ -137,6 +138,9 @@ class Db {
     if (oldV < 12) {
       await upgradeV11to12(db);
     }
+    if (oldV < 14) {
+      await upgradeV13to14(db);
+    }
   }
 
   /// v10：plans 加全计划顺延字段（shift_days / shift_from）。
@@ -166,6 +170,26 @@ class Db {
   Future<void> upgradeV11to12(Database db) async {
     await db.execute(
         'ALTER TABLE sets ADD COLUMN is_extra INTEGER NOT NULL DEFAULT 0');
+  }
+
+  /// v14：动作记录形态（2026-10-17）——动作可按时间记录（平板支撑等，
+  /// 链状态「次数」字段承载秒数）、可标单侧动作（目标取偶）、可标自重
+  /// 负荷（渐进只走次数轴）。plan_exercises / session_exercises 各加
+  /// logging（'reps'|'time'|'reps_per_side'）与 load_type
+  /// （'weighted'|'bodyweight'），sets 加 duration_sec（计时组实际保持
+  /// 秒数，可空 = 老记录/非计时）。三列全带默认值，老库（v12/v13 直升
+  /// v14 均走本函数）与老备份缺键平滑回默认，行为与升级前完全一致。
+  @visibleForTesting
+  Future<void> upgradeV13to14(Database db) async {
+    await db.execute(
+        "ALTER TABLE plan_exercises ADD COLUMN logging TEXT NOT NULL DEFAULT 'reps'");
+    await db.execute(
+        "ALTER TABLE plan_exercises ADD COLUMN load_type TEXT NOT NULL DEFAULT 'weighted'");
+    await db.execute(
+        "ALTER TABLE session_exercises ADD COLUMN logging TEXT NOT NULL DEFAULT 'reps'");
+    await db.execute(
+        "ALTER TABLE session_exercises ADD COLUMN load_type TEXT NOT NULL DEFAULT 'weighted'");
+    await db.execute('ALTER TABLE sets ADD COLUMN duration_sec INTEGER');
   }
 
   /// v6：计划模板目标参数快照进训练记录（调研条目 14）。
@@ -259,6 +283,8 @@ class Db {
         rest_sec INTEGER NOT NULL DEFAULT 120,
         kind TEXT NOT NULL DEFAULT 'assistance',
         rule TEXT NOT NULL DEFAULT '{}',
+        logging TEXT NOT NULL DEFAULT 'reps',
+        load_type TEXT NOT NULL DEFAULT 'weighted',
         superset_tag TEXT NOT NULL DEFAULT ''
       )''');
     await db.execute('''
@@ -297,6 +323,8 @@ class Db {
         target_reps_min INTEGER NOT NULL DEFAULT 0,
         target_reps_max INTEGER NOT NULL DEFAULT 0,
         trace TEXT NOT NULL DEFAULT '',
+        logging TEXT NOT NULL DEFAULT 'reps',
+        load_type TEXT NOT NULL DEFAULT 'weighted',
         superset_tag TEXT NOT NULL DEFAULT ''
       )''');
     await db.execute('''
@@ -312,7 +340,8 @@ class Db {
         note TEXT NOT NULL DEFAULT '',
         target_weight_kg REAL,
         target_reps INTEGER,
-        is_extra INTEGER NOT NULL DEFAULT 0
+        is_extra INTEGER NOT NULL DEFAULT 0,
+        duration_sec INTEGER
       )''');
     await db.execute(
         'CREATE INDEX idx_sets_se ON sets(session_exercise_id)');
