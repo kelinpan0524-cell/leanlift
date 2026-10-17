@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../l10n/lang.dart';
+import '../services/heart_rate_service.dart';
 import '../services/settings.dart';
+import 'heart_rate_page.dart';
+import 'local_bridge_page.dart';
 import 'settings_subpages.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
@@ -45,6 +48,24 @@ class SettingsPage extends StatelessWidget {
               MaterialPageRoute(builder: (_) => const FocusSubPage()),
             ),
           ),
+          // 心率设备（2026-10-17）：BLE 标准心率服务直连，记忆设备
+          // 训练开始自动重连；value 展示连接态（绿 = 已连接）。
+          ListenableBuilder(
+            listenable: c.hr,
+            builder: (context, _) => _SettingsRow(
+              icon: Icons.monitor_heart_outlined,
+              iconColor: AppTheme.danger,
+              title: tx('心率设备', en: 'Heart Rate Device'),
+              subtitle: tx('蓝牙手环实时心率 · 休息时显示 · 练后曲线与解析',
+                  en: 'Live HR over BLE · rest display · curve & AI analysis'),
+              value: c.hr.savedName ?? tx('未设置', en: 'Not set'),
+              valueColor:
+                  c.hr.link == HrLink.connected ? AppTheme.primary : null,
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const HeartRatePage()),
+              ),
+            ),
+          ),
         ]),
         const SizedBox(height: 20),
         _group(tx('连接与智能', en: 'Connections'), [
@@ -60,6 +81,23 @@ class SettingsPage extends StatelessWidget {
             valueColor: s.aiConfigured ? AppTheme.primary : AppTheme.warn,
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const AiSettingsPage()),
+            ),
+          ),
+          ListenableBuilder(
+            listenable: app(context).bridge,
+            builder: (context, _) => _SettingsRow(
+              icon: Icons.lan_outlined,
+              title: tx('局域网连接', en: 'LAN Connection'),
+              subtitle: tx('手机当只读数据源，电脑上的 AI 通过 MCP 读取',
+                  en: 'Phone as a read-only source for an AI on your computer'),
+              value: app(context).bridge.running
+                  ? tx('已开启', en: 'On')
+                  : tx('未开启', en: 'Off'),
+              valueColor:
+                  app(context).bridge.running ? AppTheme.primary : AppTheme.textDim,
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const LocalBridgePage()),
+              ),
             ),
           ),
           ListenableBuilder(

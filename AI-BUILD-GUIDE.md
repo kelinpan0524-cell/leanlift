@@ -83,6 +83,7 @@ flutter build apk --release
 - [ ] 完成一组有震动 + 视觉确认
 - [ ] 组间倒计时锁屏后照常走，到点有通知
 - [ ] 首次会依次申请：通知权限、勿扰权限、精确闹钟、忽略电池优化——全部是训练功能所需，逐项允许
+- [ ] 设置 → 训练 → 心率设备：扫描/连接手环需要「附近的设备」权限（Android 12+）或定位权限（11 及以下，仅用于扫描），首次使用时才申请
 
 ### 调试签名说明
 
@@ -203,6 +204,36 @@ iOS 首次启动会弹通知授权，属正常流程。`AndroidScheduleMode.exac
 
 `wakelock_plus` 跨端，开箱即用。
 
+#### (5) `lib/services/heart_rate_service.dart` — BLE 心率，iOS 补两个小改动
+
+原理：走标准蓝牙心率 profile（0x180D/0x2A37，免配对），`flutter_blue_plus`
+跨端。服务里 `_ensureReady()` 与 `connectSaved()` 有 `Platform.isAndroid`
+闸——iOS 上心率设备页会提示"暂不支持"，不会崩。
+
+iOS 适配做法：
+
+1. `ios/Runner/Info.plist` 加 `NSBluetoothAlwaysUsageDescription`
+   （文案说明用途，如"连接你的心率手环以记录训练心率"），否则一点扫描就闪退；
+2. 去掉上述两处平台闸。其余（扫描/订阅通知/解析/落库）Flutter 层跨端直接能用。
+
+#### (6) `lib/services/local_bridge.dart` — 局域网只读桥，iOS 需声明本地网络用途
+
+原理：手机在自家 Wi-Fi 内开一个只读 HTTP 服务，电脑上的 AI 通过
+`tools/mcp-bridge/`（Node，无依赖）经 MCP 读训练数据。默认关闭，用户在
+设置 → 连接与智能 → 局域网连接 里手动开启。
+
+iOS 适配做法：
+
+1. `ios/Runner/Info.plist` 加 `NSLocalNetworkUsageDescription`
+   （文案说明用途，如"让你电脑上的 AI 助手在同一 Wi-Fi 下读取训练记录"）。
+   iOS 14+ 首次开启本功能会弹「本地网络」授权；**不授权则电脑连不上手机**，
+   这不是 bug，去 设置 → 隐私与安全性 → 本地网络 里打开即可；
+2. 其余（监听、配对码换令牌、空闲自动关）Flutter 层跨端免改。
+
+Android 侧无需额外权限（`INTERNET` 已声明）。**但要注意**：Android 17
+（API 37）起局域网访问改为运行时权限（`ACCESS_LOCAL_NETWORK`），届时若把
+`targetSdk` 提到 37，需要补声明与申请，否则该功能在 Android 上会被系统拦下。
+
 ### D4. 验收清单（iOS）
 
 - [ ] 编译通过，真机安装成功
@@ -210,6 +241,9 @@ iOS 首次启动会弹通知授权，属正常流程。`AndroidScheduleMode.exac
 - [ ] 组间倒计时：切后台/锁屏后到点，本地通知正常弹出
 - [ ] 设置页不再出现「应用更新」和 Android 专属的权限引导
 - [ ] 飞书日历、AI 计划拆解（自配 Key）正常——这两个是纯 HTTP，跨端免改
+- [ ] 局域网连接（可选）：开启后手机显示地址 + 6 位配对码，电脑上
+      `node tools/mcp-bridge/baoji-mcp.mjs pair --host <手机IP> --port <端口> --code <码>`
+      能配对成功，配合 `serve` 接进 AI 客户端后能读到训练数据
 
 ### D5. 已知限制（必须告知 iOS 用户）
 

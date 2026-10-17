@@ -4,6 +4,7 @@ import '../engine/engine.dart';
 import '../engine/superset.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
+import 'heart_rate_page.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
 
@@ -310,6 +311,17 @@ class _HistoryPageState extends State<HistoryPage> {
     final map = await c.db.setsOfSession(s.id!);
     final widgets =
         buildSessionDetailRows(s, ses, map, bodyWeightKg: c.settings.bodyWeightKg);
+    // 心率曲线（2026-10-17）：该场训练连过心率设备才有采样，
+    // 附在明细行末尾（与总结页同一条曲线块，无 AI 按钮）。
+    final hr = await c.db.hrSamplesOfSession(s.id!);
+    if (hr.length >= 2) {
+      widgets.add(
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: HrChartBlock(points: hr),
+        ),
+      );
+    }
     return widgets;
   }
 }

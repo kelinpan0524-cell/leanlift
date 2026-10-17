@@ -16,6 +16,16 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <!-- 应用内自更新：下载 APK 后唤起系统安装器（Android 8+ 需用户授权一次） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- BLE 心率直连（标准 Heart Rate profile 0x180D/0x2A37，免配对）：
+         Android 12+ 走 BLUETOOTH_SCAN/CONNECT，11 及以下走旧 BLUETOOTH* + 定位 -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 
     <!-- 密钥（AI key/飞书凭证）在本地 prefs，禁止云备份/迁移带出 -->
     <application

@@ -4,6 +4,7 @@ import 'logging_modes.dart';
 import 'volume.dart';
 
 export '../models/models.dart';
+export 'hr_load.dart';
 export 'local_plan.dart';
 export 'logging_modes.dart';
 export 'muscle_insights.dart';

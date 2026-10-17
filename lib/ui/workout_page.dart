@@ -11,6 +11,7 @@ import '../presets/exercise_library.dart' show libraryMetaByName;
 import '../services/session_controller.dart';
 import 'exercise_detail_sheet.dart';
 import 'exercise_picker_page.dart';
+import 'heart_rate_page.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
 
@@ -2703,6 +2704,13 @@ class _RestViewState extends State<_RestView> {
                           );
                         },
                       ),
+                      // 简约心率小标（2026-10-17 Arono 拍板）：只进休息页、
+                      // 已连接才出现，♥ + bpm 一行小字不抢主视线——
+                      // 三要素红线不破；点按进设备管理页。
+                      if (showBrief) ...[
+                        const SizedBox(height: 10),
+                        const HrRestChip(),
+                      ],
                       if (showBrief) ...[
                         const SizedBox(height: 12),
                         // 轻量战报（调研条目 9，Fast N Fitness 思路）：
@@ -3308,6 +3316,14 @@ class _SummaryPage extends StatelessWidget {
                         ],
                       ),
                     ),
+                    const SizedBox(height: 16),
+                    // 心率曲线（2026-10-17）：会话期间连过心率设备才有
+                    // 采样，没数据整卡不出现；配置了 AI 时附「AI 解析心率」。
+                    if (s.session?.id != null)
+                      HrSessionCard(
+                        samplesFuture:
+                            app(context).db.hrSamplesOfSession(s.session!.id!),
+                      ),
                     const SizedBox(height: 16),
                     SectionCard(
                       title: tx('渐进建议（下次训练）', en: 'Progression (Next Workout)'),

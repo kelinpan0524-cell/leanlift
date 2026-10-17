@@ -10,7 +10,9 @@ import '../services/ai_service.dart';
 import '../services/auto_shift.dart';
 import '../services/export_service.dart';
 import '../services/focus_service.dart';
+import '../services/heart_rate_service.dart';
 import '../services/lark_service.dart';
+import '../services/local_bridge.dart';
 import '../services/notify_service.dart';
 import '../services/plan_repository.dart';
 import '../services/session_controller.dart';
@@ -19,7 +21,7 @@ import '../services/training_reminder.dart';
 
 /// 全局容器：App 启动时构造一次，经 AppScope 注入整棵 Widget 树。
 class AppContainer {
-  AppContainer({required this.prefs, Db? db, AiService? aiOverride})
+  AppContainer({required this.prefs, Db? db, AiService? aiOverride, LocalBridgeService? bridgeOverride})
     : settings = Settings(prefs),
       db = db ?? Db.instance,
       notify = NotifyService() {
@@ -30,6 +32,16 @@ class AppContainer {
     ai = aiOverride ?? AiService(settings);
     lark = LarkService(settings, this.db);
     export = ExportService(this.db);
+    // 局域网只读桥（方案 B）：构造即挂容器，但**不自动启动**——
+    // 状态不落盘，每次都要用户在设置页主动开，空闲超时自动关。
+    // [bridgeOverride] 仅测试注入（自定义端口/IP，免依赖跑测机器的网卡）。
+    bridge = bridgeOverride ??
+        LocalBridgeService(
+          db: this.db,
+          planRepo: planRepo,
+          bodyWeightKg: () => settings.bodyWeightKg,
+        );
+    hr = HeartRateService(prefs);
 
     // 训练开始/结束 → 专注模式动作
     session.onEnterFocus = _onEnterFocus;
@@ -37,11 +49,27 @@ class AppContainer {
     // 休息时间源 → 精确闹钟（开始/加时/继续重挂，暂停取消，恢复会话补挂）
     session.onRestAlarmChanged = _onRestAlarmChanged;
     // 训练卡 → 前台服务常驻通知（会话进行中常驻，结束自动停）
+    // + 心率直连窗口（2026-10-17）：卡出现 = 会话活跃，自动重连已存
+    // 设备并开始采样；卡消失 = 会话关闭，采样落库 + 断连省电。
+    int? hrSessionId;
     session.onCardChanged = (card) {
       if (card.active) {
         unawaited(notify.showTrainingCard(card));
+        if (hrSessionId == null) {
+          hrSessionId = session.session?.id;
+          hr.startRecording();
+          unawaited(hr.connectSaved());
+        }
       } else {
         unawaited(notify.stopTrainingCard());
+        final sid = hrSessionId;
+        if (sid != null) {
+          hrSessionId = null;
+          hr.stopRecording();
+          // quit 会话也落库（历史不展示但数据不丢）；失败静默不阻塞收工
+          unawaited(hr.flushSamples(this.db, sid));
+          hr.disconnect();
+        }
       }
     };
     // 通知栏遥控按钮（暂停/继续/±10 秒）→ 会话状态机
@@ -94,8 +122,10 @@ class AppContainer {
   late final AiService ai;
   late final LarkService lark;
   late final ExportService export;
+  late final LocalBridgeService bridge;
   late final TrainingReminderService trainReminders;
   late final AutoShiftService autoShift;
+  late final HeartRateService hr;
 
   /// 本次启动自动顺延掉的训练日（首页读过一次即清空；空 = 无提示）。
   List<DateTime> pendingAutoShiftDates = const [];
@@ -215,9 +245,11 @@ class AppContainer {
   }
 
   void dispose() {
+    hr.dispose();
     session.dispose();
     settings.dispose();
     planRepo.dispose();
+    bridge.dispose();
   }
 }
 

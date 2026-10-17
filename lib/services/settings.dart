@@ -85,6 +85,11 @@ class Settings extends ChangeNotifier {
   // 先弹底部面板顺手记一条（预填上次体重）。默认开；跳过即直接开练。
   bool askWeightOnStart = true;
 
+  // 心率循环负荷参数（2026-10-17：Edwards TRIMP 估算用）
+  int hrAge = 0; // 0 = 未填（最大心率回落 190 兜底）
+  int hrRest = 60; // 静息心率
+  int hrMaxOverride = 0; // 0 = 自动（220-年龄）
+
   // 应用更新（GitHub 私仓 Releases）
   String ghUpdateToken = ''; // 只读令牌，与 AI Key 同一本地存放策略
   AppRelease? pendingUpdate; // 运行时状态（发现的新版），不落盘
@@ -138,6 +143,9 @@ class Settings extends ChangeNotifier {
     lockScreenKeepOn = _prefs.getBool('${_kprefix}lockScreenKeepOn') ?? false;
     wakelockEnabled = _prefs.getBool('${_kprefix}wakelockOn') ?? true;
     askWeightOnStart = _prefs.getBool('${_kprefix}askWeightOnStart') ?? true;
+    hrAge = _prefs.getInt('${_kprefix}hrAge') ?? 0;
+    hrRest = _prefs.getInt('${_kprefix}hrRest') ?? 60;
+    hrMaxOverride = _prefs.getInt('${_kprefix}hrMax') ?? 0;
     ghUpdateToken = _prefs.getString('${_kprefix}ghToken') ?? '';
     larkAccessToken = _prefs.getString('${_kprefix}larkAccess') ?? '';
     larkTokenExpiry = _prefs.getInt('${_kprefix}larkExpiry') ?? 0;
@@ -199,6 +207,9 @@ class Settings extends ChangeNotifier {
     await _prefs.setBool('${_kprefix}lockScreenKeepOn', lockScreenKeepOn);
     await _prefs.setBool('${_kprefix}wakelockOn', wakelockEnabled);
     await _prefs.setBool('${_kprefix}askWeightOnStart', askWeightOnStart);
+    await _prefs.setInt('${_kprefix}hrAge', hrAge);
+    await _prefs.setInt('${_kprefix}hrRest', hrRest);
+    await _prefs.setInt('${_kprefix}hrMax', hrMaxOverride);
     await _prefs.setString('${_kprefix}ghToken', ghUpdateToken);
     await _prefs.setString('${_kprefix}larkAccess', larkAccessToken);
     await _prefs.setInt('${_kprefix}larkExpiry', larkTokenExpiry);
