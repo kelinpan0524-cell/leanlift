@@ -95,8 +95,10 @@ StatsKpi computeStatsKpi({
 /// - 容量口径（byVolume=true）：格值 = 当日正式组 volume 之和
 ///   （[volumeByDate] 提供每日容量，键 yyyy-MM-dd，由调用方按
 ///   SetEntry.volume 预聚合）。
-/// 网格从「第一次训练所在周」与「[weeks] 周前」较晚者开始
-/// （新用户不铺满 53 列空格）；无训练时为 [weeks] 列全零。
+/// 网格固定 [weeks] 周（默认 53 = 近 12 个月）：卡片标题写「近 12 个月」，
+/// 就必须给满 12 个月的坐标系。早期按「第一次训练所在周」截断会让新用户
+/// 只看到 1-2 列小方块（像渲染坏了），且格子上限 8.5px 时短区间永远铺不满
+/// 卡片宽度；空网格本身就是「最近没练」的信息，保留全量。
 List<List<double>> activityHeatmap({
   required List<Session> sessions,
   required DateTime now,
@@ -107,18 +109,8 @@ List<List<double>> activityHeatmap({
 }) {
   final today = DateTime(now.year, now.month, now.day);
   final endMonday = mondayOf(today);
-  final floorMonday = endMonday.subtract(Duration(days: 7 * (weeks - 1)));
-  // 起始周 = max(第一次训练所在周, weeks 周前)
-  DateTime? firstMonday;
-  for (final s in sessions) {
-    if (s.status != 'done') continue;
-    final m = mondayOf(parseDate(s.date));
-    if (firstMonday == null || m.isBefore(firstMonday)) firstMonday = m;
-  }
-  final startMonday = firstMonday == null || firstMonday.isBefore(floorMonday)
-      ? floorMonday
-      : firstMonday;
-  final colCount = endMonday.difference(startMonday).inDays ~/ 7 + 1;
+  final startMonday = endMonday.subtract(Duration(days: 7 * (weeks - 1)));
+  final colCount = weeks;
   final grid = [
     for (var i = 0; i < colCount; i++) List.filled(7, 0.0),
   ];

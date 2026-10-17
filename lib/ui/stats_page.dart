@@ -26,6 +26,45 @@ String _fmtDeltaKg(double deltaKg) {
   return '${deltaKg > 0 ? '+' : ''}${v.toStringAsFixed(1)}${unitLabel()}';
 }
 
+/// 数值轴「好看」步长（1/2/5×10^n，约 4 格）。minStep 给有物理最小刻度的
+/// 重量轴兜底，避免窄区间被放大成整段空白。
+double _statAxisStep(double span, {double minStep = 1}) {
+  if (span <= minStep) return minStep;
+  final raw = span / 4;
+  final mag = math.pow(10, (math.log(raw) / math.ln10).floor()).toDouble();
+  final unit = raw / mag;
+  final nice = unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10;
+  return math.max(minStep, nice * mag);
+}
+
+/// 统计页统一的横向网格：只画横线、极淡，给折线一个参考但不抢戏。
+FlGridData _statGrid() => FlGridData(
+      show: true,
+      drawVerticalLine: false,
+      getDrawingHorizontalLine: (_) => FlLine(
+        color: Colors.white.withValues(alpha: 0.045),
+        strokeWidth: 1,
+      ),
+    );
+
+/// 折线下方渐变：同色 24% → 透明，替代生硬的纯色面积。
+LinearGradient _statGradient(Color c) => LinearGradient(
+      begin: Alignment.topCenter,
+      end: Alignment.bottomCenter,
+      colors: [c.withValues(alpha: 0.24), c.withValues(alpha: 0)],
+    );
+
+/// 数据点：实心圆点 + 卡片底色描边，压在线条上不糊成一团。
+FlDotData _statDots(Color c) => FlDotData(
+      show: true,
+      getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
+        radius: 3,
+        color: c,
+        strokeWidth: 2,
+        strokeColor: AppTheme.card,
+      ),
+    );
+
 /// 数据页：概览 / 肌肉 / 身体 三个 Tab + AI 分析包入口。
 class StatsPage extends StatefulWidget {
   const StatsPage({super.key});
@@ -46,7 +85,7 @@ class _StatsPageState extends State<StatsPage> {
           actions: [
             TextButton.icon(
               onPressed: () => _exportAiPack(),
-              icon: const Icon(Icons.ios_share, size: 18),
+              icon: const Icon(Icons.share_outlined, size: 18),
               label: Text(tx('分析包', en: 'Analysis Pack')),
             ),
           ],
@@ -55,9 +94,9 @@ class _StatsPageState extends State<StatsPage> {
             labelColor: AppTheme.text,
             unselectedLabelColor: AppTheme.textDim,
             tabs: [
-              Tab(text: tx('概览', en: 'Overview')),
-              Tab(text: tx('肌肉', en: 'Muscles')),
-              Tab(text: tx('身体', en: 'Body')),
+              _statTab(Icons.insights, tx('概览', en: 'Overview')),
+              _statTab(Icons.accessibility_new, tx('肌肉', en: 'Muscles')),
+              _statTab(Icons.monitor_weight_outlined, tx('身体', en: 'Body')),
             ],
           ),
         ),
@@ -67,6 +106,19 @@ class _StatsPageState extends State<StatsPage> {
       ),
     );
   }
+
+  /// Tab 统一「小图标 + 文案」：三页是并列的诊断视角，图标帮助扫读，
+  /// 同时保留 Text 让既有按文案定位的测试不受影响。
+  Tab _statTab(IconData icon, String label) => Tab(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16),
+            const SizedBox(width: 6),
+            Text(label),
+          ],
+        ),
+      );
 
   Future<void> _exportAiPack() async {
     final c = app(context);
@@ -173,6 +225,8 @@ class _OverviewTabState extends State<_OverviewTab> {
         // 标题行右侧，指标单独一行，图表补左轴刻度与触摸提示。
         final trendCard = SectionCard(
           title: tx('训练趋势', en: 'Training Trend'),
+          icon: Icons.show_chart,
+          iconColor: AppTheme.accent,
           trailing: _StatDropdown<String>(
             value: _granularity,
             entries: [
@@ -197,12 +251,12 @@ class _OverviewTabState extends State<_OverviewTab> {
               Text(
                 tx(
                     _metric == 'volume'
-                        ? '正式组总容量（kg）· 自重按系数折算'
+                        ? '正式组总容量（${unitLabel()}）· 自重按系数折算'
                         : _metric == 'sets'
                             ? '正式组组数'
                             : '平均强度 = 组重量 ÷ 该动作窗口内最佳 1RM（%）',
                     en: _metric == 'volume'
-                        ? 'Total working-set volume (kg)'
+                        ? 'Total working-set volume (${unitLabel()})'
                         : _metric == 'sets'
                             ? 'Working sets count'
                             : 'Avg intensity = set weight ÷ best 1RM (%)'),
@@ -218,6 +272,8 @@ class _OverviewTabState extends State<_OverviewTab> {
         final rirCard = _buildRirCard(d);
         final restCard = SectionCard(
           title: tx('组间休息趋势', en: 'Rest Between Sets Trend'),
+          icon: Icons.timer_outlined,
+          iconColor: AppTheme.accent,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -285,15 +341,32 @@ class _OverviewTabState extends State<_OverviewTab> {
               const SizedBox(height: 12),
               SectionCard(
                 title: tx('智能提醒', en: 'Smart Tips'),
+                icon: Icons.lightbulb_outline,
+                iconColor: AppTheme.warn,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     for (final i in insights)
                       Padding(
                         padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Text('⚠️ $i',
-                            style:
-                                const TextStyle(color: AppTheme.warn)),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Padding(
+                              padding: EdgeInsets.only(top: 1),
+                              child: Icon(Icons.lightbulb_outline,
+                                  size: 15, color: AppTheme.warn),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(i,
+                                  style: const TextStyle(
+                                      color: AppTheme.warn,
+                                      fontSize: 13,
+                                      height: 1.4)),
+                            ),
+                          ],
+                        ),
                       ),
                   ],
                 ),
@@ -324,10 +397,14 @@ class _OverviewTabState extends State<_OverviewTab> {
       'intensity' => TrendMetric.intensity,
       _ => TrendMetric.volume,
     };
-    return [
-      for (var i = 0; i < keys.length; i++)
-        FlSpot(i.toDouble(), (map[keys[i]] ?? TrendAcc()).metricValue(metric))
-    ];
+    final out = <FlSpot>[];
+    for (var i = 0; i < keys.length; i++) {
+      var v = (map[keys[i]] ?? TrendAcc()).metricValue(metric);
+      // 容量底层按 kg 累计；lb 模式在显示层换算，轴/提示同一空间
+      if (metric == TrendMetric.volume && WeightUnits.isLb) v *= kLbPerKg;
+      out.add(FlSpot(i.toDouble(), v));
+    }
+    return out;
   }
 
   /// 趋势图 x 轴刻度：约 5 个日期标签（周桶显示周一、月桶显示一号）
@@ -372,17 +449,20 @@ class _OverviewTabState extends State<_OverviewTab> {
             : v.round().toString(),
       };
 
-  /// 左轴刻度间隔取 1/2/5×10^n 的"好看"步长（0.25 专给强度百分比）
-  double? _niceStep(double maxY) {
-    if (maxY <= 0) return null;
-    if (_metric == 'intensity') return 0.25;
-    if (_metric == 'sets') return math.max(1, (maxY / 3).roundToDouble());
-    var step = (maxY / 3).ceilToDouble();
-    final mag = math.pow(10, (math.log(step) / math.ln10).floor()).toDouble();
-    final unit = step / mag;
-    step = (unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10) * mag;
-    return step;
-  }
+  /// 数值轴「好看」步长（1/2/5×10^n，约 4 格）。minStep 给有物理最小
+  /// 刻度的重量轴（kg 2.5 / lb 5.5）兜底，避免窄区间被放大成整段空白。
+  // 见文件顶部 _statAxisStep（身体 Tab 也要用，不做成 State 私有）
+  double _axisStep(double span, {double minStep = 1}) =>
+      _statAxisStep(span, minStep: minStep);
+
+  /// 统计页统一的横向网格：只画横线、极淡，给折线一个参考但不抢戏。
+  FlGridData get _chartGrid => _statGrid();
+
+  /// 折线下方渐变：同色 24% → 透明，替代生硬的纯色面积。
+  LinearGradient _chartGradient(Color c) => _statGradient(c);
+
+  /// 数据点：实心圆点 + 卡片底色描边，压在线条上不糊成一团。
+  FlDotData _chartDots(Color c) => _statDots(c);
 
   /// 训练趋势图：左轴刻度 + 触摸提示（日期 + 指标值）。
   /// 数据不足时收成一行紧凑提示，不再撑 200 高的空图。
@@ -401,14 +481,20 @@ class _OverviewTabState extends State<_OverviewTab> {
       );
     }
     final keys = _trendKeys(d);
-    final maxY = pts.map((p) => p.y).reduce(math.max);
-    final step = (keys.length / 5).ceil().clamp(1, keys.length);
+    final dataMax = pts.map((p) => p.y).reduce(math.max);
+    final yStep = _axisStep(dataMax <= 0 ? 1 : dataMax);
+    // 轴顶取整数刻度，避免出现「5.1k」这种突兀的非整刻度标签
+    var maxY =
+        dataMax <= 0 ? 1.0 : (dataMax / yStep).ceilToDouble() * yStep;
+    if (maxY < dataMax * 1.05) maxY += yStep;
+    final xStep = (keys.length / 5).ceil().clamp(1, keys.length);
     return SizedBox(
       height: 200,
       child: LineChart(
         LineChartData(
           minY: 0,
-          gridData: const FlGridData(show: false),
+          maxY: maxY,
+          gridData: _chartGrid,
           borderData: FlBorderData(show: false),
           lineTouchData: LineTouchData(
             touchTooltipData: LineTouchTooltipData(
@@ -427,11 +513,17 @@ class _OverviewTabState extends State<_OverviewTab> {
             ),
           ),
           titlesData: FlTitlesData(
+            // fl_chart 默认四边都出刻度：只留左/下，顶/右必须显式关掉，
+            // 否则会出现头顶一排 0/0.2/…、右侧再复制一套 Y 值的“重影图”
+            topTitles: const AxisTitles(
+                sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(
+                sideTitles: SideTitles(showTitles: false)),
             bottomTitles: AxisTitles(
               sideTitles: SideTitles(
                 showTitles: true,
                 reservedSize: 22,
-                interval: step.toDouble(),
+                interval: xStep.toDouble(),
                 getTitlesWidget: (v, _) => _trendLabel(d, v.toInt()),
               ),
             ),
@@ -439,7 +531,7 @@ class _OverviewTabState extends State<_OverviewTab> {
               sideTitles: SideTitles(
                 showTitles: true,
                 reservedSize: 40,
-                interval: _niceStep(maxY),
+                interval: yStep,
                 getTitlesWidget: (v, _) => Padding(
                   padding: const EdgeInsets.only(right: 6),
                   child: Text(_fmtMetric(v),
@@ -454,9 +546,15 @@ class _OverviewTabState extends State<_OverviewTab> {
             LineChartBarData(
               spots: pts,
               isCurved: true,
+              preventCurveOverShooting: true,
               color: AppTheme.primary,
-              barWidth: 3,
-              dotData: const FlDotData(show: true),
+              barWidth: 2.5,
+              isStrokeCapRound: true,
+              dotData: _chartDots(AppTheme.primary),
+              belowBarData: BarAreaData(
+                show: true,
+                gradient: _chartGradient(AppTheme.primary),
+              ),
             ),
           ],
         ),
@@ -469,19 +567,25 @@ class _OverviewTabState extends State<_OverviewTab> {
     final dt = (i >= 0 && i < keys.length)
         ? DateTime.fromMillisecondsSinceEpoch(keys[i] * 86400000)
         : null;
-    return '${dt == null ? '' : '${dt.month}/${dt.day}'}\n${_fmtMetric(s.y)}';
+    final unit = _metric == 'volume' ? ' ${unitLabel()}' : '';
+    return '${dt == null ? '' : '${dt.month}/${dt.day}'}\n${_fmtMetric(s.y)}$unit';
   }
 
   /// 组间休息图（2026-09-27 截图反馈坐标轴数字重叠）：
   /// x 轴显式 interval 抽稀（一天多练也不重复堆叠），
   /// y 轴整数分钟刻度 + 触摸提示「日期 · N 分钟」。
   Widget _buildRestChart(_OverviewData d) {
-    final maxY = d.restMinutes.map((p) => p.y).reduce(math.max);
-    final step = (d.restDates.length / 5).ceil().clamp(1, d.restDates.length);
+    final dataMax = d.restMinutes.map((p) => p.y).reduce(math.max);
+    final yStep = _axisStep(dataMax <= 0 ? 1 : dataMax, minStep: 1);
+    var maxY =
+        dataMax <= 0 ? 1.0 : (dataMax / yStep).ceilToDouble() * yStep;
+    if (maxY < dataMax * 1.05) maxY += yStep;
+    final xStep = (d.restDates.length / 5).ceil().clamp(1, d.restDates.length);
     return LineChart(
       LineChartData(
         minY: 0,
-        gridData: const FlGridData(show: false),
+        maxY: maxY,
+        gridData: _chartGrid,
         borderData: FlBorderData(show: false),
         lineTouchData: LineTouchData(
           touchTooltipData: LineTouchTooltipData(
@@ -500,11 +604,15 @@ class _OverviewTabState extends State<_OverviewTab> {
           ),
         ),
         titlesData: FlTitlesData(
+          topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false)),
           bottomTitles: AxisTitles(
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 22,
-              interval: step.toDouble(),
+              interval: xStep.toDouble(),
               getTitlesWidget: (v, _) => _restLabel(d, v.toInt()),
             ),
           ),
@@ -512,7 +620,7 @@ class _OverviewTabState extends State<_OverviewTab> {
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 34,
-              interval: math.max(1, (maxY / 3).roundToDouble()),
+              interval: yStep,
               getTitlesWidget: (v, _) => Padding(
                 padding: const EdgeInsets.only(right: 6),
                 child: Text(v.round().toString(),
@@ -527,9 +635,15 @@ class _OverviewTabState extends State<_OverviewTab> {
           LineChartBarData(
             spots: d.restMinutes,
             isCurved: true,
+            preventCurveOverShooting: true,
             color: AppTheme.warn,
-            barWidth: 3,
-            dotData: const FlDotData(show: true),
+            barWidth: 2.5,
+            isStrokeCapRound: true,
+            dotData: _chartDots(AppTheme.warn),
+            belowBarData: BarAreaData(
+              show: true,
+              gradient: _chartGradient(AppTheme.warn),
+            ),
           ),
         ],
       ),
@@ -642,15 +756,20 @@ class _OverviewTabState extends State<_OverviewTab> {
         ),
       );
     }
-    final maxY = pts.map((p) => p.y).reduce((a, b) => a > b ? a : b);
-    final minY = pts.map((p) => p.y).reduce((a, b) => a < b ? a : b);
-    // 轴区间上下限随单位缩放（2.5kg≈5.5lb、50kg≈110lb）
-    final leftInterval = (((maxY - minY) / 3).clamp(
-            WeightUnits.isLb ? 5.5 : 2.5, WeightUnits.isLb ? 110.0 : 50.0))
-        .toDouble();
+    final dataMax = pts.map((p) => p.y).reduce((a, b) => a > b ? a : b);
+    final dataMin = pts.map((p) => p.y).reduce((a, b) => a < b ? a : b);
+    // 重量轴保留物理最小刻度（2.5kg≈5.5lb），上下各留半格：
+    // 原实现 minY 固定 0，1RM 在 70kg 附近时整条线被压在图底
+    final minStep = WeightUnits.isLb ? 5.5 : 2.5;
+    final yStep = _axisStep(dataMax - dataMin, minStep: minStep);
+    final lo = (dataMin / yStep).floorToDouble() * yStep;
+    var hi = (dataMax / yStep).ceilToDouble() * yStep;
+    if (hi <= lo) hi = lo + yStep;
     return LineChart(
       LineChartData(
-        gridData: const FlGridData(show: false),
+        minY: lo,
+        maxY: hi,
+        gridData: _chartGrid,
         borderData: FlBorderData(show: false),
         lineTouchData: LineTouchData(
           touchTooltipData: LineTouchTooltipData(
@@ -669,6 +788,10 @@ class _OverviewTabState extends State<_OverviewTab> {
           ),
         ),
         titlesData: FlTitlesData(
+          topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false)),
           bottomTitles: AxisTitles(
             sideTitles: SideTitles(
               showTitles: true,
@@ -692,7 +815,7 @@ class _OverviewTabState extends State<_OverviewTab> {
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 40,
-              interval: leftInterval,
+              interval: yStep,
               getTitlesWidget: (v, _) => Padding(
                 padding: const EdgeInsets.only(right: 6),
                 child: Text(
@@ -710,8 +833,13 @@ class _OverviewTabState extends State<_OverviewTab> {
             spots: pts,
             isCurved: false,
             color: AppTheme.accent,
-            barWidth: 3,
-            dotData: const FlDotData(show: true),
+            barWidth: 2.5,
+            isStrokeCapRound: true,
+            dotData: _chartDots(AppTheme.accent),
+            belowBarData: BarAreaData(
+              show: true,
+              gradient: _chartGradient(AppTheme.accent),
+            ),
           ),
         ],
       ),
@@ -729,7 +857,8 @@ class _OverviewTabState extends State<_OverviewTab> {
   // ================ openGym 借鉴升级（2026-10-17） ================
 
   /// KPI 2×2 卡：总训练次数 | 本月次数 | 连续周 | 30 天体重变化。
-  /// 大数字 + 小标签；体重 Δ 按目标方向 / 降绿涨红着色，无数据显示「—」。
+  /// 每格「彩色小图标 + 标签 + 大数字」：图标承担扫读，数字承担结论，
+  /// 比纯数字四宫格更像仪表盘；体重 Δ 仍按目标方向降绿涨红。
   Widget _buildKpiCard(_OverviewData d) {
     final k = d.kpi;
     final delta = k.weightDelta30d;
@@ -739,31 +868,60 @@ class _OverviewTabState extends State<_OverviewTab> {
             ? AppTheme.textDim
             : _weightDeltaColor(delta, d.weightGoalKg, d.latestWeightKg);
     final deltaText = delta == null ? '—' : _fmtDeltaKg(delta);
-    Widget cell(String value, String label, {Color? color}) => Expanded(
+    Widget cell(
+      IconData icon,
+      Color iconColor,
+      String value,
+      String label, {
+      Color? color,
+    }) =>
+        Expanded(
           child: Container(
             margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
-            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+            padding: const EdgeInsets.fromLTRB(12, 10, 10, 12),
             decoration: BoxDecoration(
-              color: AppTheme.cardHi,
+              color: AppTheme.cardHi.withValues(alpha: 0.55),
               borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.035)),
             ),
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 24,
+                      height: 24,
+                      decoration: BoxDecoration(
+                        color: iconColor.withValues(alpha: 0.16),
+                        borderRadius: BorderRadius.circular(7),
+                      ),
+                      child: Icon(icon, size: 14, color: iconColor),
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: AppTheme.textDim,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 9),
                 FittedBox(
                   fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
                   child: Text(value,
                       maxLines: 1,
-                      style: AppTheme.bigNum(24,
+                      style: AppTheme.bigNum(26,
                           color: color ?? AppTheme.text)),
-                ),
-                const SizedBox(height: 5),
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Text(label,
-                      maxLines: 1,
-                      style: const TextStyle(
-                          color: AppTheme.textDim, fontSize: 12)),
                 ),
               ],
             ),
@@ -773,19 +931,28 @@ class _OverviewTabState extends State<_OverviewTab> {
     // 首屏要能装下更多卡
     return SectionCard(
       title: tx('总览', en: 'Overview'),
+      icon: Icons.insights,
+      iconColor: AppTheme.primary,
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       child: Column(
         children: [
           Row(
             children: [
-              cell('${k.totalSessions}', tx('总训练', en: 'Total workouts')),
-              cell('${k.thisMonth}', tx('本月', en: 'This month')),
+              cell(Icons.event_available, AppTheme.primary,
+                  '${k.totalSessions}', tx('总训练', en: 'Total workouts')),
+              cell(Icons.calendar_month, AppTheme.accent, '${k.thisMonth}',
+                  tx('本月', en: 'This month')),
             ],
           ),
           Row(
             children: [
-              cell('${k.weekStreak}', tx('连续周', en: 'Week streak')),
-              cell(deltaText, tx('30 天体重', en: '30-day weight'),
+              cell(Icons.local_fire_department, AppTheme.warn,
+                  '${k.weekStreak}', tx('连续周', en: 'Week streak')),
+              cell(
+                  Icons.monitor_weight_outlined,
+                  deltaColor ?? AppTheme.accent,
+                  deltaText,
+                  tx('30 天体重', en: '30-day weight'),
                   color: deltaColor),
             ],
           ),
@@ -800,31 +967,28 @@ class _OverviewTabState extends State<_OverviewTab> {
   Widget _buildHeatmapCard(_OverviewData d) {
     final grid = _heatMode == 'volume' ? d.heatVolume : d.heatTime;
     final levels = activityLevels(grid);
+    final activeDays = grid.expand((w) => w).where((v) => v > 0).length;
     return SectionCard(
-      title: tx('活动 · 近 12 个月', en: 'Activity · Last 12 Months'),
+      // 英文标题过长会和右侧口径切换挤成两行；时间范围已经在下方
+      // 「近 12 个月 · N 天有训练」里说明，标题只留主题词
+      title: tx('活动', en: 'Activity'),
+      icon: Icons.local_fire_department_outlined,
+      iconColor: AppTheme.warn,
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-      trailing: ToggleButtons(
-        isSelected: [_heatMode == 'time', _heatMode == 'volume'],
-        onPressed: (i) =>
-            setState(() => _heatMode = i == 0 ? 'time' : 'volume'),
-        borderRadius: BorderRadius.circular(10),
-        selectedColor: AppTheme.primary,
-        color: AppTheme.textDim,
-        fillColor: AppTheme.cardHi,
-        selectedBorderColor: AppTheme.primary,
-        borderColor: const Color(0xFF374151),
-        constraints: const BoxConstraints(minHeight: 28, minWidth: 48),
-        textStyle:
-            const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-        children: [
-          Text(tx('时长', en: 'Time')),
-          Text(tx('吨位', en: 'Tonnage')),
-        ],
+      trailing: _HeatToggle(
+        timeSelected: _heatMode == 'time',
+        onChanged: (time) => setState(() => _heatMode = time ? 'time' : 'volume'),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _HeatmapView(grid: grid, levels: levels),
+          const SizedBox(height: 2),
+          Text(
+            tx('过去 12 个月 · $activeDays 天有训练',
+                en: 'Last 12 months · $activeDays active days'),
+            style: const TextStyle(color: AppTheme.textDim, fontSize: 11),
+          ),
         ],
       ),
     );
@@ -836,19 +1000,32 @@ class _OverviewTabState extends State<_OverviewTab> {
     final tops = d.topLifts;
     final lift = _selectedLift;
     final idx = lift == null ? -1 : tops.indexOf(lift);
-    Widget arrow(IconData icon, int step) => IconButton(
-          visualDensity: VisualDensity.compact,
-          onPressed: tops.length < 2
-              ? null
-              : () {
-                  final cur = idx < 0 ? 0 : idx;
-                  final next = (cur + step + tops.length) % tops.length;
-                  setState(() => _selectedLift = tops[next]);
-                },
-          icon: Icon(icon, size: 20, color: AppTheme.textDim),
+    Widget arrow(IconData icon, int step) => Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: tops.length < 2
+                ? AppTheme.cardHi.withValues(alpha: 0.4)
+                : AppTheme.cardHi,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: IconButton(
+            padding: EdgeInsets.zero,
+            visualDensity: VisualDensity.compact,
+            onPressed: tops.length < 2
+                ? null
+                : () {
+                    final cur = idx < 0 ? 0 : idx;
+                    final next = (cur + step + tops.length) % tops.length;
+                    setState(() => _selectedLift = tops[next]);
+                  },
+            icon: Icon(icon, size: 20, color: AppTheme.textDim),
+          ),
         );
     return SectionCard(
       title: tx('主力动作 1RM', en: 'Top Lifts 1RM'),
+      icon: Icons.emoji_events_outlined,
+      iconColor: AppTheme.primary,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -890,11 +1067,11 @@ class _OverviewTabState extends State<_OverviewTab> {
           Text(
             tx(
                 _rmMetric == 'top'
-                    ? '每天取当日最大正式组重量（kg）· 前 4 为自动选出的主力动作'
-                    : '每天取当日最佳 1RM（kg）· 前 4 为自动选出的主力动作',
+                    ? '每天取当日最大正式组重量（${unitLabel()}）· 前 4 为自动选出的主力动作'
+                    : '每天取当日最佳 1RM（${unitLabel()}）· 前 4 为自动选出的主力动作',
                 en: _rmMetric == 'top'
-                    ? 'Daily top working-set weight (kg) · top 4 picked automatically'
-                    : 'Daily best 1RM (kg) · top 4 picked automatically'),
+                    ? 'Daily top working-set weight (${unitLabel()}) · top 4 picked automatically'
+                    : 'Daily best 1RM (${unitLabel()}) · top 4 picked automatically'),
             style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
           ),
           const SizedBox(height: 12),
@@ -928,6 +1105,8 @@ class _OverviewTabState extends State<_OverviewTab> {
     final dist = rirDistribution(d.allWorkingSets, since: since);
     return SectionCard(
       title: tx('余力分布', en: 'RIR Distribution'),
+      icon: Icons.speed,
+      iconColor: AppTheme.warn,
       trailing: _StatDropdown<String>(
         value: _rirWindow,
         entries: [
@@ -1188,6 +1367,8 @@ class _MuscleTabState extends State<_MuscleTab> {
             const MuscleRecoveryCard(),
             SectionCard(
               title: tx('肌群容量占比', en: 'Muscle Volume Share'),
+              icon: Icons.bar_chart,
+              iconColor: AppTheme.primary,
               trailing: _StatDropdown<String>(
                 value: _period,
                 entries: [
@@ -1301,6 +1482,8 @@ class _MuscleTabState extends State<_MuscleTab> {
             // 上肢（胸肩背手臂）/ 下肢（腿）/ 核心+其他 三条，一眼看结构
             SectionCard(
               title: tx('上下肢分布', en: 'Upper/Lower Split'),
+              icon: Icons.accessibility_new,
+              iconColor: AppTheme.accent,
               child: Builder(builder: (_) {
                 final groups = regionGroupShare(share);
                 const order = ['上肢', '下肢', '核心'];
@@ -1488,6 +1671,8 @@ class _BodyTabState extends State<_BodyTab>
           children: [
             SectionCard(
               title: tx('体重趋势', en: 'Body Weight Trend'),
+              icon: Icons.monitor_weight_outlined,
+              iconColor: AppTheme.accent,
               trailing: _StatDropdown<String>(
                 value: _bodyWindow,
                 entries: [
@@ -1523,45 +1708,124 @@ class _BodyTabState extends State<_BodyTab>
                                 en: 'Weigh in at the same time each week'),
                                 style:
                                     const TextStyle(color: AppTheme.textDim)))
-                        : LineChart(
-                            LineChartData(
-                              gridData: const FlGridData(show: false),
-                              borderData: FlBorderData(show: false),
-                              titlesData: const FlTitlesData(show: false),
-                              // 目标线：虚线 + 小标签；未设不画
-                              extraLinesData: goal > 0
-                                  ? ExtraLinesData(horizontalLines: [
-                                      HorizontalLine(
-                                        // 目标线与数据点同在显示单位空间
-                                        y: _dispVal(goal),
-                                        color: AppTheme.primary,
-                                        strokeWidth: 1,
-                                        dashArray: [6, 4],
-                                        label: HorizontalLineLabel(
-                                          show: true,
-                                          alignment: Alignment.topRight,
-                                          padding: const EdgeInsets.only(
-                                              bottom: 2, right: 2),
-                                          style: const TextStyle(
-                                              color: AppTheme.primary,
-                                              fontSize: 10),
-                                          labelResolver: (_) => tx(
-                                              '目标 ${fmtWt(goal)}',
-                                              en: 'Goal ${fmtWt(goal)}'),
+                        : Builder(builder: (_) {
+                            // 纵轴同时容纳数据点与目标线，避免目标线跑到画布外
+                            final vals = weights.map((p) => p.y).toList();
+                            if (goal > 0) vals.add(_dispVal(goal));
+                            final vMin = vals.reduce(math.min);
+                            final vMax = vals.reduce(math.max);
+                            final yStep = _statAxisStep(vMax - vMin,
+                                minStep: WeightUnits.isLb ? 2 : 1);
+                            final lo =
+                                (vMin / yStep).floorToDouble() * yStep;
+                            var hi = (vMax / yStep).ceilToDouble() * yStep;
+                            if (hi <= lo) hi = lo + yStep;
+                            final xStep = (data.length / 4)
+                                .ceil()
+                                .clamp(1, data.length)
+                                .toDouble();
+                            return LineChart(
+                              LineChartData(
+                                minY: lo,
+                                maxY: hi,
+                                gridData: _statGrid(),
+                                borderData: FlBorderData(show: false),
+                                // 触摸提示：日期 + 体重（显示单位）
+                                lineTouchData: LineTouchData(
+                                  touchTooltipData: LineTouchTooltipData(
+                                    getTooltipColor: (_) => AppTheme.cardHi,
+                                    tooltipPadding: const EdgeInsets
+                                        .symmetric(
+                                        horizontal: 10, vertical: 6),
+                                    getTooltipItems: (spots) => [
+                                      for (final s in spots)
+                                        LineTooltipItem(
+                                          '${_bodyDate(data, s.x)}\n'
+                                          '${fmtKg(s.y)}${unitLabel()}',
+                                          const TextStyle(
+                                              color: AppTheme.text,
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600),
                                         ),
-                                      ),
-                                    ])
-                                  : null,
-                              lineBarsData: [
-                                LineChartBarData(
-                                  spots: weights,
-                                  isCurved: true,
-                                  color: AppTheme.accent,
-                                  barWidth: 3,
+                                    ],
+                                  ),
                                 ),
-                              ],
-                            ),
-                          ),
+                                titlesData: FlTitlesData(
+                                  topTitles: const AxisTitles(
+                                      sideTitles:
+                                          SideTitles(showTitles: false)),
+                                  rightTitles: const AxisTitles(
+                                      sideTitles:
+                                          SideTitles(showTitles: false)),
+                                  bottomTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 22,
+                                      interval: xStep,
+                                      getTitlesWidget: (v, _) =>
+                                          _bodyDateLabel(data, v.toInt()),
+                                    ),
+                                  ),
+                                  leftTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 38,
+                                      interval: yStep,
+                                      getTitlesWidget: (v, _) => Padding(
+                                        padding:
+                                            const EdgeInsets.only(right: 6),
+                                        child: Text(fmtKg(v),
+                                            textAlign: TextAlign.right,
+                                            style: const TextStyle(
+                                                color: AppTheme.textDim,
+                                                fontSize: 10)),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                // 目标线：虚线 + 小标签；未设不画
+                                extraLinesData: goal > 0
+                                    ? ExtraLinesData(horizontalLines: [
+                                        HorizontalLine(
+                                          // 目标线与数据点同在显示单位空间
+                                          y: _dispVal(goal),
+                                          color: AppTheme.primary,
+                                          strokeWidth: 1,
+                                          dashArray: [6, 4],
+                                          label: HorizontalLineLabel(
+                                            show: true,
+                                            alignment: Alignment.topRight,
+                                            padding: const EdgeInsets.only(
+                                                bottom: 2, right: 2),
+                                            style: const TextStyle(
+                                                color: AppTheme.primary,
+                                                fontSize: 10),
+                                            labelResolver: (_) => tx(
+                                                '目标 ${fmtWt(goal)}',
+                                                en: 'Goal ${fmtWt(goal)}'),
+                                          ),
+                                        ),
+                                      ])
+                                    : null,
+                                lineBarsData: [
+                                  LineChartBarData(
+                                    spots: weights,
+                                    isCurved: true,
+                                    preventCurveOverShooting: true,
+                                    color: AppTheme.accent,
+                                    barWidth: 2.5,
+                                    isStrokeCapRound: true,
+                                    dotData: _statDots(AppTheme.accent),
+                                    belowBarData: BarAreaData(
+                                      show: true,
+                                      gradient:
+                                          _statGradient(AppTheme.accent),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }),
                   ),
                 ],
               ),
@@ -1605,30 +1869,33 @@ class _BodyTabState extends State<_BodyTab>
             const SizedBox(height: 12),
             SectionCard(
               title: tx('记录今天', en: 'Log Today'),
+              icon: Icons.edit_note,
+              iconColor: AppTheme.primary,
               child: Column(
                 children: [
                   TextField(
                     controller: _weightCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: InputDecoration(
-                        labelText: tx('体重 (${unitLabel()})',
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: _bodyFieldDecoration(
+                        tx('体重 (${unitLabel()})',
                             en: 'Body Weight (${unitLabel()})')),
                   ),
                   const SizedBox(height: 8),
                   TextField(
                     controller: _waistCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: InputDecoration(
-                        labelText:
-                            tx('腰围 (cm，可选)', en: 'Waist (cm, optional)')),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: _bodyFieldDecoration(
+                        tx('腰围 (cm，可选)', en: 'Waist (cm, optional)')),
                   ),
                   const SizedBox(height: 8),
                   TextField(
                     controller: _fatCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: InputDecoration(
-                        labelText:
-                            tx('体脂率 (%，可选)', en: 'Body Fat (%, optional)')),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: _bodyFieldDecoration(
+                        tx('体脂率 (%，可选)', en: 'Body Fat (%, optional)')),
                   ),
                   const SizedBox(height: 12),
                   FilledButton(
@@ -1677,6 +1944,49 @@ class _BodyTabState extends State<_BodyTab>
           ],
         );
       },
+    );
+  }
+
+  /// 身体录入输入框统一外观：深色填充 + 无边框，聚焦时亮绿描边，
+  /// 比默认下划线在深底上更清晰（数据页三连输入框）。
+  InputDecoration _bodyFieldDecoration(String label) => InputDecoration(
+        labelText: label,
+        filled: true,
+        fillColor: AppTheme.cardHi.withValues(alpha: 0.55),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none),
+        enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none),
+        focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide:
+                const BorderSide(color: AppTheme.primary, width: 1.4)),
+      );
+
+  /// 体重图触摸提示的日期（x = data 下标）。
+  String _bodyDate(List<BodyMetric> data, double x) {
+    final i = x.round();
+    if (i < 0 || i >= data.length) return '';
+    final dt = parseDate(data[i].date);
+    return '${dt.month}/${dt.day}';
+  }
+
+  /// 体重图 x 轴标签：约 4 个日期，避免窄屏叠字。
+  Widget _bodyDateLabel(List<BodyMetric> data, int i) {
+    if (i < 0 || i >= data.length) return const SizedBox.shrink();
+    final step = (data.length / 4).ceil().clamp(1, data.length);
+    if (i % step != 0 && i != data.length - 1) {
+      return const SizedBox.shrink();
+    }
+    final dt = parseDate(data[i].date);
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Text('${dt.month}/${dt.day}',
+          style: const TextStyle(color: AppTheme.textDim, fontSize: 10)),
     );
   }
 
@@ -1850,6 +2160,56 @@ class _StatDropdown<T> extends StatelessWidget {
   }
 }
 
+/// 热力图口径小分段（时长/吨位）：自绘胶囊贴 AppTheme，
+/// 不用 M3 ToggleButtons（默认白描边 + 独立 textStyle 在深底上显得突兀，
+/// 且测试字体下易丢中文）。点击目标 28dp 高，符合卡片标题行节奏。
+class _HeatToggle extends StatelessWidget {
+  const _HeatToggle({required this.timeSelected, required this.onChanged});
+
+  final bool timeSelected;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget seg(String label, bool selected, VoidCallback onTap) => InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: selected
+                  ? AppTheme.primary.withValues(alpha: 0.18)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: selected ? AppTheme.primary : AppTheme.textDim,
+              ),
+            ),
+          ),
+        );
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: AppTheme.cardHi,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          seg(tx('时长', en: 'Time'), timeSelected, () => onChanged(true)),
+          seg(tx('吨位', en: 'Tonnage'), !timeSelected, () => onChanged(false)),
+        ],
+      ),
+    );
+  }
+}
+
 /// 1RM 动作选单（底部弹层）：动作库全量 150+，顶部搜索框过滤；
 /// 容量前 4 标「主力」徽标，当前选中打勾。
 class _LiftPickerSheet extends StatefulWidget {
@@ -1983,11 +2343,13 @@ class _LiftPickerSheetState extends State<_LiftPickerSheet> {
 
 // ---------------- 数据页升级组件（openGym 借鉴，2026-10-17） ----------------
 
-/// 热力图格色 5 档：0 = 空底色，1-4 由底色向主题绿渐深。
+/// 热力图格色 5 档：0 = 空格子（比卡片底色略亮，网格结构可见），
+/// 1-4 由底色向主题绿渐深。
 Color _heatColor(int level) {
   const t = [0.0, 0.35, 0.6, 0.8, 1.0];
-  return Color.lerp(
-      AppTheme.cardHi, AppTheme.primary, t[level.clamp(0, 4)])!;
+  const empty = Color(0xFF29323D);
+  if (level <= 0) return empty;
+  return Color.lerp(empty, AppTheme.primary, t[level.clamp(0, 4)])!;
 }
 
 /// 体重 Δ 颜色语义（概览 KPI 与身体 Tab 共用）：
@@ -2016,7 +2378,9 @@ class _HeatmapView extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, cons) {
       final w = cons.maxWidth;
-      const gap = 3.0;
+      // 2px 间距：53 列在手机宽度上能铺满整卡（3px 时格子只剩 4px、
+      // 整块看起来像一串虚点）；320 窄屏也不再触发横向滚动
+      const gap = 2.0;
       final cols = grid.isEmpty ? 1 : grid.length;
       // 窄屏多列时格子保底 2.5px，装不下就横向滚动兜底；
       // 上限 8.5：宽屏下格子不放大，整卡高度可控（概览首屏装得下）
@@ -2107,6 +2471,9 @@ class _MonthLabelPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     var prevMonth = -1;
+    // 相邻月份只隔 4-5 周，53 列时标签会挤成「10月11月12月」一条；
+    // 维护已画标签的右边界，放不下就跳过该月（保持可读的留白）
+    var lastRight = double.negativeInfinity;
     for (var i = 0; i < cols; i++) {
       final d = startMonday.add(Duration(days: 7 * i));
       if (d.month == prevMonth) continue;
@@ -2117,14 +2484,17 @@ class _MonthLabelPainter extends CustomPainter {
               ? _HeatmapView._enMonths[d.month - 1]
               : '${d.month}月',
           style: const TextStyle(
-              color: AppTheme.textDim, fontSize: 10),
+              color: AppTheme.textDim, fontSize: 9, fontFamily: 'Roboto'),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
       // 右侧列的标签可能越界：末列前移防裁切
       final x = (i * (cell + gap))
-          .clamp(0.0, (size.width - tp.width).clamp(0.0, double.infinity));
-      tp.paint(canvas, Offset(x.toDouble(), 0));
+          .clamp(0.0, (size.width - tp.width).clamp(0.0, double.infinity))
+          .toDouble();
+      if (x < lastRight + 6) continue;
+      tp.paint(canvas, Offset(x, 0));
+      lastRight = x + tp.width;
     }
   }
 
@@ -2208,18 +2578,28 @@ class _RirBars extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Expanded(
-                    child: Align(
-                      alignment: Alignment.bottomCenter,
-                      child: FractionallySizedBox(
-                        heightFactor: maxCount <= 0
-                            ? 0.0
-                            : (dist[b] ?? 0) / maxCount,
-                        widthFactor: 0.62,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: _barColor(b),
-                            borderRadius: const BorderRadius.vertical(
-                                top: Radius.circular(6)),
+                    child: FractionallySizedBox(
+                      widthFactor: 0.62,
+                      // 轨道：没有组的桶也保留一根淡色柱，六档结构一眼可见
+                      child: Container(
+                        alignment: Alignment.bottomCenter,
+                        decoration: BoxDecoration(
+                          color: AppTheme.cardHi.withValues(alpha: 0.45),
+                          borderRadius:
+                              const BorderRadius.vertical(
+                                  top: Radius.circular(6)),
+                        ),
+                        child: FractionallySizedBox(
+                          heightFactor: maxCount <= 0
+                              ? 0.0
+                              : (dist[b] ?? 0) / maxCount,
+                          widthFactor: 1,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: _barColor(b),
+                              borderRadius: const BorderRadius.vertical(
+                                  top: Radius.circular(6)),
+                            ),
                           ),
                         ),
                       ),

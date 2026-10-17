@@ -189,11 +189,11 @@ void main() {
           PlanDay(planId: plan.id!, weekday: i + 1, title: days[i])));
     }
     final exSets = [
-      ('卧推', 60.0),
+      ('杠铃卧推', 60.0),
       ('上斜哑铃卧推', 22.5),
-      ('划船', 55.0),
-      ('深蹲', 90.0),
-      ('侧平举', 8.0),
+      ('杠铃划船', 55.0),
+      ('杠铃深蹲', 90.0),
+      ('哑铃侧平举', 8.0),
     ];
     for (var i = 0; i < exSets.length; i++) {
       final (name, _) = exSets[i];
@@ -225,7 +225,7 @@ void main() {
           .id!;
       final seId = await container.db.insertSessionExercise(SessionExercise(
         sessionId: sid,
-        name: '卧推',
+        name: '杠铃卧推',
         orderIdx: 0,
         kind: 'compound',
         rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
@@ -236,6 +236,24 @@ void main() {
           weightKg: w,
           reps: r,
           rir: 2,
+          kind: SetKind.working,
+          doneAt: when.millisecondsSinceEpoch,
+        ));
+      }
+      // 第二个动作给腿部容量，肌肉页/恢复度才有跨肌群样本
+      final squatId = await container.db.insertSessionExercise(SessionExercise(
+        sessionId: sid,
+        name: '杠铃深蹲',
+        orderIdx: 1,
+        kind: 'compound',
+        rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
+      ));
+      for (final (w, r) in [(80.0, 6), (85.0, 5)]) {
+        await container.db.insertSet(SetEntry(
+          sessionExerciseId: squatId,
+          weightKg: w,
+          reps: r,
+          rir: 1,
           kind: SetKind.working,
           doneAt: when.millisecondsSinceEpoch,
         ));
@@ -267,7 +285,11 @@ void main() {
       try {
         await tester.pumpWidget(host(container, entry.value));
         await settle(tester);
-        await scrollThrough(tester);
+        await golden(tester, 'en_${entry.key}_top');
+        await tester.drag(find.byType(Scrollable).first, const Offset(0, -800));
+        await tester.pump(const Duration(milliseconds: 200));
+        await golden(tester, 'en_${entry.key}_mid');
+        await scrollThrough(tester, screens: 2);
         await golden(tester, 'en_${entry.key}');
       } catch (e) {
         issues.add('${entry.key}: pump threw $e');
@@ -294,11 +316,13 @@ void main() {
       await tester.pumpWidget(host(container, const StatsPage()));
       await settle(tester);
       await tester.tap(find.text('Muscles'));
-      await settle(tester, rounds: 4);
+      await settle(tester, rounds: 8);
+      await golden(tester, 'en_stats_muscle_top');
       await scrollThrough(tester);
       await golden(tester, 'en_stats_muscle');
       await tester.tap(find.text('Body'));
       await settle(tester, rounds: 4);
+      await golden(tester, 'en_stats_body_top');
       await scrollThrough(tester);
       await golden(tester, 'en_stats_body');
     } catch (e) {

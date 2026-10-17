@@ -56,11 +56,14 @@ class SettingsPage extends StatelessWidget {
               icon: Icons.monitor_heart_outlined,
               iconColor: AppTheme.danger,
               title: tx('心率设备', en: 'Heart Rate Device'),
-              subtitle: tx('蓝牙手环实时心率 · 休息时显示 · 练后曲线与解析',
-                  en: 'Live HR over BLE · rest display · curve & AI analysis'),
+              subtitle: tx('实时心率 · 练后分析',
+                  en: 'Live HR · post-workout analysis'),
               value: c.hr.savedName ?? tx('未设置', en: 'Not set'),
               valueColor:
                   c.hr.link == HrLink.connected ? AppTheme.primary : null,
+              // 设备名长度会随连接结果变化：给值列固定槽位，避免首次连上
+              // WHOOP 后中文名变长、把副标题挤换行导致整行高度跳变
+              valueWidth: 92,
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const HeartRatePage()),
               ),
@@ -88,8 +91,8 @@ class SettingsPage extends StatelessWidget {
             builder: (context, _) => _SettingsRow(
               icon: Icons.lan_outlined,
               title: tx('局域网连接', en: 'LAN Connection'),
-              subtitle: tx('手机当只读数据源，电脑上的 AI 通过 MCP 读取',
-                  en: 'Phone as a read-only source for an AI on your computer'),
+              subtitle: tx('电脑上的 AI 只读训练数据',
+                  en: 'AI on your computer reads training data'),
               value: app(context).bridge.running
                   ? tx('已开启', en: 'On')
                   : tx('未开启', en: 'Off'),
@@ -323,6 +326,7 @@ class _SettingsRow extends StatelessWidget {
     this.subtitleWidget,
     this.value,
     this.valueColor,
+    this.valueWidth,
     this.iconColor,
     this.badge = false,
     this.badgeLabel,
@@ -339,6 +343,10 @@ class _SettingsRow extends StatelessWidget {
   final VoidCallback onTap;
   final String? value;
   final Color? valueColor;
+
+  /// 值列的固定宽度（可选）：设备名这类「连接后突然变长」的值的行，
+  /// 固定槽位可避免副标题换行、整行高度跳变。
+  final double? valueWidth;
 
   /// 图标与图标底色（缺省用主题绿；AI 行传紫，"紫=智能"全 App 统一）。
   final Color? iconColor;
@@ -387,23 +395,45 @@ class _SettingsRow extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            // 裸 Text 不用 Flexible：Flexible 会和左边的 Expanded 平分宽度，
-            // 把标题/副标题挤到一半宽折行（「Feishu Calendar」窄屏折两行）
+            // 值列限宽 + 省略：设备名（如 WHOOP 4.0 的长广播名）接入后
+            // 会突然变长，不限宽会把标题/副标题挤到换行、整行高度跳变
             if (value != null)
-              Text(value!,
-                  textAlign: TextAlign.end,
-                  style: TextStyle(
-                      color: valueColor ?? AppTheme.textDim, fontSize: 13)),
+              SizedBox(
+                width: valueWidth,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 116),
+                  child: Text(
+                    value!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.end,
+                    style: TextStyle(
+                        color: valueColor ?? AppTheme.textDim,
+                        fontSize: 13),
+                  ),
+                ),
+              ),
             const SizedBox(width: 4),
-            Badge(
-              isLabelVisible: badge,
-              label: badgeLabel == null
-                  ? null
-                  : Text(badgeLabel!,
-                      style: const TextStyle(fontSize: 9, height: 1)),
-              child: const Icon(Icons.chevron_right,
-                  color: AppTheme.textDim, size: 22),
-            ),
+            // 角标用独立小胶囊而不是 Badge(label) 包住箭头：Badge 的
+            // label 会向左溢出、在窄屏贴边被裁掉（「建议备份」只剩半截）。
+            if (badge && badgeLabel != null) ...[
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                decoration: BoxDecoration(
+                  color: AppTheme.warn.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(badgeLabel!,
+                    style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.warn)),
+              ),
+              const SizedBox(width: 4),
+            ],
+            const Icon(Icons.chevron_right,
+                color: AppTheme.textDim, size: 22),
           ],
         ),
       ),
