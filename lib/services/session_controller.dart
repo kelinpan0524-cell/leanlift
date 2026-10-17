@@ -1161,7 +1161,9 @@ class SessionController extends ChangeNotifier {
   void Function()? onSessionClosed;
 
   Future<void> _enterFocus() async {
-    WakelockPlus.enable();
+    // 常亮开关兜底：startFromDay 里 _setPhase(_applyWakelock) 先按设置
+    // 收口，随后这里不能又无条件强制亮屏（否则开关形同虚设）。
+    if (_settings.wakelockEnabled) WakelockPlus.enable();
     await onEnterFocus?.call();
   }
 
@@ -1202,6 +1204,12 @@ class SessionController extends ChangeNotifier {
   }) => hasActive && (phase != WorkoutPhase.resting || !restPaused);
 
   void _applyWakelock() {
+    // 常亮开关（2026-10 开场设置）：设置关时训练中也不再强制亮屏；
+    // 暂停/结束的灭屏收口（shouldKeepScreenOn=false → disable）保持原样。
+    if (!_settings.wakelockEnabled) {
+      WakelockPlus.disable();
+      return;
+    }
     if (shouldKeepScreenOn(
       hasActive: hasActive,
       phase: phase,

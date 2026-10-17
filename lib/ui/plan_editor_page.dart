@@ -265,6 +265,8 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
         restSec: result.restSec,
         kind: result.kind,
         rule: rule,
+        logging: result.logging,
+        loadType: result.loadType,
       );
       await c.db.insertPlanExercise(draft);
       await saveMeta();
@@ -278,6 +280,8 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
         restSec: result.restSec,
         kind: result.kind,
         rule: rule,
+        logging: result.logging,
+        loadType: result.loadType,
       );
       await c.db.updatePlanExercise(updated);
       await saveMeta();
@@ -804,6 +808,12 @@ class ExerciseFormResult {
   final String kind;
   final String muscle; // 主肌群（写回动作库，供热力图归类）
   final String equipment; // 器械场景 gym/home/both（写回动作库）
+
+  /// 记录形态（v14，LoggingMode）：按次数/按时间/单侧计数。
+  final String logging;
+
+  /// 负荷类型（v14，LoadMode）：负重/自重。
+  final String loadType;
   const ExerciseFormResult({
     required this.name,
     required this.sets,
@@ -813,6 +823,8 @@ class ExerciseFormResult {
     required this.kind,
     required this.muscle,
     this.equipment = 'both',
+    this.logging = LoggingMode.reps,
+    this.loadType = LoadMode.weighted,
   });
 }
 
@@ -845,6 +857,9 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
       ? widget.initial!.restSec
       : 120;
   late String _kind = widget.initial?.kind ?? 'assistance';
+  // 记录形态/负荷类型（v14）：编辑时沿用既有值，新增默认按次数+负重
+  late String _logging = widget.initial?.logging ?? LoggingMode.reps;
+  late String _loadType = widget.initial?.loadType ?? LoadMode.weighted;
   late String? _muscle =
       widget.initialMuscle ?? widget.initial?.name ?? '';
   String? _nameError;
@@ -953,11 +968,45 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
               ],
             ),
             const SizedBox(height: 10),
+            // 记录形态（v14）：按次数（默认）/按时间（平板支撑类，组次承载
+            // 秒数）/单侧计数（箭步蹲类，记总数显示每边 N 次）。
+            _optionRow(
+              tx('记录形态', en: 'Logging'),
+              [
+                (LoggingMode.reps, tx('按次数', en: 'Reps')),
+                (LoggingMode.time, tx('按时间', en: 'Timed')),
+                (LoggingMode.repsPerSide, tx('单侧计数', en: 'Per side')),
+              ],
+              _logging,
+              (v) => setState(() => _logging = v),
+            ),
+            // 负荷类型（v14）：负重（默认）/自重（引体/俯卧撑类，训练页
+            // 无重量列，渐进只走次数轴）。
+            _optionRow(
+              tx('负荷类型', en: 'Load'),
+              [
+                (LoadMode.weighted, tx('负重', en: 'Weighted')),
+                (LoadMode.bodyweight, tx('自重', en: 'Bodyweight')),
+              ],
+              _loadType,
+              (v) => setState(() => _loadType = v),
+            ),
+            const SizedBox(height: 10),
             _stepper(tx('组数', en: 'Sets'), _sets, 1, 8, 1,
                 (v) => setState(() => _sets = v)),
-            _stepper(tx('次数下限', en: 'Min reps'), _repsMin, 1, _repsMax, 1,
+            // 按时间记录时组次承载秒数：label 随形态切到「时长（秒）」
+            //（字段与引擎判定不变，仅展示层语义提示）。
+            _stepper(
+                isTimedLogging(_logging)
+                    ? tx('时长下限（秒）', en: 'Min duration (s)')
+                    : tx('次数下限', en: 'Min reps'),
+                _repsMin, 1, _repsMax, 1,
                 (v) => setState(() => _repsMin = v)),
-            _stepper(tx('次数上限', en: 'Max reps'), _repsMax, _repsMin, 30, 1,
+            _stepper(
+                isTimedLogging(_logging)
+                    ? tx('时长上限（秒）', en: 'Max duration (s)')
+                    : tx('次数上限', en: 'Max reps'),
+                _repsMax, _repsMin, 30, 1,
                 (v) => setState(() => _repsMax = v)),
             _stepper(tx('组间休息（秒）', en: 'Rest between sets (s)'), _restSec,
                 15, 600, 15, (v) => setState(() => _restSec = v)),
@@ -1124,6 +1173,8 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
                         ? '其他'
                         : _muscle!,
                     equipment: _equipment,
+                    logging: _logging,
+                    loadType: _loadType,
                   ),
                 );
               },
@@ -1176,6 +1227,56 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
                 fontWeight: FontWeight.w600,
                 color: sel ? const Color(0xFF06220F) : AppTheme.textDim)),
       ),
+    );
+  }
+
+  /// 小选择器行（记录形态/负荷类型用）：样式同「主肌群/场景」行——
+  /// 左侧灰色 label + 右侧 Wrap 小 chip，选中项高亮。
+  Widget _optionRow(
+      String label, List<(String, String)> options, String current, ValueChanged<String> on) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(label,
+              style: const TextStyle(
+                  color: AppTheme.textDim, fontSize: 13)),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Wrap(
+            spacing: 5,
+            runSpacing: 4,
+            children: [
+              for (final (value, name) in options)
+                GestureDetector(
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    on(value);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: current == value
+                          ? AppTheme.accent
+                          : AppTheme.cardHi,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(name,
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: current == value
+                                ? const Color(0xFF06220F)
+                                : AppTheme.textDim)),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
