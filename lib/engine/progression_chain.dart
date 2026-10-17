@@ -69,11 +69,30 @@ class ProgressionChain {
         ),
       ]);
 
-  /// 规则优先级：显式配置的 chain > 旧参数派生的默认双阶梯。
-  static ProgressionChain of(ProgressionRule rule) =>
-      (rule.chain != null && rule.chain!.isNotEmpty)
-          ? ProgressionChain(rule.chain!)
-          : ProgressionChain.defaultFor(rule);
+  /// 自重动作的默认链（LoadMode.bodyweight，v14）：只有次数轴——
+  /// 天花板 = reps_max、触顶停住（advanceOnCap: false）。没有重量轴，
+  /// 0kg 档永远不会进位到负重组件；次数到顶后的渐进表达交给
+  /// logging_modes.dart 的 bodyweightExtraSetTarget 建议加组。
+  factory ProgressionChain.defaultBodyweightFor(ProgressionRule rule) =>
+      ProgressionChain([
+        ChainRule(
+          axis: 'reps',
+          step: 1,
+          ceiling: rule.repsMax.toDouble(),
+          advanceOnCap: false,
+        ),
+      ]);
+
+  /// 规则优先级：bodyweight 负荷强制走自重链（显式 chain 里即便配了
+  /// 重量轴也不执行——自重渐进不碰重量）；其余 显式配置的 chain >
+  /// 旧参数派生的默认双阶梯。缺省 loadType 保证现有调用行为不变。
+  static ProgressionChain of(ProgressionRule rule,
+          {String loadType = LoadMode.weighted}) =>
+      loadType == LoadMode.bodyweight
+          ? ProgressionChain.defaultBodyweightFor(rule)
+          : (rule.chain != null && rule.chain!.isNotEmpty)
+              ? ProgressionChain(rule.chain!)
+              : ProgressionChain.defaultFor(rule);
 
   /// 规则是否「还有空间」（可再推进一步）。
   bool _hasRoom(ChainRule r, ChainState s) {
@@ -180,11 +199,21 @@ ChainState chainStateFromHistory(
 /// - 有组低于 reps_min → 减重约 5%（负重量同向：辅助配重变得更"负"
 ///   = 阻力更小，方向语义一致）；
 /// - 其余 → hold（重量与次数目标都不动）。
+///
+/// [logging]（v14）：'time' 时链状态里的数字是秒，达标/保持等 reason
+/// 文案把「X 次」表述换成「X 秒」；数字判定逻辑完全不变。
+/// [loadType]（v14）：'bodyweight' 时链切换为自重链（无重量轴，
+/// 0kg 档不进位到负重）；缺省值保证所有现有调用行为不变。
 ChainVerdict evaluateChain({
   required ProgressionRule rule,
   required ChainState state,
   required List<SetEntry> workingSets,
+  String logging = LoggingMode.reps,
+  String loadType = LoadMode.weighted,
 }) {
+  // 计时形态：展示单位换文案，判定与数字原样（'次' → '秒'）
+  final unit = logging == LoggingMode.time ? '秒' : '次';
+  final enUnit = logging == LoggingMode.time ? 's' : 'reps';
   final ws = workingSets
       .where((s) => s.kind == SetKind.working)
       .toList(growable: false);
@@ -221,15 +250,21 @@ ChainVerdict evaluateChain({
   final anyBelowMin = near.any((s) => s.reps < rule.repsMin);
 
   if (allMetTarget && lastSetRirOk) {
-    final chain = ProgressionChain.of(rule);
+    final chain = ProgressionChain.of(rule, loadType: loadType);
     final next = chain.advance(state, rule);
     if (next == state) {
       // 自重档位（0kg）不展示「重量 0kg 触顶」——0 是档位起点不是天花板
       final capDesc = state.weightKg == 0
-          ? tx('自重档位已到规则链尽头（次数 ${state.targetReps} 次）',
-              en: 'Bodyweight tier has reached the end of the chain (${state.targetReps} reps)')
-          : tx('已到规则链尽头（次数 ${state.targetReps} 次、重量 ${state.weightKg}kg 触顶）',
-              en: 'Chain topped out (${state.targetReps} reps at ${state.weightKg}kg)');
+          ? tx(
+              logging == LoggingMode.time
+                  ? '自重档位已到规则链尽头（保持 ${state.targetReps} 秒）'
+                  : '自重档位已到规则链尽头（次数 ${state.targetReps} 次）',
+              en: 'Bodyweight tier has reached the end of the chain (${state.targetReps} $enUnit)')
+          : tx(
+              logging == LoggingMode.time
+                  ? '已到规则链尽头（保持 ${state.targetReps} 秒、重量 ${state.weightKg}kg 触顶）'
+                  : '已到规则链尽头（次数 ${state.targetReps} 次、重量 ${state.weightKg}kg 触顶）',
+              en: 'Chain topped out (${state.targetReps} $enUnit at ${state.weightKg}kg)');
       return ChainVerdict('hold', state,
           tx('$capDesc → 保持当前档', en: '$capDesc → hold this tier'));
     }
@@ -238,16 +273,16 @@ ChainVerdict evaluateChain({
         'advance',
         next,
         tx(
-            '${near.length} 组全部达到 ${state.targetReps} 次目标，次数轴触顶 → 下次加重至 ${next.weightKg}kg、目标回到 ${next.targetReps} 次',
-            en: 'All ${near.length} sets hit the ${state.targetReps}-rep target and the rep axis is topped out → add weight to ${next.weightKg}kg, target resets to ${next.targetReps} reps'),
+            '${near.length} 组全部达到 ${state.targetReps} $unit目标，次数轴触顶 → 下次加重至 ${next.weightKg}kg、目标回到 ${next.targetReps} $unit',
+            en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target and the rep axis is topped out → add weight to ${next.weightKg}kg, target resets to ${next.targetReps} $enUnit'),
       );
     }
     return ChainVerdict(
       'advance',
       next,
       tx(
-          '${near.length} 组全部达到 ${state.targetReps} 次目标且末组余力 ${lastSet.rir} 次 → 下次目标 ${next.targetReps} 次（重量不变）',
-          en: 'All ${near.length} sets hit the ${state.targetReps}-rep target with last-set RIR ${lastSet.rir} → next target ${next.targetReps} reps (same weight)'),
+          '${near.length} 组全部达到 ${state.targetReps} $unit目标且末组余力 ${lastSet.rir} 次 → 下次目标 ${next.targetReps} $unit（重量不变）',
+          en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target with last-set RIR ${lastSet.rir} → next target ${next.targetReps} $enUnit (same weight)'),
     );
   }
   if (anyBelowMin) {
@@ -258,13 +293,13 @@ ChainVerdict evaluateChain({
       ChainState(
           weightKg: round05(state.weightKg + cut),
           targetReps: state.targetReps),
-      tx('有组未达到下限 ${rule.repsMin} 次 → 建议减重约 5%（$cut kg），先稳动作',
-          en: 'Some sets missed the ${rule.repsMin}-rep floor → reduce ~5% ($cut kg) and re-groove the form'),
+      tx('有组未达到下限 ${rule.repsMin} $unit → 建议减重约 5%（$cut kg），先稳动作',
+          en: 'Some sets missed the ${enRepPhrase(rule.repsMin, logging)} floor → reduce ~5% ($cut kg) and re-groove the form'),
     );
   }
   return ChainVerdict(
       'hold',
       state,
-      tx('完成情况未达 ${state.targetReps} 次目标 → 重量与次数目标保持，继续冲',
-          en: "Target of ${state.targetReps} reps not met — hold weight and target, chase more reps"));
+      tx('完成情况未达 ${state.targetReps} $unit目标 → 重量与${logging == LoggingMode.time ? '秒数' : '次数'}目标保持，继续冲',
+          en: "Target of ${state.targetReps} $enUnit not met — hold weight and target, chase more ${logging == LoggingMode.time ? 'seconds' : 'reps'}"));
 }
