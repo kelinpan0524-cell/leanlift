@@ -240,5 +240,58 @@ void main() {
       expect(rows.first.waistCm, 84);
       expect(rows.first.bodyFatPct, isNull);
     });
+
+    test('bodyMetricOn 按日期查询：有则返回、无则 null', () async {
+      await db.upsertBodyMetric(
+          const BodyMetric(date: '2026-10-16', weightKg: 78));
+      final hit = await db.bodyMetricOn('2026-10-16');
+      expect(hit?.weightKg, 78);
+      expect(await db.bodyMetricOn('2026-10-17'), isNull);
+    });
+  });
+
+  group('记录形态与负荷类型（v14）', () {
+    test('logging/load_type 保存与读回；老数据缺键回落默认', () async {
+      final p = await makePlan('P');
+      final dayId = await addDay(p.id!, 1, '日');
+      await db.insertPlanExercise(PlanExercise(
+        dayId: dayId,
+        name: '平板支撑',
+        orderIdx: 0,
+        sets: 3,
+        repsMin: 30,
+        repsMax: 45,
+        restSec: 60,
+        kind: 'assistance',
+        rule: const ProgressionRule(repsMin: 30, repsMax: 45),
+        logging: LoggingMode.time,
+        loadType: LoadMode.bodyweight,
+      ));
+      await db.insertPlanExercise(PlanExercise(
+        dayId: dayId,
+        name: '卧推',
+        orderIdx: 1,
+        sets: 3,
+        repsMin: 5,
+        repsMax: 8,
+        restSec: 180,
+        kind: 'compound',
+        rule: const ProgressionRule(repsMin: 5, repsMax: 8),
+      ));
+
+      final exs = await db.dayExercises(dayId);
+      expect(exs[0].logging, LoggingMode.time);
+      expect(exs[0].loadType, LoadMode.bodyweight);
+      expect(exs[1].logging, LoggingMode.reps, reason: '未指定时落默认按次数');
+      expect(exs[1].loadType, LoadMode.weighted, reason: '未指定时落默认负重');
+
+      // 编辑改形态：copyWith 更新后再读回
+      await db.updatePlanExercise(
+          exs[0].copyWith(logging: LoggingMode.repsPerSide));
+      final after = await db.dayExercises(dayId);
+      expect(after[0].logging, LoggingMode.repsPerSide);
+      expect(after[0].loadType, LoadMode.bodyweight,
+          reason: '未改的负荷类型保持原值');
+    });
   });
 }

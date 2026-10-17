@@ -1,10 +1,13 @@
 import '../l10n/lang.dart';
 import '../models/models.dart';
+import 'logging_modes.dart';
 import 'volume.dart';
 
 export '../models/models.dart';
 export 'hr_load.dart';
 export 'local_plan.dart';
+export 'logging_modes.dart';
+export 'muscle_insights.dart';
 export 'plates.dart';
 export 'progression_chain.dart';
 export 'recovery.dart';
@@ -47,11 +50,18 @@ class ProgressionVerdict {
   const ProgressionVerdict(this.action, this.deltaKg, this.reason);
 }
 
+/// 旧引擎判定（与规则链 evaluateChain 的达标口径一致）。
+/// [logging]（v14）：'time' 时链状态数字承载秒数，reason 文案把
+/// 「X 次」表述换成「X 秒」，数字判定逻辑完全不变；缺省值保证
+/// 现有调用行为不变。
 ProgressionVerdict evaluateProgression({
   required List<SetEntry> workingSets,
   required double currentWeight,
   required ProgressionRule rule,
+  String logging = LoggingMode.reps,
 }) {
+  // 计时形态（v14）：数字判定不变，仅 reason 文案「X 次」→「X 秒」
+  final unit = logging == LoggingMode.time ? '秒' : '次';
   final ws = workingSets
       .where((s) => s.kind == SetKind.working)
       .toList(growable: false);
@@ -83,9 +93,9 @@ ProgressionVerdict evaluateProgression({
         ProgressionAction.increase,
         rule.incrementKg,
         tx(
-        '${near.length} 组全部达到 ${rule.repsMax} 次，末组余力 ${lastSet.rir} 次 → 下次加重 ${rule.incrementKg}kg',
+        '${near.length} 组全部达到 ${rule.repsMax} $unit，末组余力 ${lastSet.rir} 次 → 下次加重 ${rule.incrementKg}kg',
         en:
-            'All ${near.length} sets hit ${rule.repsMax} reps, last set RIR ${lastSet.rir} → add ${rule.incrementKg}kg next time'),
+            'All ${near.length} sets hit ${enRepPhrase(rule.repsMax, logging)}, last set RIR ${lastSet.rir} → add ${rule.incrementKg}kg next time'),
     );
   }
   if (anyBelowMin) {
@@ -94,13 +104,13 @@ ProgressionVerdict evaluateProgression({
     return ProgressionVerdict(
       ProgressionAction.decrease,
       cut,
-      tx('有组未达到下限 ${rule.repsMin} 次 → 建议减重约 5%（${cut}kg），先稳动作',
-        en: 'Some sets missed the ${rule.repsMin}-rep floor → reduce ~5% (${cut}kg) and re-groove the form'),
+      tx('有组未达到下限 ${rule.repsMin} $unit → 建议减重约 5%（${cut}kg），先稳动作',
+        en: 'Some sets missed the ${enRepPhrase(rule.repsMin, logging)} floor → reduce ~5% (${cut}kg) and re-groove the form'),
     );
   }
   return ProgressionVerdict(
-      ProgressionAction.hold, 0, tx('完成情况在区间内 → 重量保持，继续冲次数',
-        en: 'Reps landed in range — hold weight and chase more reps'));
+      ProgressionAction.hold, 0, tx('完成情况在区间内 → 重量保持，继续冲${logging == LoggingMode.time ? '秒数' : '次数'}',
+        en: 'Reps landed in range — hold weight and chase more ${logging == LoggingMode.time ? 'seconds' : 'reps'}'));
 }
 
 /// 0.5kg 步进取整（引擎与状态机共用）。
@@ -111,10 +121,14 @@ double _round05(double v) => round05(v);
 /// 根据历史记录给出某动作的建议起始重量。
 /// 规则：取"最后一次训练"（与末组时间差 <4 小时的组视为同一次训练）
 /// → 应用渐进判定；无历史返回 null（由用户首填）。
+/// [loadType]（v14）：'bodyweight' 时无论判定结果如何都返回 0.0——
+/// 自重动作重量恒 0，渐进表达在次数/组数上（不走重量轴）。
 double? recommendWeight({
   required List<SetEntry> historyWorkingSets,
   required ProgressionRule rule,
+  String loadType = LoadMode.weighted,
 }) {
+  if (loadType == LoadMode.bodyweight) return 0.0;
   if (historyWorkingSets.isEmpty) return null;
   final last = historyWorkingSets.last;
   // 同一次训练的组时间相邻（训练总时长一般 <4 小时），

@@ -76,6 +76,15 @@ class Settings extends ChangeNotifier {
   // 默认关：与常亮（训练时屏幕不灭）是两个独立维度。
   bool lockScreenKeepOn = false;
 
+  // 训练中屏幕常亮（2026-10 开场设置）：计时态屏幕不灭，抬眼即见数字。
+  // 默认开（训练核心体验）；关了以后训练中屏幕可正常熄灭省电，
+  // 暂停/结束灭屏逻辑不受影响。
+  bool wakelockEnabled = true;
+
+  // 开练前记体重（2026-10 开场设置）：开始训练时若今天还没记过体重，
+  // 先弹底部面板顺手记一条（预填上次体重）。默认开；跳过即直接开练。
+  bool askWeightOnStart = true;
+
   // 心率循环负荷参数（2026-10-17：Edwards TRIMP 估算用）
   int hrAge = 0; // 0 = 未填（最大心率回落 190 兜底）
   int hrRest = 60; // 静息心率
@@ -132,6 +141,8 @@ class Settings extends ChangeNotifier {
         _prefs.getInt('${_kprefix}trainRemindMin') ?? 20 * 60;
     autoShiftOnMiss = _prefs.getBool('${_kprefix}autoShiftOnMiss') ?? true;
     lockScreenKeepOn = _prefs.getBool('${_kprefix}lockScreenKeepOn') ?? false;
+    wakelockEnabled = _prefs.getBool('${_kprefix}wakelockOn') ?? true;
+    askWeightOnStart = _prefs.getBool('${_kprefix}askWeightOnStart') ?? true;
     hrAge = _prefs.getInt('${_kprefix}hrAge') ?? 0;
     hrRest = _prefs.getInt('${_kprefix}hrRest') ?? 60;
     hrMaxOverride = _prefs.getInt('${_kprefix}hrMax') ?? 0;
@@ -194,6 +205,8 @@ class Settings extends ChangeNotifier {
     await _prefs.setInt('${_kprefix}trainRemindMin', trainReminderMinOfDay);
     await _prefs.setBool('${_kprefix}autoShiftOnMiss', autoShiftOnMiss);
     await _prefs.setBool('${_kprefix}lockScreenKeepOn', lockScreenKeepOn);
+    await _prefs.setBool('${_kprefix}wakelockOn', wakelockEnabled);
+    await _prefs.setBool('${_kprefix}askWeightOnStart', askWeightOnStart);
     await _prefs.setInt('${_kprefix}hrAge', hrAge);
     await _prefs.setInt('${_kprefix}hrRest', hrRest);
     await _prefs.setInt('${_kprefix}hrMax', hrMaxOverride);
