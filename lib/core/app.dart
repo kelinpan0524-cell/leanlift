@@ -12,6 +12,7 @@ import '../services/export_service.dart';
 import '../services/focus_service.dart';
 import '../services/heart_rate_service.dart';
 import '../services/lark_service.dart';
+import '../services/local_bridge.dart';
 import '../services/notify_service.dart';
 import '../services/plan_repository.dart';
 import '../services/session_controller.dart';
@@ -20,7 +21,7 @@ import '../services/training_reminder.dart';
 
 /// 全局容器：App 启动时构造一次，经 AppScope 注入整棵 Widget 树。
 class AppContainer {
-  AppContainer({required this.prefs, Db? db, AiService? aiOverride})
+  AppContainer({required this.prefs, Db? db, AiService? aiOverride, LocalBridgeService? bridgeOverride})
     : settings = Settings(prefs),
       db = db ?? Db.instance,
       notify = NotifyService() {
@@ -31,6 +32,15 @@ class AppContainer {
     ai = aiOverride ?? AiService(settings);
     lark = LarkService(settings, this.db);
     export = ExportService(this.db);
+    // 局域网只读桥（方案 B）：构造即挂容器，但**不自动启动**——
+    // 状态不落盘，每次都要用户在设置页主动开，空闲超时自动关。
+    // [bridgeOverride] 仅测试注入（自定义端口/IP，免依赖跑测机器的网卡）。
+    bridge = bridgeOverride ??
+        LocalBridgeService(
+          db: this.db,
+          planRepo: planRepo,
+          bodyWeightKg: () => settings.bodyWeightKg,
+        );
     hr = HeartRateService(prefs);
 
     // 训练开始/结束 → 专注模式动作
@@ -112,6 +122,7 @@ class AppContainer {
   late final AiService ai;
   late final LarkService lark;
   late final ExportService export;
+  late final LocalBridgeService bridge;
   late final TrainingReminderService trainReminders;
   late final AutoShiftService autoShift;
   late final HeartRateService hr;
@@ -238,6 +249,7 @@ class AppContainer {
     session.dispose();
     settings.dispose();
     planRepo.dispose();
+    bridge.dispose();
   }
 }
 
