@@ -5,11 +5,13 @@ import '../engine/engine.dart';
 import '../engine/superset.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
+import '../services/weight_prompt.dart';
 import 'ai_coach_page.dart';
 import 'schedule_views.dart';
 import 'settings_subpages.dart';
 import 'theme.dart';
 import 'today_edit_sheet.dart';
+import 'weight_prompt_sheet.dart';
 import 'widgets/common.dart';
 import 'workout_page.dart';
 
@@ -533,6 +535,22 @@ class _HomePageState extends State<HomePage> {
       // _pickExtraDay 汇入本方法，自动获得同能力。
       final edited = await showTodayEditSheet(context, day: day, initial: exs);
       if (edited == null || edited.isEmpty || !context.mounted) return;
+      // 开练前顺手记体重（2026-10 开场设置）：开关开且今天还没记过 →
+      // 弹底部面板（预填上次体重，训练会话创建之前、不碰训练中禁弹窗红线）。
+      // 滑掉 = 取消不开练（与开练前编辑的取消语义一致）；「跳过/保存」= 放行。
+      final metrics = await c.db.bodyMetrics();
+      final last = metrics.isEmpty ? null : metrics.last;
+      if (shouldAskWeightOnStart(
+        enabled: c.settings.askWeightOnStart,
+        lastMetricDate: last?.date,
+        today: fmtDate(DateTime.now()),
+      )) {
+        if (!context.mounted) return;
+        final preset = last?.weightKg ??
+            (c.settings.bodyWeightKg > 0 ? c.settings.bodyWeightKg : null);
+        final go = await showWeightPromptSheet(context, presetKg: preset);
+        if (go != true || !context.mounted) return;
+      }
       await c.planRepo.refreshRecommendations(edited.map((e) => e.name));
       await c.session.startFromDay(day: day, planExercises: edited);
       if (!context.mounted) return;

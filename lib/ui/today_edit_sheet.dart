@@ -133,6 +133,10 @@ class _TodayEditSheetState extends State<_TodayEditSheet> {
       repsMax: result.repsMax,
       restSec: result.restSec,
       kind: result.kind,
+      // 记录形态/负荷类型（v14）：共用表单里改了就带过去——
+      // startFromDay 按内存快照快照进会话，只影响今天、不写回计划。
+      logging: result.logging,
+      loadType: result.loadType,
       rule: todayRuleFor(
         sets: result.sets,
         repsMin: result.repsMin,

@@ -76,6 +76,15 @@ class Settings extends ChangeNotifier {
   // 默认关：与常亮（训练时屏幕不灭）是两个独立维度。
   bool lockScreenKeepOn = false;
 
+  // 训练中屏幕常亮（2026-10 开场设置）：计时态屏幕不灭，抬眼即见数字。
+  // 默认开（训练核心体验）；关了以后训练中屏幕可正常熄灭省电，
+  // 暂停/结束灭屏逻辑不受影响。
+  bool wakelockEnabled = true;
+
+  // 开练前记体重（2026-10 开场设置）：开始训练时若今天还没记过体重，
+  // 先弹底部面板顺手记一条（预填上次体重）。默认开；跳过即直接开练。
+  bool askWeightOnStart = true;
+
   // 应用更新（GitHub 私仓 Releases）
   String ghUpdateToken = ''; // 只读令牌，与 AI Key 同一本地存放策略
   AppRelease? pendingUpdate; // 运行时状态（发现的新版），不落盘
@@ -127,6 +136,8 @@ class Settings extends ChangeNotifier {
         _prefs.getInt('${_kprefix}trainRemindMin') ?? 20 * 60;
     autoShiftOnMiss = _prefs.getBool('${_kprefix}autoShiftOnMiss') ?? true;
     lockScreenKeepOn = _prefs.getBool('${_kprefix}lockScreenKeepOn') ?? false;
+    wakelockEnabled = _prefs.getBool('${_kprefix}wakelockOn') ?? true;
+    askWeightOnStart = _prefs.getBool('${_kprefix}askWeightOnStart') ?? true;
     ghUpdateToken = _prefs.getString('${_kprefix}ghToken') ?? '';
     larkAccessToken = _prefs.getString('${_kprefix}larkAccess') ?? '';
     larkTokenExpiry = _prefs.getInt('${_kprefix}larkExpiry') ?? 0;
@@ -186,6 +197,8 @@ class Settings extends ChangeNotifier {
     await _prefs.setInt('${_kprefix}trainRemindMin', trainReminderMinOfDay);
     await _prefs.setBool('${_kprefix}autoShiftOnMiss', autoShiftOnMiss);
     await _prefs.setBool('${_kprefix}lockScreenKeepOn', lockScreenKeepOn);
+    await _prefs.setBool('${_kprefix}wakelockOn', wakelockEnabled);
+    await _prefs.setBool('${_kprefix}askWeightOnStart', askWeightOnStart);
     await _prefs.setString('${_kprefix}ghToken', ghUpdateToken);
     await _prefs.setString('${_kprefix}larkAccess', larkAccessToken);
     await _prefs.setInt('${_kprefix}larkExpiry', larkTokenExpiry);

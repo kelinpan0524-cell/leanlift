@@ -994,6 +994,14 @@ class Db {
     return rows.map(BodyMetric.fromMap).toList().reversed.toList();
   }
 
+  /// 某一天的身体记录（开练前体重面板判定「今天记过没」用）；没有返回 null。
+  Future<BodyMetric?> bodyMetricOn(String date) async {
+    final db = await database;
+    final rows = await db.query('body_metrics',
+        where: 'date = ?', whereArgs: [date], limit: 1);
+    return rows.isEmpty ? null : BodyMetric.fromMap(rows.first);
+  }
+
   // ---------- lark sync ----------
   Future<void> upsertLarkSync(LarkSync sync) async {
     final db = await database;
