@@ -10,6 +10,7 @@ import '../services/ai_service.dart';
 import '../services/auto_shift.dart';
 import '../services/export_service.dart';
 import '../services/focus_service.dart';
+import '../services/heart_rate_service.dart';
 import '../services/lark_service.dart';
 import '../services/notify_service.dart';
 import '../services/plan_repository.dart';
@@ -30,6 +31,7 @@ class AppContainer {
     ai = aiOverride ?? AiService(settings);
     lark = LarkService(settings, this.db);
     export = ExportService(this.db);
+    hr = HeartRateService(prefs);
 
     // 训练开始/结束 → 专注模式动作
     session.onEnterFocus = _onEnterFocus;
@@ -37,11 +39,27 @@ class AppContainer {
     // 休息时间源 → 精确闹钟（开始/加时/继续重挂，暂停取消，恢复会话补挂）
     session.onRestAlarmChanged = _onRestAlarmChanged;
     // 训练卡 → 前台服务常驻通知（会话进行中常驻，结束自动停）
+    // + 心率直连窗口（2026-10-17）：卡出现 = 会话活跃，自动重连已存
+    // 设备并开始采样；卡消失 = 会话关闭，采样落库 + 断连省电。
+    int? hrSessionId;
     session.onCardChanged = (card) {
       if (card.active) {
         unawaited(notify.showTrainingCard(card));
+        if (hrSessionId == null) {
+          hrSessionId = session.session?.id;
+          hr.startRecording();
+          unawaited(hr.connectSaved());
+        }
       } else {
         unawaited(notify.stopTrainingCard());
+        final sid = hrSessionId;
+        if (sid != null) {
+          hrSessionId = null;
+          hr.stopRecording();
+          // quit 会话也落库（历史不展示但数据不丢）；失败静默不阻塞收工
+          unawaited(hr.flushSamples(this.db, sid));
+          hr.disconnect();
+        }
       }
     };
     // 通知栏遥控按钮（暂停/继续/±10 秒）→ 会话状态机
@@ -96,6 +114,7 @@ class AppContainer {
   late final ExportService export;
   late final TrainingReminderService trainReminders;
   late final AutoShiftService autoShift;
+  late final HeartRateService hr;
 
   /// 本次启动自动顺延掉的训练日（首页读过一次即清空；空 = 无提示）。
   List<DateTime> pendingAutoShiftDates = const [];
@@ -215,6 +234,7 @@ class AppContainer {
   }
 
   void dispose() {
+    hr.dispose();
     session.dispose();
     settings.dispose();
     planRepo.dispose();
