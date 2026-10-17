@@ -730,7 +730,10 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
           onSessionEnded: _finishFlow,
         );
       case FlowPageKind.rest:
-        return const _RestView();
+        // 非 const：休息页内容（「再来一组」按钮、「下一组 · 加练」文案）
+        // 要随 session notify 重渲染——const 实例会让 Flutter 短路跳过
+        // 整棵子树（2026-10-17 加练带休息计时后不再靠换页刷新）。
+        return _RestView();
       case FlowPageKind.summary:
         final sum = _summary;
         if (sum == null) return null;
@@ -2632,11 +2635,16 @@ class _RestViewState extends State<_RestView> {
     final ex = s.currentEx;
     final isLastEx = s.curExIdx >= s.exercises.length - 1;
     final plannedWorking = ex?.rule.workingSets ?? 0;
-    final nextText = s.workingSetsDone >= plannedWorking
+    final doneAll = s.workingSetsDone >= plannedWorking;
+    // 练满动作上的休息 = 落点是它的加练组（「再来一组」回退后休息继续；
+    // 或收尾确认选「继续训练」后的加练态——含轮转末组落在非末位动作的
+    // 情形）。练满必已切走或回退，不存在「练满且未练满下一动作」的
+    // 普通推进休息，所以不再有「下一个动作：X」分支（2026-10-17）。
+    final nextText = doneAll
         ? (isLastEx
               ? tx('准备结束训练', en: 'Ready to Finish')
-              : tx('下一个动作：${exname(s.exercises[s.curExIdx + 1].name)}',
-                  en: 'Next exercise: ${exname(s.exercises[s.curExIdx + 1].name)}'))
+              : tx('下一组 · ${exname(ex?.name ?? '')} 加练：${fmtLoad(s.weightDraft)}${s.weightDraft != 0 ? 'kg' : ''} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} 次',
+                  en: 'Next · ${exname(ex?.name ?? '')} extra: ${fmtLoad(s.weightDraft)}${s.weightDraft != 0 ? 'kg' : ''} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} reps'))
         // 下一组带动作名 + 组号（2026-09-26 Arono：休息中要知道接下来
         // 练什么动作、第几组、做多少次）。尾巴不放操作提示：412 宽会
         // 折成两行，破坏休息页"一眼看完"的极简版式（点按展开本就是常态）

@@ -836,7 +836,9 @@ class SessionController extends ChangeNotifier {
 
   void skipRest() => _finishRest(cancelAlarm: true);
 
-  /// 休息中「刚完成的动作再来一组」：回退到该动作进入动作态，
+  /// 休息中「刚完成的动作再来一组」：回退到该动作，休息倒计时继续走
+  /// （2026-10-17：加练也带休息计时——剩余时间即备场时间，到点震动/
+  /// 提示音提醒开练；±30s/暂停/跳过照常，「跳过休息」= 立即进入这一组）。
   /// 再完成的组按正式组记录（同样参与渐进判定与 PR）。
   /// 重量继承该动作最后一组的实际重量（手调过的配重不从头再来），
   /// 没有历史组才回落到推荐值。
@@ -845,14 +847,16 @@ class SessionController extends ChangeNotifier {
     if (name == null || !hasActive) return;
     final idx = exercises.indexWhere((e) => e.name == name);
     if (idx < 0) return;
-    _restPaused = false; // 暂停态回退前先解除，避免 resume 语义错乱
     curExIdx = idx;
     final list = setsByEx[exercises[idx].id] ?? const <SetEntry>[];
     workingSetsDone = list.where((e) => e.kind == SetKind.working).length;
     curSetIdx = list.length;
     await _loadContextForCurrent();
     weightDraft = list.isNotEmpty ? list.last.weightKg : _recommendFor(name);
-    _finishRest(cancelAlarm: true);
+    // 不结束休息：落点改为该动作的加练组，倒计时自然走完再进动作态。
+    // 入口即消费（清空后按钮消失，休息页由「下一组 · 加练」文案报状态）。
+    extraSetExerciseName = null;
+    notifyCard();
     notifyListeners();
   }
 
