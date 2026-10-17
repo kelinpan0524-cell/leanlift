@@ -70,5 +70,14 @@ void main() {
       expect(prompt, contains('0:00 100'));
       expect(prompt, contains('1:05 130'));
     });
+    test('loadNote 可选注入与省略', () {
+      final pts = [const HrPoint(0, 100)];
+      final withLoad = buildHrAnalysisPrompt(pts, durationMin: 30,
+          loadNote: '本场循环负荷（Edwards TRIMP）约 9，区间停留：Z2 18分');
+      expect(withLoad, contains('Edwards TRIMP'));
+      expect(withLoad, contains('Z2 18分'));
+      final noLoad = buildHrAnalysisPrompt(pts, durationMin: 30);
+      expect(noLoad, isNot(contains('TRIMP')));
+    });
   });
 }

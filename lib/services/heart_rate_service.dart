@@ -67,8 +67,10 @@ HrSummary? summarizeHr(List<HrPoint> points) {
   return HrSummary(avg: sum / points.length, max: max, count: points.length);
 }
 
-/// AI 心率解析的提示词（纯函数便于单测）；[points] 由调用方先降采样。
-String buildHrAnalysisPrompt(List<HrPoint> points, {required int durationMin}) {
+/// AI 心率解析的提示词（纯函数便于单测）；[points] 由调用方先降采样；
+/// [loadNote] 为循环负荷摘要（可空，调用方按设置参数算好传入）。
+String buildHrAnalysisPrompt(List<HrPoint> points,
+    {required int durationMin, String? loadNote}) {
   final t0 = points.isEmpty ? 0 : points.first.ts;
   String fmt(int ts) {
     final s = ((ts - t0) / 1000).round();
@@ -78,13 +80,14 @@ String buildHrAnalysisPrompt(List<HrPoint> points, {required int durationMin}) {
   final lines = [
     for (final p in points) '${fmt(p.ts)} ${p.bpm}',
   ].join('\n');
+  final loadLine = (loadNote == null || loadNote.isEmpty) ? '' : '$loadNote\n';
   return '''
 你是一名力量训练教练。用户刚完成一场力量训练（时长约 $durationMin 分钟），以下是训练期间的蓝牙心率采样（约每秒一次，已抽稀，格式「分:秒 心率bpm」）：
 
-$lines
+$loadLine$lines
 
 请用中文输出简短解析，共 4 条要点，每条一行、以「·」开头，依次覆盖：
-1. 平均强度与峰值是否合理（对照力量训练常见的心率区间感受）；
+1. 平均强度与峰值是否合理（可结合循环负荷与区间停留，对照力量训练常见感受）；
 2. 组间心率恢复快慢（从中观察恢复能力与休息时长是否匹配）；
 3. 异常波动（如持续过高、骤降、佩戴漂移；没有就写"未见异常"）；
 4. 一条下次训练的具体建议。

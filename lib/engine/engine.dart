@@ -3,6 +3,7 @@ import '../models/models.dart';
 import 'volume.dart';
 
 export '../models/models.dart';
+export 'hr_load.dart';
 export 'local_plan.dart';
 export 'plates.dart';
 export 'progression_chain.dart';

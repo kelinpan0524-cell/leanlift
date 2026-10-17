@@ -1,13 +1,17 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../db/db.dart';
+import '../engine/engine.dart';
 import '../l10n/lang.dart';
 import '../services/ai_service.dart';
 import '../services/heart_rate_service.dart';
+import '../services/settings.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
 
@@ -209,6 +213,8 @@ class _HeartRatePageState extends State<HeartRatePage> {
                   ],
                 ),
               ],
+              const SizedBox(height: 16),
+              _LoadParamsCard(s: c.settings),
               if (hr.found.isNotEmpty) ...[
                 const SizedBox(height: 16),
                 SectionCard(
@@ -238,12 +244,12 @@ class _HeartRatePageState extends State<HeartRatePage> {
               const SizedBox(height: 16),
               Text(
                 tx(
-                  '· 手环需开启「心率广播」：WHOOP 在官方 App 设置里打开 Heart Rate Broadcast，小米/华米手环切到广播模式\n'
+                  '· WHOOP 默认开放标准心率服务，零设置直读；小米/华米等手环需在官方 App 里开启「心率广播」\n'
                   '· 走标准蓝牙心率协议（0x180D），无需配对，官方 App 同时读也不冲突\n'
                   '· 开始训练时自动连接已保存的设备；组间休息时页面上会显示实时心率，结束后生成心率曲线\n'
                   '· Android 12+ 需要「附近的设备」权限，旧系统需要定位权限（仅用于扫描，不记录位置）',
                   en:
-                      '· Enable "Heart Rate Broadcast" on your band (WHOOP: Heart Rate Broadcast in app settings; Xiaomi/Amazfit: broadcast mode)\n'
+                      '· WHOOP broadcasts standard heart rate by default — no setup needed; Xiaomi/Amazfit bands need "Heart Rate Broadcast" enabled in their app\n'
                       '· Standard Bluetooth Heart Rate profile (0x180D) — no pairing needed, official apps can read at the same time\n'
                       '· Auto-connects at workout start; live HR shows on the rest page and a curve is saved after the session\n'
                       '· Android 12+ needs Nearby Devices; older versions need Location (for scanning only, never recorded)',
@@ -279,6 +285,19 @@ class HrChartBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     if (points.length < 2) return const SizedBox.shrink();
     final sum = summarizeHr(points)!;
+    // 循环负荷（Edwards TRIMP）：按设置里的年龄/静息/最大心率估算，
+    // 没填年龄用本场实测峰值兜底——有负荷数值才显示这一行。
+    final s = app(context).settings;
+    final load = computeHrLoad(
+      [for (final p in points) (ts: p.ts, bpm: p.bpm)],
+      age: s.hrAge,
+      hrRest: s.hrRest,
+      hrMaxOverride: s.hrMaxOverride,
+    );
+    final loadLine = load.trimp >= 1 && load.zoneSummary().isNotEmpty
+        ? tx('循环负荷 ${load.trimp.round()} · ${load.zoneSummary()}',
+            en: 'Cardio Load ${load.trimp.round()} · ${load.zoneSummary()}')
+        : '';
     final t0 = points.first.ts;
     final spots = [
       for (final p in points)
@@ -304,6 +323,11 @@ class HrChartBlock extends StatelessWidget {
               en: 'Avg ${sum.avg.round()} bpm · Peak ${sum.max} bpm'),
           style: const TextStyle(color: AppTheme.textDim, fontSize: 13),
         ),
+        if (loadLine.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(loadLine,
+              style: const TextStyle(color: AppTheme.textDim, fontSize: 13)),
+        ],
         const SizedBox(height: 8),
         SizedBox(
           height: 180,
@@ -471,8 +495,22 @@ class _HrAiPanelState extends State<HrAiPanel> {
       final pts = downsampleHr(widget.points, 60);
       final durationMin =
           ((widget.points.last.ts - widget.points.first.ts) / 60000).round();
+      // 循环负荷随采样一并发给 AI，让解析有量化锚点（不算 token 大头）
+      final s = c.settings;
+      final load = computeHrLoad(
+        [for (final p in widget.points) (ts: p.ts, bpm: p.bpm)],
+        age: s.hrAge,
+        hrRest: s.hrRest,
+        hrMaxOverride: s.hrMaxOverride,
+      );
+      final loadNote = load.trimp >= 1
+          ? '本场循环负荷（Edwards TRIMP）约 ${load.trimp.round()}，区间停留：${load.zoneSummary()}（最大心率按 ${load.hrMaxUsed} / 静息 ${load.hrRestUsed} 估算）'
+          : null;
       final reply = await c.ai.chat([
-        AiMessage('user', buildHrAnalysisPrompt(pts, durationMin: durationMin)),
+        AiMessage(
+            'user',
+            buildHrAnalysisPrompt(pts,
+                durationMin: durationMin, loadNote: loadNote)),
       ]);
       if (!mounted) return;
       setState(() => _result = reply);
@@ -544,6 +582,128 @@ class _HrAiPanelState extends State<HrAiPanel> {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// 循环负荷参数卡（2026-10-17 Arono：填几个数没关系）：年龄/静息/最大
+/// 心率，点行弹数字输入框即改即存，不做表单页。最大心率 0 = 自动
+/// （220-年龄，年龄也没填则用本场实测峰值，再兜底 190）。
+class _LoadParamsCard extends StatelessWidget {
+  const _LoadParamsCard({required this.s});
+
+  final Settings s;
+
+  Future<void> _edit(
+    BuildContext context,
+    String title,
+    int current,
+    int lo,
+    int hi,
+    ValueChanged<int> onSave,
+  ) async {
+    final ctrl = TextEditingController(text: '$current');
+    final v = await showDialog<int>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: AppTheme.card,
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: Text(tx('取消', en: 'Cancel'),
+                style: const TextStyle(color: AppTheme.textDim)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, int.tryParse(ctrl.text)),
+            child: Text(tx('保存', en: 'Save'),
+                style: const TextStyle(color: AppTheme.primary)),
+          ),
+        ],
+      ),
+    );
+    if (v == null) return;
+    onSave(v < lo ? lo : (v > hi ? hi : v));
+  }
+
+  Widget _row(String label, String value, VoidCallback onTap) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            children: [
+              Expanded(
+                  child: Text(label, style: const TextStyle(fontSize: 15))),
+              Text(value,
+                  style:
+                      const TextStyle(color: AppTheme.textDim, fontSize: 14)),
+              const SizedBox(width: 4),
+              const Icon(Icons.chevron_right, size: 18, color: AppTheme.textDim),
+            ],
+          ),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    void save() => unawaited(s.save());
+    return SectionCard(
+      title: tx('循环负荷参数', en: 'Cardio Load Parameters'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _row(
+            tx('年龄', en: 'Age'),
+            s.hrAge > 0
+                ? '${s.hrAge} ${tx('岁', en: 'yrs')}'
+                : tx('未填', en: 'Not set'),
+            () => _edit(context, tx('年龄', en: 'Age'), s.hrAge, 10, 99,
+                (v) {
+              s.hrAge = v;
+              save();
+            }),
+          ),
+          _row(
+            tx('静息心率', en: 'Resting HR'),
+            '${s.hrRest} bpm',
+            () => _edit(context, tx('静息心率', en: 'Resting HR'), s.hrRest,
+                30, 110, (v) {
+              s.hrRest = v;
+              save();
+            }),
+          ),
+          _row(
+            tx('最大心率', en: 'Max HR'),
+            s.hrMaxOverride > 0
+                ? '${s.hrMaxOverride} bpm'
+                : tx('自动（220−年龄）', en: 'Auto (220−age)'),
+            () => _edit(
+                context,
+                tx('最大心率（0 = 自动按 220−年龄）', en: 'Max HR (0 = auto 220−age)'),
+                s.hrMaxOverride,
+                0,
+                250, (v) {
+              s.hrMaxOverride = v;
+              save();
+            }),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            tx(
+                '用于训练后自动估算循环负荷（Edwards TRIMP，按心率区间加权）；年龄不填按 190 估最大心率。',
+                en: 'Estimates post-workout cardio load (Edwards TRIMP, zone-weighted); max HR defaults to 190 without age.'),
+            style: const TextStyle(
+                color: AppTheme.textDim, fontSize: 12, height: 1.5),
+          ),
+        ],
+      ),
     );
   }
 }
