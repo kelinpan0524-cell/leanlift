@@ -82,6 +82,8 @@ class _MuscleRecoveryCardState extends State<MuscleRecoveryCard> {
   Widget build(BuildContext context) {
     return SectionCard(
       title: tx('肌群恢复度', en: 'Muscle Recovery'),
+      icon: Icons.spa_outlined,
+      iconColor: AppTheme.primary,
       child: FutureBuilder<Map<String, int>>(
         future: _future,
         builder: (context, snap) {

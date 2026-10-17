@@ -139,18 +139,24 @@ void main() {
       }
     });
 
-    test('网格从第一次训练所在周开始（新用户不铺 53 列）', () {
+    test('网格固定 53 周：早期训练落在对应列，空周保持全零', () {
       final now = DateTime(2026, 10, 14); // 周三
       final monday = mondayOf(now); // 本周周一
-      // 两周前的周一练过 → 网格 = 前两周 + 本周共 3 列
+      // 两周前的周一练过 → 仍铺满 53 列（标题「近 12 个月」），
+      // 训练落进对应列，本周列全零
       final grid = activityHeatmap(
         sessions: [_ses(monday.subtract(const Duration(days: 14)))],
         now: now,
         byVolume: false,
       );
-      expect(grid.length, 3);
-      expect(grid[0][0], greaterThan(0), reason: '首列周一有值');
-      expect(grid[2], everyElement(0.0), reason: '本周无训练全零');
+      expect(grid.length, 53, reason: '固定 12 个月坐标系，不再按首次训练截断');
+      final startMonday =
+          monday.subtract(const Duration(days: 7 * 52));
+      final col =
+          monday.subtract(const Duration(days: 14)).difference(startMonday).inDays ~/
+              7;
+      expect(grid[col][0], greaterThan(0), reason: '两周前的周一落在倒数第 3 列');
+      expect(grid.last, everyElement(0.0), reason: '本周无训练全零');
     });
 
     test('时长口径：activeMs+restMs 优先，缺失回退起止差，再缺失按组数×4 估', () {

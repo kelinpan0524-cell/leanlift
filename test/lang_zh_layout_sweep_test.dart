@@ -17,6 +17,7 @@ import 'package:baoji_timer/l10n/lang.dart';
 import 'package:baoji_timer/ui/ai_coach_page.dart';
 import 'package:baoji_timer/ui/exercise_library_page.dart';
 import 'package:baoji_timer/ui/history_page.dart';
+import 'package:baoji_timer/ui/heart_rate_page.dart';
 import 'package:baoji_timer/ui/home_page.dart';
 import 'package:baoji_timer/ui/plan_page.dart';
 import 'package:baoji_timer/ui/settings_page.dart';
@@ -242,7 +243,7 @@ void main() {
           .id!;
       final seId = await container.db.insertSessionExercise(SessionExercise(
         sessionId: sid,
-        name: '卧推',
+        name: '杠铃卧推',
         orderIdx: 0,
         kind: 'compound',
         rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
@@ -253,6 +254,24 @@ void main() {
           weightKg: w,
           reps: r,
           rir: 2,
+          kind: SetKind.working,
+          doneAt: when.millisecondsSinceEpoch,
+        ));
+      }
+      // 腿日第二动作：让「肌肉」Tab 有跨肌群的容量分布，而不是只剩「其他」
+      final squatId = await container.db.insertSessionExercise(SessionExercise(
+        sessionId: sid,
+        name: '杠铃深蹲',
+        orderIdx: 1,
+        kind: 'compound',
+        rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
+      ));
+      for (final (w, r) in [(80.0, 6), (85.0, 5)]) {
+        await container.db.insertSet(SetEntry(
+          sessionExerciseId: squatId,
+          weightKg: w,
+          reps: r,
+          rir: 1,
           kind: SetKind.working,
           doneAt: when.millisecondsSinceEpoch,
         ));
@@ -281,7 +300,14 @@ void main() {
       try {
         await tester.pumpWidget(host(container, entry.value));
         await settle(tester);
-        await scrollThrough(tester);
+        // 首屏单独留档：滚动后截图看不到页首层级（数据页 KPI/设置页分组），
+        // 人工核验需要一张未滚动的原貌
+        await golden(tester, '${tag}_${entry.key}_top');
+        // 第二屏：数据页的 1RM/余力/休息卡都在中段，只留首尾会漏看
+        await tester.drag(find.byType(Scrollable).first, const Offset(0, -800));
+        await tester.pump(const Duration(milliseconds: 200));
+        await golden(tester, '${tag}_${entry.key}_mid');
+        await scrollThrough(tester, screens: 2);
         await golden(tester, '${tag}_${entry.key}');
       } catch (e) {
         issues.add('${entry.key}: pump threw $e');
@@ -295,11 +321,13 @@ void main() {
       await tester.pumpWidget(host(container, const StatsPage()));
       await settle(tester);
       await tester.tap(find.text('肌肉'));
-      await settle(tester, rounds: 4);
+      await settle(tester, rounds: 8);
+      await golden(tester, '${tag}_stats_muscle_top');
       await scrollThrough(tester);
       await golden(tester, '${tag}_stats_muscle');
       await tester.tap(find.text('身体'));
       await settle(tester, rounds: 4);
+      await golden(tester, '${tag}_stats_body_top');
       await scrollThrough(tester);
       await golden(tester, '${tag}_stats_body');
     } catch (e) {
@@ -502,6 +530,33 @@ void main() {
         print('• $s');
       }
       fail('${issues.toSet().length} 处中文布局异常');
+    }
+  });
+
+  testWidgets('心率设备页（中文）', (tester) async {
+    setSurface(tester, const Size(412, 915));
+    await tester.runAsync(seed);
+    final c = _IssueCollector();
+    final issues = <String>[];
+    c.start('heart-rate');
+    try {
+      await tester.pumpWidget(host(container, const HeartRatePage()));
+      await settle(tester);
+      await golden(tester, 'zh_heart_rate');
+    } catch (e) {
+      issues.add('heart-rate: $e');
+    }
+    c.stop();
+    issues.addAll(c.issues.map((e) => 'heart-rate: $e'));
+
+    if (issues.isNotEmpty) {
+      // ignore: avoid_print
+      print('==== 中文布局问题清单（心率设备页）====');
+      for (final s in issues.toSet()) {
+        // ignore: avoid_print
+        print('• $s');
+      }
+      fail('${issues.toSet().length} 处中文布局异常（心率设备页）');
     }
   });
 

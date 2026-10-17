@@ -85,6 +85,22 @@ class _HeartRatePageState extends State<HeartRatePage> {
         HrLink.connected => tx('已连接', en: 'Connected'),
       };
 
+  /// 扫描放到独立底部弹层：扫描结果逐条到达时只让弹层内部增长，
+  /// 主页面完全不移动（2026-10-17 Arono：连 WHOOP 时页面「漂移」）。
+  /// 弹层关闭时兜底停扫，避免后台一直扫。
+  Future<void> _openScanSheet() async {
+    final hr = app(context).hr;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppTheme.card,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _ScanSheet(hr: hr),
+    );
+    if (hr.link == HrLink.scanning) unawaited(hr.stopScan());
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = app(context);
@@ -99,149 +115,183 @@ class _HeartRatePageState extends State<HeartRatePage> {
         listenable: hr,
         builder: (context, _) {
           final connected = hr.link == HrLink.connected;
+          final connecting = hr.link == HrLink.connecting;
           return ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              // 状态卡
+              // 状态卡：bpm 行与设备名槽位**始终存在**（未连接显示 -- /
+              // 未选择设备），连接成功不再凭空多出一行把下方整体推下去
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: AppTheme.card,
                   borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.035)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
                       children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: (connected
+                                    ? AppTheme.danger
+                                    : AppTheme.textDim)
+                                .withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(
+                            Icons.monitor_heart_outlined,
+                            size: 22,
+                            color: connected
+                                ? AppTheme.danger
+                                : AppTheme.textDim,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Text(
+                                    _statusText(hr.link),
+                                    style: const TextStyle(
+                                        fontSize: 17,
+                                        fontWeight: FontWeight.w700),
+                                  ),
+                                  if (hr.link == HrLink.scanning ||
+                                      connecting) ...[
+                                    const SizedBox(width: 8),
+                                    const SizedBox(
+                                      width: 12,
+                                      height: 12,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                hr.savedName ??
+                                    tx('未选择设备', en: 'No device selected'),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: AppTheme.textDim, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.baseline,
+                      textBaseline: TextBaseline.alphabetic,
+                      children: [
                         Icon(
-                          Icons.monitor_heart_outlined,
-                          size: 20,
-                          color: connected ? AppTheme.danger : AppTheme.textDim,
+                          Icons.favorite,
+                          size: 18,
+                          color:
+                              connected ? AppTheme.danger : AppTheme.textDim,
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          _statusText(hr.link),
-                          style: const TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.w700),
+                          hr.bpm?.toString() ?? '--',
+                          style: AppTheme.bigNum(44,
+                              color: connected && hr.bpm != null
+                                  ? AppTheme.danger
+                                  : AppTheme.textDim),
                         ),
-                        const Spacer(),
-                        if (hr.savedName != null)
-                          Flexible(
-                            child: Text(
-                              hr.savedName!,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  color: AppTheme.textDim, fontSize: 13),
-                            ),
-                          ),
+                        const SizedBox(width: 6),
+                        Text(
+                          tx('bpm', en: 'bpm'),
+                          style: const TextStyle(
+                              color: AppTheme.textDim, fontSize: 13),
+                        ),
                       ],
                     ),
-                    if (connected && hr.bpm != null) ...[
-                      const SizedBox(height: 8),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.baseline,
-                        textBaseline: TextBaseline.alphabetic,
-                        children: [
-                          Text(
-                            '${hr.bpm}',
-                            style: AppTheme.bigNum(48, color: AppTheme.danger),
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            tx('bpm', en: 'bpm'),
-                            style: const TextStyle(
-                                color: AppTheme.textDim, fontSize: 14),
-                          ),
-                        ],
-                      ),
-                    ],
-                    if (hr.lastError.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        hr.lastError,
-                        style: const TextStyle(
-                            color: AppTheme.warn, fontSize: 13),
-                      ),
-                    ],
+                    // 错误是偶发信息：动画展开，不瞬间顶开下方内容
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 180),
+                      alignment: Alignment.topCenter,
+                      child: hr.lastError.isEmpty
+                          ? const SizedBox(width: double.infinity)
+                          : Padding(
+                              padding: const EdgeInsets.only(top: 10),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Padding(
+                                    padding: EdgeInsets.only(top: 1),
+                                    child: Icon(Icons.error_outline,
+                                        size: 14, color: AppTheme.warn),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      hr.lastError,
+                                      style: const TextStyle(
+                                          color: AppTheme.warn, fontSize: 13),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                    ),
                   ],
                 ),
               ),
               const SizedBox(height: 16),
-              // 主操作：扫描 / 停止 / 断开
+              // 主操作：扫描（结果在弹层里选）/ 断开
               BigButton(
-                label: hr.link == HrLink.scanning
-                    ? tx('停止扫描', en: 'Stop Scan')
-                    : (connected
-                        ? tx('断开连接', en: 'Disconnect')
-                        : tx('扫描心率设备', en: 'Scan Devices')),
+                label: connected
+                    ? tx('断开连接', en: 'Disconnect')
+                    : connecting
+                        ? tx('连接中…', en: 'Connecting…')
+                        : tx('扫描心率设备', en: 'Scan Devices'),
                 height: 64,
                 fontSize: 18,
-                color: hr.link == HrLink.scanning
-                    ? AppTheme.warn
-                    : AppTheme.primary,
-                onPressed: () {
-                  if (hr.link == HrLink.scanning) {
-                    hr.stopScan();
-                  } else if (connected) {
-                    hr.disconnect();
-                  } else {
-                    hr.startScan();
-                  }
-                },
+                onPressed: connected
+                    ? () => hr.disconnect()
+                    : connecting
+                        ? null
+                        : _openScanSheet,
               ),
-              if (hr.savedId != null) ...[
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.link, size: 18),
-                        label: Text(tx('重连已保存设备', en: 'Reconnect')),
-                        onPressed: hr.link == HrLink.connecting
-                            ? null
-                            : () => hr.connectSaved(),
-                      ),
+              const SizedBox(height: 10),
+              // 重连/忘记**始终显示**：没有保存设备时置灰。
+              // 原实现首次连接成功后整行突然出现，页面高度跳一屏。
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.link, size: 18),
+                      label: Text(tx('重连已保存设备', en: 'Reconnect')),
+                      onPressed: hr.savedId == null || connecting
+                          ? null
+                          : () => hr.connectSaved(),
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.link_off, size: 18),
-                        label: Text(tx('忘记设备', en: 'Forget')),
-                        onPressed: () => hr.forget(),
-                      ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.link_off, size: 18),
+                      label: Text(tx('忘记设备', en: 'Forget')),
+                      onPressed:
+                          hr.savedId == null ? null : () => hr.forget(),
                     ),
-                  ],
-                ),
-              ],
+                  ),
+                ],
+              ),
               const SizedBox(height: 16),
               _LoadParamsCard(s: c.settings),
-              if (hr.found.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                SectionCard(
-                  title: tx('发现的设备', en: 'Found Devices'),
-                  child: Column(
-                    children: [
-                      for (final r in hr.found)
-                        ListTile(
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          title: Text(_name(r),
-                              style: const TextStyle(fontSize: 15)),
-                          subtitle: Text(r.device.remoteId.str,
-                              style: const TextStyle(
-                                  color: AppTheme.textDim, fontSize: 12)),
-                          trailing: Text(
-                            '${r.rssi} dBm',
-                            style: const TextStyle(
-                                color: AppTheme.textDim, fontSize: 12),
-                          ),
-                          onTap: () => hr.connectResult(r),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
               const SizedBox(height: 16),
               Text(
                 tx(
@@ -259,6 +309,195 @@ class _HeartRatePageState extends State<HeartRatePage> {
                     color: AppTheme.textDim, fontSize: 13, height: 1.6),
               ),
             ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// 扫描弹层：列表在弹层内滚动，高度固定，结果到达不影响主页面布局。
+class _ScanSheet extends StatefulWidget {
+  const _ScanSheet({required this.hr});
+
+  final HeartRateService hr;
+
+  @override
+  State<_ScanSheet> createState() => _ScanSheetState();
+}
+
+class _ScanSheetState extends State<_ScanSheet> {
+  @override
+  void initState() {
+    super.initState();
+    // 弹层先出现再开扫：权限弹窗/蓝牙失败时用户能看到弹层里的状态
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(widget.hr.startScan());
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hr = widget.hr;
+    return SafeArea(
+      child: ListenableBuilder(
+        listenable: hr,
+        builder: (context, _) {
+          final scanning = hr.link == HrLink.scanning;
+          final connecting = hr.link == HrLink.connecting;
+          final found = hr.found;
+          final status = connecting
+              ? tx('正在连接…', en: 'Connecting…')
+              : scanning
+                  ? tx('正在搜索附近的心率设备…', en: 'Searching for nearby HR devices…')
+                  : hr.lastError.isNotEmpty
+                      ? hr.lastError
+                      : found.isEmpty
+                          ? tx('没有发现设备，确认手环已开启心率广播后重试',
+                              en: 'No devices found — enable heart-rate broadcast and retry')
+                          : tx('点选一个设备连接', en: 'Tap a device to connect');
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                        color: AppTheme.textDim.withValues(alpha: 0.5),
+                        borderRadius: BorderRadius.circular(2)),
+                  ),
+                ),
+                Row(
+                  children: [
+                    Text(tx('选择心率设备', en: 'Choose HR Device'),
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700)),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: Text(tx('取消', en: 'Cancel'),
+                          style:
+                              const TextStyle(color: AppTheme.textDim)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (scanning || connecting)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 2),
+                        child: SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Icon(
+                          hr.lastError.isNotEmpty
+                              ? Icons.error_outline
+                              : Icons.bluetooth_searching,
+                          size: 15,
+                          color: hr.lastError.isNotEmpty
+                              ? AppTheme.warn
+                              : AppTheme.textDim,
+                        ),
+                      ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        status,
+                        style: TextStyle(
+                            color: hr.lastError.isNotEmpty && !scanning
+                                ? AppTheme.warn
+                                : AppTheme.textDim,
+                            fontSize: 13,
+                            height: 1.4),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                // 固定高度：结果 0→N 条时只在这里滚动，弹层高度不变
+                SizedBox(
+                  height: 232,
+                  child: found.isEmpty
+                      ? Center(
+                          child: Icon(Icons.bluetooth_searching,
+                              size: 40,
+                              color:
+                                  AppTheme.textDim.withValues(alpha: 0.5)),
+                        )
+                      : ListView.separated(
+                          padding: EdgeInsets.zero,
+                          itemCount: found.length,
+                          separatorBuilder: (_, _) => const Divider(
+                              height: 1, color: AppTheme.cardHi),
+                          itemBuilder: (_, i) {
+                            final r = found[i];
+                            return ListTile(
+                              contentPadding:
+                                  const EdgeInsets.symmetric(horizontal: 4),
+                              leading: Container(
+                                width: 34,
+                                height: 34,
+                                decoration: BoxDecoration(
+                                  color: AppTheme.primary
+                                      .withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(9),
+                                ),
+                                child: const Icon(Icons.watch_outlined,
+                                    size: 18, color: AppTheme.primary),
+                              ),
+                              title: Text(_name(r),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 15)),
+                              subtitle: Text(r.device.remoteId.str,
+                                  style: const TextStyle(
+                                      color: AppTheme.textDim,
+                                      fontSize: 11)),
+                              trailing: Text('${r.rssi} dBm',
+                                  style: const TextStyle(
+                                      color: AppTheme.textDim,
+                                      fontSize: 11)),
+                              enabled: !connecting,
+                              onTap: () async {
+                                await hr.connectResult(r);
+                                if (context.mounted) {
+                                  Navigator.pop(context);
+                                }
+                              },
+                            );
+                          },
+                        ),
+                ),
+                const SizedBox(height: 8),
+                // 按钮常驻（停止/重新扫描），弹层高度不随扫描结束跳变
+                OutlinedButton.icon(
+                  icon: Icon(
+                      scanning
+                          ? Icons.stop_circle_outlined
+                          : Icons.refresh,
+                      size: 18),
+                  label: Text(scanning
+                      ? tx('停止扫描', en: 'Stop Scan')
+                      : tx('重新扫描', en: 'Scan Again')),
+                  onPressed: connecting
+                      ? null
+                      : () => scanning ? hr.stopScan() : hr.startScan(),
+                ),
+              ],
+            ),
           );
         },
       ),

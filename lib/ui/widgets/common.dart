@@ -13,6 +13,8 @@ class SectionCard extends StatelessWidget {
     super.key,
     required this.child,
     this.title,
+    this.icon,
+    this.iconColor,
     this.trailing,
     this.padding,
     this.onLongPress,
@@ -22,6 +24,11 @@ class SectionCard extends StatelessWidget {
 
   final Widget child;
   final String? title;
+
+  /// 标题前的小图标（可选）：统计页统一用带色块的小图标建立卡片识别，
+  /// 长页面里纯文字标题的扫读成本高。
+  final IconData? icon;
+  final Color? iconColor;
   final Widget? trailing;
   final EdgeInsetsGeometry? padding;
   final VoidCallback? onLongPress;
@@ -43,6 +50,20 @@ class SectionCard extends StatelessWidget {
             if (title != null)
               Row(
                 children: [
+                  if (icon != null) ...[
+                    Container(
+                      width: 28,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        color: (iconColor ?? AppTheme.primary)
+                            .withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(icon,
+                          size: 16, color: iconColor ?? AppTheme.primary),
+                    ),
+                    const SizedBox(width: 10),
+                  ],
                   // Expanded：标题吃满除 trailing 外的宽度；系统大字号下长标题
                   // 允许换行，不会把 Row 顶出横向溢出。不能用 Flexible+Spacer——
                   // 两者都是弹性子项会平分剩余空间，长英文标题被硬限一半宽度
