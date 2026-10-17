@@ -358,6 +358,9 @@ List<Widget> buildSessionDetailRows(
     final se = ses[k];
     final sets = map[se.id!] ?? [];
     if (sets.isEmpty) continue;
+    // 记录形态（v14）：计时动作次数列改时长口径；单侧动作给每边均分
+    final timed = isTimedLogging(se.logging);
+    final perSide = isPerSideLogging(se.logging);
     // 加练组数（v12，2026-10-08）：「计划目标 3 组」下挂 4 行时，
     // 多出来的那行要有解释——有加练就单列一行灰字。
     final extraCount = sets.where((x) => x.isExtra).length;
@@ -386,10 +389,14 @@ List<Widget> buildSessionDetailRows(
               if (snap.isNotEmpty) {
                 final t = snap.first;
                 final w = t.targetWeightKg;
-                line = tx(
-                  '目标 ${w == null ? '' : '${fmtKg(w)}kg × '}${t.targetReps} 次',
-                  en: 'Target ${w == null ? '' : '${fmtKg(w)}kg × '}${t.targetReps} reps',
-                );
+                // 计时动作目标口径是秒（v14），不再出现「目标 N 次」
+                line = timed
+                    ? tx('目标 ${t.targetReps} 秒',
+                        en: 'Target ${t.targetReps}s')
+                    : tx(
+                        '目标 ${w == null ? '' : '${fmtKg(w)}kg × '}${t.targetReps} 次',
+                        en: 'Target ${w == null ? '' : '${fmtKg(w)}kg × '}${t.targetReps} reps',
+                      );
               } else {
                 final tSets =
                     se.targetSets > 0 ? se.targetSets : se.rule.workingSets;
@@ -397,8 +404,11 @@ List<Widget> buildSessionDetailRows(
                     se.targetRepsMin > 0 ? se.targetRepsMin : se.rule.repsMin;
                 final tMax =
                     se.targetRepsMax > 0 ? se.targetRepsMax : se.rule.repsMax;
-                line = tx('计划目标 $tSets 组 × $tMin-$tMax 次',
-                    en: 'Target $tSets sets × $tMin-$tMax reps');
+                line = timed
+                    ? tx('计划目标 $tSets 组 × $tMin-$tMax 秒',
+                        en: 'Target $tSets sets × $tMin-$tMax s')
+                    : tx('计划目标 $tSets 组 × $tMin-$tMax 次',
+                        en: 'Target $tSets sets × $tMin-$tMax reps');
               }
               return Padding(
                 padding: const EdgeInsets.only(bottom: 4),
@@ -437,7 +447,8 @@ List<Widget> buildSessionDetailRows(
                     for (final h in [
                       tx('组', en: 'Set'),
                       tx('重量 kg', en: 'Weight kg'),
-                      tx('次数', en: 'Reps'),
+                      // 计时动作次数列头换「时长」（v14）
+                      timed ? tx('时长', en: 'Time') : tx('次数', en: 'Reps'),
                       tx('余力', en: 'RIR'),
                     ])
                       Padding(
@@ -457,7 +468,16 @@ List<Widget> buildSessionDetailRows(
                       for (final cell in [
                         sets[i].isExtra ? '${i + 1}（加练）' : '${i + 1}',
                         fmtKg(sets[i].weightKg),
-                        '${sets[i].reps}',
+                        // 次数列按记录形态（v14）：计时→「45s」（durationSec
+                        // 优先）、单侧→「总 16 次（每边 8）」、其余原样
+                        timed
+                            ? '${sets[i].durationSec ?? sets[i].reps}s'
+                            : perSide
+                                ? tx(
+                                    '总 ${sets[i].reps} 次（每边 ${sets[i].reps ~/ 2}）',
+                                    en: 'Total ${sets[i].reps} (${sets[i].reps ~/ 2}/side)',
+                                  )
+                                : '${sets[i].reps}',
                         sets[i].kind == SetKind.warmup
                             ? tx('热', en: 'W')
                             : sets[i].kind == SetKind.failure

@@ -11,6 +11,7 @@ import 'package:baoji_timer/core/app.dart';
 import 'package:baoji_timer/engine/engine.dart';
 import 'package:baoji_timer/services/session_controller.dart';
 import 'package:baoji_timer/ui/workout_page.dart';
+import 'package:baoji_timer/ui/widgets/common.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -85,17 +86,25 @@ void main() {
   }
 
   Future<PlanExercise> addEx(PlanDay day, String name, int order,
-      {int workingSets = 3, int restSec = 120}) async {
+      {int workingSets = 3,
+      int restSec = 120,
+      int repsMin = 5,
+      int repsMax = 8,
+      String logging = LoggingMode.reps,
+      String loadType = LoadMode.weighted}) async {
     final pe = PlanExercise(
       dayId: day.id!,
       name: name,
       orderIdx: order,
       sets: workingSets,
-      repsMin: 5,
-      repsMax: 8,
+      repsMin: repsMin,
+      repsMax: repsMax,
       restSec: restSec,
       kind: 'compound',
-      rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: workingSets),
+      rule: ProgressionRule(
+          repsMin: repsMin, repsMax: repsMax, workingSets: workingSets),
+      logging: logging,
+      loadType: loadType,
     );
     final id = await container.db.insertPlanExercise(pe);
     return pe.copyWith(id: id);
@@ -714,6 +723,78 @@ void main() {
       expect(find.text('训练完成 💪'), findsOneWidget);
       expect(container.session.hasActive, isFalse);
       expect(container.session.session!.status, 'done');
+    });
+  });
+
+  group('记录形态（v14）：计时页 / 自重页', () {
+    testWidgets('计时动作：大号工作计时 + 完成/跳过，无重量步进无次数点选',
+        (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('核心日');
+        final a = await addEx(day, '平板支撑', 0,
+            workingSets: 2,
+            repsMin: 30,
+            repsMax: 60,
+            logging: LoggingMode.time,
+            loadType: LoadMode.bodyweight);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await pumpWorkout(tester);
+
+      expect(find.byKey(const Key('workTimerText')), findsOneWidget,
+          reason: '计时页大号工作计时（分:秒）');
+      expect(find.text('完成'), findsOneWidget, reason: '计时动作按钮文案「完成」');
+      expect(find.text('跳过'), findsOneWidget, reason: '跳过 = 放弃本次计时');
+      expect(find.byType(WeightStepButton), findsNothing,
+          reason: '计时动作没有重量概念，步进整块收起');
+      expect(find.byType(ChoiceChip), findsNothing, reason: '无次数点选');
+      // 目标行在 Text.rich 内：用 textContaining 匹配整串片段
+      expect(find.textContaining('目标 30-60 秒'), findsOneWidget,
+          reason: '目标行按秒表述');
+
+      // 卸树取消 1s 周期计时器（避免 pending timer）
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('自重动作：自重标识 + 无重量步进，上次对比按次数不显示 0kg',
+        (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        // 历史：上次 0kg×8
+        final s0 = await container.db.insertSession(const Session(
+            date: '2026-10-10',
+            planDayTitle: '旧训练',
+            startedAt: 1,
+            endedAt: 2,
+            status: 'done'));
+        final se0 = await container.db.insertSessionExercise(SessionExercise(
+            sessionId: s0.id!,
+            name: '引体向上',
+            orderIdx: 0,
+            kind: 'compound',
+            rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3)));
+        await container.db.insertSet(SetEntry(
+            sessionExerciseId: se0,
+            weightKg: 0,
+            reps: 8,
+            rir: 2,
+            kind: SetKind.working,
+            doneAt: 1000));
+        final day = await makeDay('背日');
+        final a = await addEx(day, '引体向上', 0, loadType: LoadMode.bodyweight);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await pumpWorkout(tester);
+
+      expect(find.text('自重'), findsOneWidget, reason: '自重标识取代重量大数字');
+      expect(find.byKey(const ValueKey('weightDraftNum')), findsNothing,
+          reason: '自重页没有重量大数字');
+      expect(find.byType(WeightStepButton), findsNothing, reason: '无重量步进');
+      // 信息区「上次：8 次」+ 面板上次对比行「上次：8 次 R2（点按整套带入）」
+      // 两处都按次数口径，不再出现 0kg×8 假重量
+      expect(find.textContaining('上次：8 次'), findsNWidgets(2));
+      await tester.pumpWidget(const SizedBox());
     });
   });
 }

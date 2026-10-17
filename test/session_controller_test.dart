@@ -85,6 +85,8 @@ void main() {
     int restSec = 120,
     int workingSets = 3,
     String supersetTag = '',
+    String logging = LoggingMode.reps,
+    String loadType = LoadMode.weighted,
   }) async {
     final pe = PlanExercise(
       dayId: day.id!,
@@ -97,6 +99,8 @@ void main() {
       kind: 'compound',
       rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: workingSets),
       supersetTag: supersetTag,
+      logging: logging,
+      loadType: loadType,
     );
     final id = await db.insertPlanExercise(pe);
     return pe.copyWith(id: id);
@@ -1503,6 +1507,59 @@ void main() {
       await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
       expect(c.hasActive, isFalse, reason: '未接线时维持旧行为：练满即自动结束');
       expect(c.session!.status, 'done');
+      await drainContinuations();
+    });
+  });
+
+  group('v14 记录形态：计时/单侧/目标可解释化', () {
+    // completeSet → _beginRestFor 的悬挂续体排干（与休息规则组同模式）
+    Future<void> drainContinuations() =>
+        Future<void>.delayed(const Duration(milliseconds: 120));
+
+    test('targetWhyOf：启动预载链推导文案；越界返回空串', () async {
+      final day = await makePlanDay('推日');
+      final a = await addPlanEx(day, '卧推', 0);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      // 无历史：链状态回 repsMin（5）→ 次数轴有空间的爬升口径
+      final why = c.targetWhyOf(0);
+      expect(why, isNotEmpty);
+      expect(why, contains('全部组做到 5 次'));
+      expect(why, contains('下次目标 6 次'));
+      expect(c.targetWhyOf(99), '', reason: '越界收起，UI 不显示');
+      await drainContinuations();
+    });
+
+    test('计时动作 completeSet：durationSec 落库、reps 同秒数、weight=0', () async {
+      final day = await makePlanDay('核心日');
+      final a = await addPlanEx(day, '平板支撑', 0,
+          logging: LoggingMode.time, loadType: LoadMode.bodyweight);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      await c.completeSet(
+        weight: 0,
+        reps: 45,
+        rir: 2,
+        kind: SetKind.working,
+        durationSec: 45,
+      );
+      final sets = await db.setsOfExercise(c.exercises[0].id!);
+      expect(sets, hasLength(1));
+      expect(sets.single.durationSec, 45, reason: '计时组实际保持秒数落列');
+      expect(sets.single.reps, 45, reason: 'reps 同步存秒（引擎判定同源）');
+      expect(sets.single.weightKg, 0);
+      await drainContinuations();
+    });
+
+    test('单侧动作 completeSet：奇数保存自动就近取偶', () async {
+      final day = await makePlanDay('腿日');
+      final a =
+          await addPlanEx(day, '箭步蹲', 0, logging: LoggingMode.repsPerSide);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      await c.completeSet(weight: 20, reps: 7, rir: 2, kind: SetKind.working);
+      final sets = await db.setsOfExercise(c.exercises[0].id!);
+      expect(sets.single.reps, 8, reason: '7 → 取偶 8（每边 4 均分口径）');
       await drainContinuations();
     });
   });
