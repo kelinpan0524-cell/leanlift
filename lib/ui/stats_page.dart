@@ -92,6 +92,20 @@ class _OverviewTabState extends State<_OverviewTab> {
   String _granularity = 'week';
   String _metric = 'volume';
 
+  // ---- openGym 借鉴升级（2026-10-17）----
+
+  /// 活动热力图口径：'time' 时长分钟 / 'volume' 容量吨位
+  String _heatMode = 'time';
+
+  /// 1RM 卡口径：'rm' 每日最佳估算 / 'top' 当日最大正式组重量
+  String _rmMetric = 'rm';
+
+  /// 1RM 卡横轴窗口：1m / 3m / 1y / all
+  String _rmWindow = '1y';
+
+  /// 余力分布窗口：30d / 90d / 1y / all
+  String _rirWindow = '90d';
+
   @override
   void initState() {
     super.initState();
@@ -138,104 +152,124 @@ class _OverviewTabState extends State<_OverviewTab> {
         } else if (!_selectedLiftIn(d)) {
           _selectedLift = d.topLifts.first;
         }
+        // ---- openGym 借鉴升级（2026-10-17）：KPI → 热力图 → 趋势
+        //      → 1RM → 余力 → 休息 → 提醒，从「一眼总览」到「细节诊断」----
+        final kpiCard = _buildKpiCard(d);
+        final heatCard = _buildHeatmapCard(d);
+        // 数据页重设计（2026-09-27 Arono：手机端"乱七八糟"反馈）：
+        // 筛选控件从 SegmentedButton + ChoiceChip 混排（窄屏挤成竖排、
+        // M3 蓝胶囊与绿色主题违和）统一为贴主题的下拉；粒度放卡片
+        // 标题行右侧，指标单独一行，图表补左轴刻度与触摸提示。
+        final trendCard = SectionCard(
+          title: tx('训练趋势', en: 'Training Trend'),
+          trailing: _StatDropdown<String>(
+            value: _granularity,
+            entries: [
+              ('week', tx('按周', en: 'Weekly')),
+              ('month', tx('按月', en: 'Monthly')),
+            ],
+            onChanged: (v) => setState(() => _granularity = v),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _StatDropdown<String>(
+                value: _metric,
+                entries: [
+                  ('volume', tx('容量', en: 'Volume')),
+                  ('sets', tx('组数', en: 'Sets')),
+                  ('intensity', tx('强度', en: 'Intensity')),
+                ],
+                onChanged: (v) => setState(() => _metric = v),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                tx(
+                    _metric == 'volume'
+                        ? '正式组总容量（kg）· 自重按系数折算'
+                        : _metric == 'sets'
+                            ? '正式组组数'
+                            : '平均强度 = 组重量 ÷ 该动作窗口内最佳 1RM（%）',
+                    en: _metric == 'volume'
+                        ? 'Total working-set volume (kg)'
+                        : _metric == 'sets'
+                            ? 'Working sets count'
+                            : 'Avg intensity = set weight ÷ best 1RM (%)'),
+                style:
+                    const TextStyle(color: AppTheme.textDim, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              _buildTrendChart(d),
+            ],
+          ),
+        );
+        final rmCard = _buildRmCard(d);
+        final rirCard = _buildRirCard(d);
+        final restCard = SectionCard(
+          title: tx('组间休息趋势', en: 'Rest Between Sets Trend'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(tx('每次训练的休息净时长 · 分钟',
+                  en: 'Net rest time per workout · min'),
+                  style: const TextStyle(
+                      color: AppTheme.textDim, fontSize: 12)),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 180,
+                child: d.restMinutes.length < 2
+                    ? Center(
+                        child: Text(
+                            tx('完成几次训练后，这里显示每次训练的休息总时长趋势',
+                                en: 'Rest time per workout appears here after a few workouts'),
+                            style: const TextStyle(color: AppTheme.textDim)))
+                    : _buildRestChart(d),
+              ),
+            ],
+          ),
+        );
+        // 宽屏（≥600 折叠屏展开档，设计基线双栏断点）左右分栏：
+        // 第一行 = 总览+主力动作 | 活动+趋势，第二行 = 余力 | 休息，
+        // 智能提醒通栏收尾；手机竖屏维持自上而下的单列顺序。
+        final wide = MediaQuery.of(context).size.width >= 600;
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
           children: [
-            // 数据页重设计（2026-09-27 Arono：手机端"乱七八糟"反馈）：
-            // 筛选控件从 SegmentedButton + ChoiceChip 混排（窄屏挤成竖排、
-            // M3 蓝胶囊与绿色主题违和）统一为贴主题的下拉；粒度放卡片
-            // 标题行右侧，指标单独一行，图表补左轴刻度与触摸提示。
-            SectionCard(
-              title: tx('训练趋势', en: 'Training Trend'),
-              trailing: _StatDropdown<String>(
-                value: _granularity,
-                entries: [
-                  ('week', tx('按周', en: 'Weekly')),
-                  ('month', tx('按月', en: 'Monthly')),
-                ],
-                onChanged: (v) => setState(() => _granularity = v),
-              ),
-              child: Column(
+            if (wide) ...[
+              Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _StatDropdown<String>(
-                    value: _metric,
-                    entries: [
-                      ('volume', tx('容量', en: 'Volume')),
-                      ('sets', tx('组数', en: 'Sets')),
-                      ('intensity', tx('强度', en: 'Intensity')),
-                    ],
-                    onChanged: (v) => setState(() => _metric = v),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    tx(
-                        _metric == 'volume'
-                            ? '正式组总容量（kg）· 自重按系数折算'
-                            : _metric == 'sets'
-                                ? '正式组组数'
-                                : '平均强度 = 组重量 ÷ 该动作窗口内最佳 1RM（%）',
-                        en: _metric == 'volume'
-                            ? 'Total working-set volume (kg)'
-                            : _metric == 'sets'
-                                ? 'Working sets count'
-                                : 'Avg intensity = set weight ÷ best 1RM (%)'),
-                    style:
-                        const TextStyle(color: AppTheme.textDim, fontSize: 12),
-                  ),
-                  const SizedBox(height: 8),
-                  _buildTrendChart(d),
+                  Expanded(
+                      child: Column(
+                          children: [kpiCard, const SizedBox(height: 12), rmCard])),
+                  const SizedBox(width: 12),
+                  Expanded(
+                      child: Column(
+                          children: [heatCard, const SizedBox(height: 12), trendCard])),
                 ],
               ),
-            ),
-            const SizedBox(height: 12),
-            SectionCard(
-              title: tx('主力动作 1RM', en: 'Top Lifts 1RM'),
-              child: Column(
+              const SizedBox(height: 12),
+              Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // 动作改下拉选（原 4 个 chip 窄屏折成 1+2+1 三行不齐）；
-                  // 打开带搜索的底部弹层——动作库全量 150+，必须可搜
-                  _liftButton(d),
-                  const SizedBox(height: 8),
-                  Text(
-                    tx('每天取当日最佳 1RM（kg）· 前 4 为自动选出的主力动作',
-                        en: 'Daily best 1RM (kg) · top 4 picked automatically'),
-                    style: const TextStyle(
-                        color: AppTheme.textDim, fontSize: 12),
-                  ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    height: 200,
-                    child: _buildRmChart(d),
-                  ),
+                  Expanded(child: rirCard),
+                  const SizedBox(width: 12),
+                  Expanded(child: restCard),
                 ],
               ),
-            ),
-            const SizedBox(height: 12),
-            SectionCard(
-              title: tx('组间休息趋势', en: 'Rest Between Sets Trend'),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(tx('每次训练的休息净时长 · 分钟',
-                      en: 'Net rest time per workout · min'),
-                      style: const TextStyle(
-                          color: AppTheme.textDim, fontSize: 12)),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    height: 180,
-                    child: d.restMinutes.length < 2
-                        ? Center(
-                            child: Text(
-                                tx('完成几次训练后，这里显示每次训练的休息总时长趋势',
-                                    en: 'Rest time per workout appears here after a few workouts'),
-                                style: const TextStyle(color: AppTheme.textDim)))
-                        : _buildRestChart(d),
-                  ),
-                ],
-              ),
-            ),
+            ] else ...[
+              kpiCard,
+              const SizedBox(height: 12),
+              heatCard,
+              const SizedBox(height: 12),
+              trendCard,
+              const SizedBox(height: 12),
+              rmCard,
+              const SizedBox(height: 12),
+              rirCard,
+              const SizedBox(height: 12),
+              restCard,
+            ],
             if (insights.isNotEmpty) ...[
               const SizedBox(height: 12),
               SectionCard(
@@ -553,13 +587,17 @@ class _OverviewTabState extends State<_OverviewTab> {
     }
   }
 
-  /// 主力动作 1RM 图（wger 每日最佳口径）：x 轴日期（训练日），
-  /// y = 该动作当天的最高 1RM 估值—— dips 也能诚实显示。
-  /// 不足两天时给友好空态：告诉用户已经记了几天、当前 1RM 多少。
+  /// 主力动作 1RM / 顶组图（wger 每日最佳口径）：x 轴日期（训练日），
+  /// y = 1RM 口径取当天最高估值（dips 也能诚实显示），
+  /// 顶组口径取当天最大正式组重量；横轴按 1月/3月/1年/全部 过滤。
+  /// 不足两天时给友好空态：告诉用户已经记了几天、当前多少。
   Widget _buildRmChart(_OverviewData d) {
     final lift = _selectedLift;
-    final byDate = lift == null ? null : d.rmByDate[lift];
-    final keys = (byDate?.keys.toList() ?? <int>[])..sort();
+    final source = _rmMetric == 'top' ? d.topSetByDate : d.rmByDate;
+    final byDate = lift == null ? null : source[lift];
+    final keys = ((byDate?.keys.toList() ?? <int>[])..sort())
+        .where((k) => k >= _rmWindowCutoffDay())
+        .toList();
     final pts = [
       for (var i = 0; i < keys.length; i++)
         FlSpot(i.toDouble(), byDate![keys[i]]!)
@@ -672,16 +710,246 @@ class _OverviewTabState extends State<_OverviewTab> {
     return '${dt == null ? '' : '${dt.month}/${dt.day}'} · ${fmtKg(s.y)} kg';
   }
 
+  // ================ openGym 借鉴升级（2026-10-17） ================
+
+  /// KPI 2×2 卡：总训练次数 | 本月次数 | 连续周 | 30 天体重变化。
+  /// 大数字 + 小标签；体重 Δ 按目标方向 / 降绿涨红着色，无数据显示「—」。
+  Widget _buildKpiCard(_OverviewData d) {
+    final k = d.kpi;
+    final delta = k.weightDelta30d;
+    final deltaColor = delta == null
+        ? null
+        : delta.abs() < 0.05
+            ? AppTheme.textDim
+            : _weightDeltaColor(delta, d.weightGoalKg, d.latestWeightKg);
+    final deltaText = delta == null
+        ? '—'
+        : '${delta > 0 ? '+' : ''}${delta.toStringAsFixed(1)} kg';
+    Widget cell(String value, String label, {Color? color}) => Expanded(
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+            decoration: BoxDecoration(
+              color: AppTheme.cardHi,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(value,
+                      maxLines: 1,
+                      style: AppTheme.bigNum(24,
+                          color: color ?? AppTheme.text)),
+                ),
+                const SizedBox(height: 5),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(label,
+                      maxLines: 1,
+                      style: const TextStyle(
+                          color: AppTheme.textDim, fontSize: 12)),
+                ),
+              ],
+            ),
+          ),
+        );
+    // padding 收紧（14/12）：概览新增卡多，宽屏双栏/测试视口下
+    // 首屏要能装下更多卡
+    return SectionCard(
+      title: tx('总览', en: 'Overview'),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              cell('${k.totalSessions}', tx('总训练', en: 'Total workouts')),
+              cell('${k.thisMonth}', tx('本月', en: 'This month')),
+            ],
+          ),
+          Row(
+            children: [
+              cell('${k.weekStreak}', tx('连续周', en: 'Week streak')),
+              cell(deltaText, tx('30 天体重', en: '30-day weight'),
+                  color: deltaColor),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 活动热力图卡：近 12 个月 GitHub 风格格网 + 时长/吨位双口径切换
+  /// （ToggleButtons 放标题行右侧 + padding 收紧：800×600 测试视口
+  /// 里 KPI + 热力图要装得进首屏，趋势卡标题才在缓存构建范围内）。
+  Widget _buildHeatmapCard(_OverviewData d) {
+    final grid = _heatMode == 'volume' ? d.heatVolume : d.heatTime;
+    final levels = activityLevels(grid);
+    return SectionCard(
+      title: tx('活动 · 近 12 个月', en: 'Activity · Last 12 Months'),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      trailing: ToggleButtons(
+        isSelected: [_heatMode == 'time', _heatMode == 'volume'],
+        onPressed: (i) =>
+            setState(() => _heatMode = i == 0 ? 'time' : 'volume'),
+        borderRadius: BorderRadius.circular(10),
+        selectedColor: AppTheme.primary,
+        color: AppTheme.textDim,
+        fillColor: AppTheme.cardHi,
+        selectedBorderColor: AppTheme.primary,
+        borderColor: const Color(0xFF374151),
+        constraints: const BoxConstraints(minHeight: 28, minWidth: 48),
+        textStyle:
+            const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+        children: [
+          Text(tx('时长', en: 'Time')),
+          Text(tx('吨位', en: 'Tonnage')),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _HeatmapView(grid: grid, levels: levels),
+        ],
+      ),
+    );
+  }
+
+  /// 主力动作 1RM 卡升级：动作左右箭头（4 主力间切换）+ 动作选单 +
+  /// 口径切换（1RM/顶组）+ 粒度切换（1月/3月/1年/全部）。
+  Widget _buildRmCard(_OverviewData d) {
+    final tops = d.topLifts;
+    final lift = _selectedLift;
+    final idx = lift == null ? -1 : tops.indexOf(lift);
+    Widget arrow(IconData icon, int step) => IconButton(
+          visualDensity: VisualDensity.compact,
+          onPressed: tops.length < 2
+              ? null
+              : () {
+                  final cur = idx < 0 ? 0 : idx;
+                  final next = (cur + step + tops.length) % tops.length;
+                  setState(() => _selectedLift = tops[next]);
+                },
+          icon: Icon(icon, size: 20, color: AppTheme.textDim),
+        );
+    return SectionCard(
+      title: tx('主力动作 1RM', en: 'Top Lifts 1RM'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 动作行：左右箭头在 4 主力间快切；中间按钮仍打开带搜索的
+          // 全量弹层（动作库 150+，必须可搜）
+          Row(
+            children: [
+              arrow(Icons.chevron_left, -1),
+              Expanded(child: _liftButton(d)),
+              arrow(Icons.chevron_right, 1),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _StatDropdown<String>(
+                value: _rmMetric,
+                entries: [
+                  ('rm', tx('1RM', en: '1RM')),
+                  ('top', tx('顶组', en: 'Top Set')),
+                ],
+                onChanged: (v) => setState(() => _rmMetric = v),
+              ),
+              _StatDropdown<String>(
+                value: _rmWindow,
+                entries: [
+                  ('1m', tx('1 月', en: '1M')),
+                  ('3m', tx('3 月', en: '3M')),
+                  ('1y', tx('1 年', en: '1Y')),
+                  ('all', tx('全部', en: 'All')),
+                ],
+                onChanged: (v) => setState(() => _rmWindow = v),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            tx(
+                _rmMetric == 'top'
+                    ? '每天取当日最大正式组重量（kg）· 前 4 为自动选出的主力动作'
+                    : '每天取当日最佳 1RM（kg）· 前 4 为自动选出的主力动作',
+                en: _rmMetric == 'top'
+                    ? 'Daily top working-set weight (kg) · top 4 picked automatically'
+                    : 'Daily best 1RM (kg) · top 4 picked automatically'),
+            style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 200,
+            child: _buildRmChart(d),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 1RM 卡横轴窗口的截止日（epoch 天数）：1m=30 天 / 3m=90 天 / 1y=365 天。
+  int _rmWindowCutoffDay() {
+    if (_rmWindow == 'all') return 0;
+    final days = _rmWindow == '1m' ? 30 : (_rmWindow == '3m' ? 90 : 365);
+    return DateTime.now()
+            .subtract(Duration(days: days))
+            .millisecondsSinceEpoch ~/
+        86400000;
+  }
+
+  /// 余力（RIR）分布卡：正式组直方图（桶 0/1/2/3/4/5+）+ 动态解读一句。
+  Widget _buildRirCard(_OverviewData d) {
+    final since = switch (_rirWindow) {
+      '30d' => DateTime.now().subtract(const Duration(days: 30)),
+      '90d' => DateTime.now().subtract(const Duration(days: 90)),
+      '1y' => DateTime.now().subtract(const Duration(days: 365)),
+      _ => null,
+    };
+    final dist = rirDistribution(d.allWorkingSets, since: since);
+    return SectionCard(
+      title: tx('余力分布', en: 'RIR Distribution'),
+      trailing: _StatDropdown<String>(
+        value: _rirWindow,
+        entries: [
+          ('30d', tx('30 天', en: '30D')),
+          ('90d', tx('90 天', en: '90D')),
+          ('1y', tx('1 年', en: '1Y')),
+          ('all', tx('全部', en: 'All')),
+        ],
+        onChanged: (v) => setState(() => _rirWindow = v),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _RirBars(dist: dist),
+          const SizedBox(height: 10),
+          Text(rirInsightLine(dist),
+              style: const TextStyle(color: AppTheme.textDim, fontSize: 13)),
+        ],
+      ),
+    );
+  }
+
   /// 单次 JOIN 拉全部明细后内存聚合，避免逐 session 查询的 N+1。
+  /// 2026-10-17 升级：明细改拉全历史（1RM/顶组/余力支持「全部」窗口），
+  /// 训练趋势与主力动作仍按近一年窗口聚合（口径不变）。
   Future<_OverviewData> _load(AppContainer c) async {
     final now = DateTime.now();
     final from = fmtDate(now.subtract(const Duration(days: 365)));
-    final rows = await c.db.sessionRowsBetween(from, fmtDate(now));
+    final today = fmtDate(now);
+    final rows = await c.db.sessionRowsBetween('2000-01-01', today);
     // 自重容量折算（点名条目二）：引体/俯卧撑类按 系数×体重 计入容量；
     // 体重未设（0）时自动回旧口径（自重记 0）。
     final bodyWeight = c.settings.bodyWeightKg;
+    final weightGoal = c.settings.weightGoalKg;
     // 休息趋势：按会话取休息净时长（老记录为 0 跳过）
-    final sessionsForRest = await c.db.sessionsBetween(from, fmtDate(now));
+    final sessionsForRest = await c.db.sessionsBetween(from, today);
     final restMinutes = <FlSpot>[];
     final restDates = <String>[];
     for (var i = 0; i < sessionsForRest.length; i++) {
@@ -690,13 +958,23 @@ class _OverviewTabState extends State<_OverviewTab> {
       restMinutes.add(FlSpot(restMinutes.length.toDouble(), s.restMs / 60000));
       restDates.add(s.date);
     }
+    // KPI（总次数/连续周）与活动热力图：全期 done 会话
+    final allSessions = await c.db.sessionsBetween('2000-01-01', today);
+    final bodyMetrics = await c.db.bodyMetrics();
     final weekT = <int, TrendAcc>{};
     final monthT = <int, TrendAcc>{};
     final setsByName = <String, List<SetEntry>>{};
     // 每日最佳 1RM（wger 口径）：动作 → 训练日(epoch天) → 当天最高估值
     final dailyBest = DailyBest1Rm();
+    // 顶组口径：动作 → 训练日 → 当天最大正式组重量
+    final dailyTop = DailyTopSet();
     // 动作在窗口内的历史最佳 1RM（强度分母；按行序递增 = 时间上"截至当时"）
     final bestRm = <String, double>{};
+    // 热力图原料：每日正式组容量（SetEntry.volume 口径）/ 每日组数
+    final volumeByDate = <String, double>{};
+    final setCountsByDate = <String, int>{};
+    // 余力分布原料：全历史正式组（窗口过滤交给引擎的 since 参数）
+    final allWorking = <SetEntry>[];
     for (final r in rows) {
       final weight = (r['weight_kg'] as num?)?.toDouble();
       final reps = (r['reps'] as num?)?.toInt();
@@ -712,7 +990,9 @@ class _OverviewTabState extends State<_OverviewTab> {
       );
       final name = (r['name'] as String?) ?? '';
       final date = (r['date'] as String?) ?? '';
-      setsByName.putIfAbsent(name, () => []).add(entry);
+      // 趋势/主力动作维持近一年口径（全历史会让周桶无限拉长）
+      final inYear = date.compareTo(from) >= 0;
+      if (inYear) setsByName.putIfAbsent(name, () => []).add(entry);
       if (kind == SetKind.working) {
         final d = parseDate(date);
         final vol = setVolumeWithBodyweight(entry,
@@ -720,15 +1000,21 @@ class _OverviewTabState extends State<_OverviewTab> {
         final rm = estimate1RM(weight, reps);
         if (rm > (bestRm[name] ?? 0)) bestRm[name] = rm;
         dailyBest.add(name, d, rm);
+        dailyTop.add(name, d, weight);
         // 强度 = 组重量 ÷ 该动作截至当时的最佳 1RM（自重/辅助配重无意义不计）
         final best = bestRm[name]!;
         final intensity = weight > 0 && best > 0 ? weight / best : null;
-        weekT
-            .putIfAbsent(trendKeyOf(d, TrendGranularity.week), TrendAcc.new)
-            .add(setVolume: vol, intensity: intensity);
-        monthT
-            .putIfAbsent(trendKeyOf(d, TrendGranularity.month), TrendAcc.new)
-            .add(setVolume: vol, intensity: intensity);
+        if (inYear) {
+          weekT
+              .putIfAbsent(trendKeyOf(d, TrendGranularity.week), TrendAcc.new)
+              .add(setVolume: vol, intensity: intensity);
+          monthT
+              .putIfAbsent(trendKeyOf(d, TrendGranularity.month), TrendAcc.new)
+              .add(setVolume: vol, intensity: intensity);
+        }
+        volumeByDate[date] = (volumeByDate[date] ?? 0) + entry.volume;
+        setCountsByDate[date] = (setCountsByDate[date] ?? 0) + 1;
+        allWorking.add(entry);
       }
     }
     // 主力动作 = 近一年正式组容量前 4（不再写死杠铃四大项名）
@@ -744,6 +1030,15 @@ class _OverviewTabState extends State<_OverviewTab> {
     final topLifts = volumeByName.keys.where((k) => volumeByName[k]! > 0)
         .toList()
       ..sort((a, b) => volumeByName[b]!.compareTo(volumeByName[a]!));
+    final kpi = computeStatsKpi(
+        sessions: allSessions,
+        bodyMetrics: bodyMetrics,
+        now: now,
+        weightGoalKg: weightGoal > 0 ? weightGoal : null);
+    double? latestWeight;
+    for (final m in bodyMetrics) {
+      if (m.weightKg != null) latestWeight = m.weightKg;
+    }
     return _OverviewData(
       weekTrend: weekT,
       monthTrend: monthT,
@@ -753,6 +1048,15 @@ class _OverviewTabState extends State<_OverviewTab> {
       restDates: restDates,
       rmByDate: dailyBest.byExercise,
       setsByName: setsByName,
+      kpi: kpi,
+      latestWeightKg: latestWeight,
+      weightGoalKg: weightGoal,
+      heatTime: activityHeatmap(sessions: allSessions, now: now,
+          byVolume: false, setCountsByDate: setCountsByDate),
+      heatVolume: activityHeatmap(sessions: allSessions, now: now,
+          byVolume: true, volumeByDate: volumeByDate),
+      topSetByDate: dailyTop.byExercise,
+      allWorkingSets: allWorking,
     );
   }
 }
@@ -777,6 +1081,27 @@ class _OverviewData {
   final Map<String, Map<int, double>> rmByDate;
   final Map<String, List<SetEntry>> setsByName;
 
+  // ---- openGym 借鉴升级（2026-10-17）----
+
+  /// 概览 KPI 四件套（总次数/本月/连续周/30 天体重 Δ）
+  final StatsKpi kpi;
+
+  /// 最近一条体重（Δ 颜色语义判定用）
+  final double? latestWeightKg;
+
+  /// 目标体重 kg（0 = 未设）
+  final double weightGoalKg;
+
+  /// 活动热力图双口径格网（时长分钟 / 容量）
+  final List<List<double>> heatTime;
+  final List<List<double>> heatVolume;
+
+  /// 顶组口径：动作 → 训练日 → 当日最大正式组重量
+  final Map<String, Map<int, double>> topSetByDate;
+
+  /// 全历史正式组（余力分布的窗口过滤原料）
+  final List<SetEntry> allWorkingSets;
+
   _OverviewData({
     required this.weekTrend,
     required this.monthTrend,
@@ -786,6 +1111,13 @@ class _OverviewData {
     required this.restDates,
     required this.rmByDate,
     required this.setsByName,
+    required this.kpi,
+    required this.latestWeightKg,
+    required this.weightGoalKg,
+    required this.heatTime,
+    required this.heatVolume,
+    required this.topSetByDate,
+    required this.allWorkingSets,
   });
 }
 
@@ -1076,6 +1408,9 @@ class _BodyTabState extends State<_BodyTab>
   final _fatCtrl = TextEditingController();
   Future<List<BodyMetric>>? _future;
 
+  /// 体重曲线粒度：1m / 3m / 1y / all（openGym 借鉴，2026-10-17）
+  String _bodyWindow = '1y';
+
   @override
   bool get wantKeepAlive => true;
 
@@ -1104,43 +1439,154 @@ class _BodyTabState extends State<_BodyTab>
   Widget build(BuildContext context) {
     super.build(context); // AutomaticKeepAliveClientMixin 必需
     final c = app(context);
+    final goal = c.settings.weightGoalKg;
     return FutureBuilder<List<BodyMetric>>(
       future: _future,
       builder: (context, snap) {
-        final data = snap.data ?? const <BodyMetric>[];
+        final all = snap.data ?? const <BodyMetric>[];
+        // 粒度过滤（日期字符串 yyyy-MM-dd 可直接比较）
+        final cutoff = switch (_bodyWindow) {
+          '1m' => fmtDate(DateTime.now().subtract(const Duration(days: 30))),
+          '3m' => fmtDate(DateTime.now().subtract(const Duration(days: 90))),
+          '1y' => fmtDate(DateTime.now().subtract(const Duration(days: 365))),
+          _ => null,
+        };
+        final data = cutoff == null
+            ? all
+            : all.where((m) => m.date.compareTo(cutoff) >= 0).toList();
         final weights = <FlSpot>[];
         for (var i = 0; i < data.length; i++) {
           if (data[i].weightKg != null) {
             weights.add(FlSpot(i.toDouble(), data[i].weightKg!));
           }
         }
+        // 30 天 Δ 小标注：复用 KPI 口径（不传 sessions，只算体重差）
+        final delta30 = computeStatsKpi(
+                sessions: const [],
+                bodyMetrics: all,
+                now: DateTime.now(),
+                weightGoalKg: goal > 0 ? goal : null)
+            .weightDelta30d;
+        final latest = data.isEmpty ? null : data.last.weightKg;
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
           children: [
             SectionCard(
               title: tx('体重趋势', en: 'Body Weight Trend'),
-              child: SizedBox(
-                height: 180,
-                child: weights.length < 2
-                    ? Center(
-                        child: Text(tx('每周固定时间记一次体重',
-                            en: 'Weigh in at the same time each week'),
-                            style: const TextStyle(color: AppTheme.textDim)))
-                    : LineChart(
-                        LineChartData(
-                          gridData: const FlGridData(show: false),
-                          borderData: FlBorderData(show: false),
-                          titlesData: const FlTitlesData(show: false),
-                          lineBarsData: [
-                            LineChartBarData(
-                              spots: weights,
-                              isCurved: true,
-                              color: AppTheme.accent,
-                              barWidth: 3,
-                            ),
-                          ],
-                        ),
+              trailing: _StatDropdown<String>(
+                value: _bodyWindow,
+                entries: [
+                  ('1m', tx('1 月', en: '1M')),
+                  ('3m', tx('3 月', en: '3M')),
+                  ('1y', tx('1 年', en: '1Y')),
+                  ('all', tx('全部', en: 'All')),
+                ],
+                onChanged: (v) => setState(() => _bodyWindow = v),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (delta30 != null)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Text(
+                        tx('30 天 ${delta30 > 0 ? '+' : ''}${delta30.toStringAsFixed(1)} kg',
+                            en: '30-day ${delta30 > 0 ? '+' : ''}${delta30.toStringAsFixed(1)} kg'),
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: delta30.abs() < 0.05
+                                ? AppTheme.textDim
+                                : _weightDeltaColor(delta30, goal, latest)),
                       ),
+                    ),
+                  SizedBox(
+                    height: 180,
+                    child: weights.length < 2
+                        ? Center(
+                            child: Text(tx('每周固定时间记一次体重',
+                                en: 'Weigh in at the same time each week'),
+                                style:
+                                    const TextStyle(color: AppTheme.textDim)))
+                        : LineChart(
+                            LineChartData(
+                              gridData: const FlGridData(show: false),
+                              borderData: FlBorderData(show: false),
+                              titlesData: const FlTitlesData(show: false),
+                              // 目标线：虚线 + 小标签；未设不画
+                              extraLinesData: goal > 0
+                                  ? ExtraLinesData(horizontalLines: [
+                                      HorizontalLine(
+                                        y: goal,
+                                        color: AppTheme.primary,
+                                        strokeWidth: 1,
+                                        dashArray: [6, 4],
+                                        label: HorizontalLineLabel(
+                                          show: true,
+                                          alignment: Alignment.topRight,
+                                          padding: const EdgeInsets.only(
+                                              bottom: 2, right: 2),
+                                          style: const TextStyle(
+                                              color: AppTheme.primary,
+                                              fontSize: 10),
+                                          labelResolver: (_) => tx(
+                                              '目标 ${fmtKg(goal)}kg',
+                                              en:
+                                                  'Goal ${fmtKg(goal)}kg'),
+                                        ),
+                                      ),
+                                    ])
+                                  : null,
+                              lineBarsData: [
+                                LineChartBarData(
+                                  spots: weights,
+                                  isCurved: true,
+                                  color: AppTheme.accent,
+                                  barWidth: 3,
+                                ),
+                              ],
+                            ),
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            // 目标体重入口（openGym 借鉴）：点改数字，防呆同身体录入
+            Card(
+              child: InkWell(
+                borderRadius: BorderRadius.circular(20),
+                onTap: () => _editGoalWeight(c),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 14),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.flag,
+                          size: 18, color: AppTheme.primary),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(tx('目标体重', en: 'Goal Weight'),
+                            style: const TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w600)),
+                      ),
+                      Text(
+                        goal > 0
+                            ? '${fmtKg(goal)} kg'
+                            : tx('未设', en: 'Not set'),
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: goal > 0
+                                ? AppTheme.primary
+                                : AppTheme.textDim),
+                      ),
+                      const SizedBox(width: 4),
+                      const Icon(Icons.chevron_right,
+                          size: 18, color: AppTheme.textDim),
+                    ],
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: 12),
@@ -1215,6 +1661,100 @@ class _BodyTabState extends State<_BodyTab>
         );
       },
     );
+  }
+
+  /// 目标体重编辑（底部弹层）：点行唤起、可取消可清除；
+  /// 防呆复用 validateBodyMetric 的体重区间（20-350kg）。
+  /// 返回值：'save' 保存 / 'clear' 清除 / null 取消。
+  Future<void> _editGoalWeight(AppContainer c) async {
+    final ctrl = TextEditingController(
+        text: c.settings.weightGoalKg > 0
+            ? fmtKg(c.settings.weightGoalKg)
+            : '');
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppTheme.card,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+              20, 16, 20, 16 + MediaQuery.of(ctx).viewInsets.bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(tx('目标体重', en: 'Goal Weight'),
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                    labelText: tx('目标体重 (kg)', en: 'Goal Weight (kg)')),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  if (c.settings.weightGoalKg > 0)
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, 'clear'),
+                      child: Text(tx('清除目标', en: 'Clear'),
+                          style:
+                              const TextStyle(color: AppTheme.danger)),
+                    ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: Text(tx('取消', en: 'Cancel'),
+                        style:
+                            const TextStyle(color: AppTheme.textDim)),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(ctx, 'save'),
+                    style: FilledButton.styleFrom(
+                        minimumSize: const Size(96, 48)),
+                    child: Text(tx('保存', en: 'Save')),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    if (result == 'clear') {
+      c.settings.weightGoalKg = 0;
+      await c.settings.save();
+      if (mounted) {
+        toast(context, tx('已清除目标体重', en: 'Goal weight cleared'));
+        setState(() {});
+      }
+      return;
+    }
+    final v = double.tryParse(ctrl.text.trim());
+    if (v == null) {
+      toast(context, tx('请输入数字，如 65.5', en: 'Enter a number, e.g. 65.5'));
+      return;
+    }
+    // 防呆区间与身体录入同一套（体重 20-350kg）
+    final err = validateBodyMetric(weightKg: v);
+    if (err != null) {
+      toast(context, err);
+      return;
+    }
+    c.settings.weightGoalKg = v;
+    await c.settings.save();
+    if (mounted) {
+      toast(context, tx('目标体重已设为 ${fmtKg(v)} kg',
+          en: 'Goal weight set to ${fmtKg(v)} kg'));
+      setState(() {});
+    }
   }
 }
 
@@ -1417,6 +1957,265 @@ class _LiftPickerSheetState extends State<_LiftPickerSheet> {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ---------------- 数据页升级组件（openGym 借鉴，2026-10-17） ----------------
+
+/// 热力图格色 5 档：0 = 空底色，1-4 由底色向主题绿渐深。
+Color _heatColor(int level) {
+  const t = [0.0, 0.35, 0.6, 0.8, 1.0];
+  return Color.lerp(
+      AppTheme.cardHi, AppTheme.primary, t[level.clamp(0, 4)])!;
+}
+
+/// 体重 Δ 颜色语义（概览 KPI 与身体 Tab 共用）：
+/// 有目标体重 → 现体重高于目标时降为绿（朝目标）、低于目标时涨为绿；
+/// 无目标 → 降绿涨红。latestWeightKg 为 null 时按无目标处理。
+Color _weightDeltaColor(double delta, double goalKg, double? latestWeightKg) {
+  final cutting = latestWeightKg == null || latestWeightKg >= goalKg;
+  final towardGoal = cutting ? delta < 0 : delta > 0;
+  return towardGoal ? AppTheme.primary : AppTheme.danger;
+}
+
+/// 活动热力图：月份标签 + 周格网（CustomPaint 自绘，不引第三方）+
+/// 「少 ▢▢▢▢▢ 多」图例。列 = 周（旧→新），行 = 周一..周日。
+class _HeatmapView extends StatelessWidget {
+  const _HeatmapView({required this.grid, required this.levels});
+
+  final List<List<double>> grid;
+  final List<List<int>> levels;
+
+  static const _enMonths = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, cons) {
+      final w = cons.maxWidth;
+      const gap = 3.0;
+      final cols = grid.isEmpty ? 1 : grid.length;
+      // 窄屏多列时格子保底 2.5px，装不下就横向滚动兜底；
+      // 上限 8.5：宽屏下格子不放大，整卡高度可控（概览首屏装得下）
+      final cell = ((w - gap * (cols - 1)) / cols).clamp(2.5, 8.5);
+      final gridW = cols * cell + (cols - 1) * gap;
+      final gridH = 7 * cell + 6 * gap;
+      // 末列 = 本周；由此反推首列周一
+      final endMonday = mondayOf(DateTime.now());
+      final startMonday =
+          endMonday.subtract(Duration(days: 7 * (cols - 1)));
+      final graph = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: gridW,
+            height: 13,
+            child: CustomPaint(
+              painter: _MonthLabelPainter(
+                  startMonday: startMonday,
+                  cols: cols,
+                  cell: cell,
+                  gap: gap),
+            ),
+          ),
+          const SizedBox(height: 4),
+          SizedBox(
+            width: gridW,
+            height: gridH,
+            child: CustomPaint(
+              painter: _HeatCellPainter(
+                  levels: levels, cell: cell, gap: gap),
+            ),
+          ),
+        ],
+      );
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 320dp 窄屏 53 列装不下：横向滚动兜底（正好装下时不滚）
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: graph,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Text(tx('少', en: 'Less'),
+                  style: const TextStyle(
+                      color: AppTheme.textDim, fontSize: 11)),
+              const SizedBox(width: 6),
+              for (var i = 0; i < 5; i++) ...[
+                Container(
+                  width: 11,
+                  height: 11,
+                  decoration: BoxDecoration(
+                    color: _heatColor(i),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+                if (i < 4) const SizedBox(width: 3),
+              ],
+              const SizedBox(width: 6),
+              Text(tx('多', en: 'More'),
+                  style: const TextStyle(
+                      color: AppTheme.textDim, fontSize: 11)),
+            ],
+          ),
+        ],
+      );
+    });
+  }
+}
+
+/// 月份标签：月份变化的列顶标「N 月」（英文用三字母缩写）。
+class _MonthLabelPainter extends CustomPainter {
+  _MonthLabelPainter({
+    required this.startMonday,
+    required this.cols,
+    required this.cell,
+    required this.gap,
+  });
+
+  final DateTime startMonday;
+  final int cols;
+  final double cell;
+  final double gap;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    var prevMonth = -1;
+    for (var i = 0; i < cols; i++) {
+      final d = startMonday.add(Duration(days: 7 * i));
+      if (d.month == prevMonth) continue;
+      prevMonth = d.month;
+      final tp = TextPainter(
+        text: TextSpan(
+          text: Lang.isEn
+              ? _HeatmapView._enMonths[d.month - 1]
+              : '${d.month}月',
+          style: const TextStyle(
+              color: AppTheme.textDim, fontSize: 10),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      // 右侧列的标签可能越界：末列前移防裁切
+      final x = (i * (cell + gap))
+          .clamp(0.0, (size.width - tp.width).clamp(0.0, double.infinity));
+      tp.paint(canvas, Offset(x.toDouble(), 0));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _MonthLabelPainter old) =>
+      old.startMonday != startMonday ||
+      old.cols != cols ||
+      old.cell != cell;
+}
+
+/// 周格网：圆角小方格，色 = activityLevels 的 5 档。
+class _HeatCellPainter extends CustomPainter {
+  _HeatCellPainter({
+    required this.levels,
+    required this.cell,
+    required this.gap,
+  });
+
+  final List<List<int>> levels;
+  final double cell;
+  final double gap;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..style = PaintingStyle.fill;
+    final radius = Radius.circular(cell * 0.28);
+    for (var w = 0; w < levels.length; w++) {
+      for (var d = 0; d < levels[w].length; d++) {
+        paint.color = _heatColor(levels[w][d]);
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(w * (cell + gap), d * (cell + gap), cell, cell),
+            radius,
+          ),
+          paint,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _HeatCellPainter old) =>
+      old.levels != levels || old.cell != cell || old.gap != gap;
+}
+
+/// 余力直方图：0/1/2/3/4/5+ 六柱，柱高按组数占比、柱顶标组数。
+/// 1-2 次余力 = 增肌甜点区（主题绿高亮）；0 = 力竭（红警示）；3+ = 淡绿。
+class _RirBars extends StatelessWidget {
+  const _RirBars({required this.dist});
+
+  final Map<int, int> dist;
+
+  Color _barColor(int b) => b == 0
+      ? AppTheme.danger.withValues(alpha: 0.55)
+      : (b <= 2 ? AppTheme.primary : AppTheme.primary.withValues(alpha: 0.35));
+
+  Color _labelColor(int b) => b == 0
+      ? AppTheme.danger
+      : (b <= 2 ? AppTheme.primary : AppTheme.textDim);
+
+  @override
+  Widget build(BuildContext context) {
+    final maxCount = dist.values.fold(0, (a, b) => a > b ? a : b);
+    return SizedBox(
+      height: 148,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var b = 0; b <= 5; b++)
+            Expanded(
+              child: Column(
+                children: [
+                  Text(
+                    '${dist[b] ?? 0}',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: (dist[b] ?? 0) > 0
+                            ? _labelColor(b)
+                            : AppTheme.textDim),
+                  ),
+                  const SizedBox(height: 4),
+                  Expanded(
+                    child: Align(
+                      alignment: Alignment.bottomCenter,
+                      child: FractionallySizedBox(
+                        heightFactor: maxCount <= 0
+                            ? 0.0
+                            : (dist[b] ?? 0) / maxCount,
+                        widthFactor: 0.62,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: _barColor(b),
+                            borderRadius: const BorderRadius.vertical(
+                                top: Radius.circular(6)),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    b == 5 ? '5+' : '$b',
+                    style: const TextStyle(
+                        color: AppTheme.textDim, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }
