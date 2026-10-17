@@ -38,6 +38,70 @@ String repsUnitLabel(String logging) =>
 String enRepPhrase(int n, String logging) =>
     isTimedLogging(logging) ? '${n}s' : '$n-rep';
 
+/// 「目标为什么是这个数字」（v14 可解释化）：面向**本次训练**的一句话解释，
+/// 纯展示文案、不参与判定。把当前链状态沿规则链前进一步，按落点给口径：
+/// - 次数轴还有空间：「全部组做到 N 次 → 下次目标 M 次」（timed 用秒表述）；
+/// - 次数轴触顶且 weighted：「全部组顶住 N → 下次加重至 X kg、目标回到 Y 次」；
+/// - bodyweight 触顶：「全部组顶住 N 秒/次 → 下次加练一组」（组数 =
+///   [bodyweightExtraSetTarget] 的建议值）；
+/// - 全链到头：保持当前档。
+/// [logging] 决定单位表述（计时=秒、单侧=每边均分），[loadType] 决定链形态；
+/// 缺省参数下输出常规负重按次数的口径。
+String chainTargetWhy({
+  required ProgressionRule rule,
+  required ChainState state,
+  String loadType = LoadMode.weighted,
+  String logging = LoggingMode.reps,
+}) {
+  final timed = isTimedLogging(logging);
+  final unit = timed ? '秒' : '次';
+  final enUnit = timed ? 's' : 'reps';
+  final perSide = isPerSideLogging(logging);
+  // 单侧动作的链目标按偶数口径表述（与记录页「每边 N 次」同源换算）
+  final n = normalizeTarget(state.targetReps, logging);
+  String zhN([int? v]) {
+    final x = normalizeTarget(v ?? n, logging);
+    return perSide ? '$x 次（每边 ${x ~/ 2}）' : '$x $unit';
+  }
+
+  String enN([int? v]) {
+    final x = normalizeTarget(v ?? n, logging);
+    return perSide ? '$x reps (${x ~/ 2}/side)' : '$x $enUnit';
+  }
+
+  final chain = ProgressionChain.of(rule, loadType: loadType);
+  final next = chain.advance(state, rule);
+  if (next == state) {
+    if (isBodyweightLoad(loadType)) {
+      // 自重触顶：渐进表达转到「加组」（advance 原样返回 = 次数轴已到顶）
+      final sets = bodyweightExtraSetTarget(
+            state: state,
+            rule: rule,
+            loadType: loadType,
+          ) ??
+          rule.workingSets + 1;
+      return tx(
+        '全部组顶住 ${zhN()} → 下次加练一组（$sets 组）',
+        en: 'Hold ${enN()} across all sets → add one extra set next time ($sets sets)',
+      );
+    }
+    return tx(
+      '已到规则链尽头，全部组顶住 ${zhN()} → 保持当前档',
+      en: 'Chain topped out — hold ${enN()} at this tier',
+    );
+  }
+  if (next.weightKg != state.weightKg) {
+    return tx(
+      '全部组顶住 ${zhN()} → 下次加重至 ${next.weightKg}kg、目标回到 ${zhN(next.targetReps)}',
+      en: 'Hold ${enN()} across all sets → add weight to ${next.weightKg}kg, target resets to ${enN(next.targetReps)}',
+    );
+  }
+  return tx(
+    '全部组做到 ${zhN()} → 下次目标 ${zhN(next.targetReps)}',
+    en: 'Hit ${enN()} on every set → next target ${enN(next.targetReps)}',
+  );
+}
+
 /// 自重触顶加组建议：bodyweight 动作的链（[ProgressionChain.defaultBodyweightFor]）
 /// 已无推进空间（advance 后 next == state，即次数轴到顶）时，渐进改用
 /// 「加组」表达——返回建议正式组数 = workingSets + 1，封顶 workingSets + 2

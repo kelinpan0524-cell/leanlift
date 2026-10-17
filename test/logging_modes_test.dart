@@ -100,6 +100,105 @@ void main() {
     });
   });
 
+  group('chainTargetWhy：目标可解释化（为什么是这个数字）', () {
+    final rule = const ProgressionRule(
+        repsMin: 5, repsMax: 8, incrementKg: 2.5, workingSets: 3);
+
+    test('次数轴还有空间：全部组做到 N 次 → 下次目标 N+1 次', () {
+      final why = chainTargetWhy(
+          rule: rule, state: const ChainState(weightKg: 60, targetReps: 7));
+      expect(why, contains('全部组做到 7 次'));
+      expect(why, contains('下次目标 8 次'));
+      expect(why, isNot(contains('加重')));
+    });
+
+    test('weighted 次数轴触顶：下次加重、目标回到下限', () {
+      final why = chainTargetWhy(
+          rule: rule, state: const ChainState(weightKg: 60, targetReps: 8));
+      expect(why, contains('顶住 8 次'));
+      expect(why, contains('加重至 62.5kg'));
+      expect(why, contains('目标回到 5 次'));
+    });
+
+    test('bodyweight 触顶：下次加练一组（X 组）', () {
+      final why = chainTargetWhy(
+        rule: rule,
+        state: const ChainState(weightKg: 0, targetReps: 8),
+        loadType: LoadMode.bodyweight,
+      );
+      expect(why, contains('顶住 8 次'));
+      expect(why, contains('加练一组（4 组）'), reason: 'workingSets 3 + 1');
+      expect(why, isNot(contains('加重')));
+    });
+
+    test('timed 口径：文案用「秒」表述', () {
+      final trule = const ProgressionRule(repsMin: 30, repsMax: 60);
+      final why = chainTargetWhy(
+        rule: trule,
+        state: const ChainState(weightKg: 0, targetReps: 45),
+        logging: LoggingMode.time,
+      );
+      expect(why, contains('全部组做到 45 秒'));
+      expect(why, contains('下次目标 46 秒'));
+      expect(why, isNot(contains('45 次')));
+    });
+
+    test('timed + weighted 触顶：加重文案也用秒', () {
+      final trule = const ProgressionRule(repsMin: 30, repsMax: 60);
+      final why = chainTargetWhy(
+        rule: trule,
+        state: const ChainState(weightKg: 10, targetReps: 60),
+        logging: LoggingMode.time,
+      );
+      expect(why, contains('顶住 60 秒'));
+      expect(why, contains('目标回到 30 秒'));
+    });
+
+    test('单侧口径：每边均分表述', () {
+      // 目标 6（每边 3）还有空间 → 下次链目标 7，表述按偶数口径抬到 8（每边 4）
+      final why = chainTargetWhy(
+        rule: rule,
+        state: const ChainState(weightKg: 40, targetReps: 6),
+        logging: LoggingMode.repsPerSide,
+      );
+      expect(why, contains('全部组做到 6 次（每边 3）'));
+      expect(why, contains('下次目标 8 次（每边 4）'));
+    });
+
+    test('全链到头（hold 堵点）：给保持文案', () {
+      // 重量轴天花板 65 且触顶停住：65kg×8 次已无处可推
+      final cappedRule = const ProgressionRule(
+        repsMin: 5,
+        repsMax: 8,
+        workingSets: 3,
+        chain: [
+          ChainRule(axis: 'reps', step: 1, ceiling: 8, advanceOnCap: true),
+          ChainRule(
+              axis: 'load',
+              step: 2.5,
+              ceiling: 65,
+              advanceOnCap: false,
+              resetRepsTo: 5),
+        ],
+      );
+      final why = chainTargetWhy(
+          rule: cappedRule,
+          state: const ChainState(weightKg: 65, targetReps: 8));
+      expect(why, contains('已到规则链尽头'));
+      expect(why, contains('保持当前档'));
+    });
+
+    test('bodyweight 次数轴还有空间：正常爬次数（不提加组/加重）', () {
+      final why = chainTargetWhy(
+        rule: rule,
+        state: const ChainState(weightKg: 0, targetReps: 6),
+        loadType: LoadMode.bodyweight,
+      );
+      expect(why, contains('全部组做到 6 次'));
+      expect(why, contains('下次目标 7 次'));
+    });
+  });
+
   group('自重负荷（loadType=bodyweight）', () {
     final rule = const ProgressionRule(
         repsMin: 5, repsMax: 8, incrementKg: 2.5, workingSets: 3);

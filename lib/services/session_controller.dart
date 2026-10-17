@@ -343,6 +343,8 @@ class SessionController extends ChangeNotifier {
         .where((e) => e.kind == SetKind.working)
         .length;
     await _loadContextForCurrent();
+    // 恢复会话同样重灌目标解释（文案数据源是会话前历史，与首次启动同口径）
+    await _preloadTargetWhys();
     weightDraft = _recommendFor(currentEx!.name);
     _setPhase(WorkoutPhase.lifting, silent: true);
     return true;
@@ -376,6 +378,38 @@ class SessionController extends ChangeNotifier {
   SetEntry? lastPerformance(String name) {
     final list = lastWorkout[name] ?? const <SetEntry>[];
     return list.isEmpty ? null : list.first;
+  }
+
+  // ---------- 目标可解释化（v14「为什么是这个数字」） ----------
+
+  /// 会话启动时逐动作算好的目标解释文案（sessionExerciseId → 文案）。
+  /// 数据源是"本次之前"的历史链状态，训练期间不变，缓存整个会话安全；
+  /// 训练中临时追加/替换的动作没有预载（targetWhyOf 返回空串，UI 收起）。
+  final Map<int, String> _targetWhy = {};
+
+  /// 动作 [exerciseIndex] 本组目标的一句话解释（「为什么是这个数字」）。
+  /// 未预载/下标越界返回空串（UI 层空串不显示，不占三要素空间）。
+  String targetWhyOf(int exerciseIndex) {
+    if (exerciseIndex < 0 || exerciseIndex >= exercises.length) return '';
+    final ex = exercises[exerciseIndex];
+    return _targetWhy[ex.id] ?? '';
+  }
+
+  /// 从该动作的历史正式组推链状态，算「为什么是这个数字」文案。
+  Future<void> _preloadTargetWhys() async {
+    final map = <int, String>{};
+    for (final ex in exercises) {
+      final last = await _db.lastWorkingSets(ex.name);
+      map[ex.id!] = chainTargetWhy(
+        rule: ex.rule,
+        state: chainStateFromHistory(last, ex.rule),
+        loadType: ex.loadType,
+        logging: ex.logging,
+      );
+    }
+    _targetWhy
+      ..clear()
+      ..addAll(map);
   }
 
   /// 平台期提醒缓存（2026-09-26 Arono：同重量停留过久 → 训练中途
@@ -446,6 +480,10 @@ class SessionController extends ChangeNotifier {
           // 超级组标记同样快照（v9）：训练中的轮转推进按它分组，
           // 模板日后取消配对不影响进行中/历史会话。
           supersetTag: pe.supersetTag,
+          // 记录形态快照（v14）：计时/单侧/自重口径随会话固化，
+          // 模板日后改形态不影响进行中会话与历史回放。
+          logging: pe.logging,
+          loadType: pe.loadType,
         ),
     ];
     final (s, withIds) = await _db.insertSessionWithExercises(
@@ -468,6 +506,8 @@ class SessionController extends ChangeNotifier {
     activeMs = 0;
     _phaseSince = DateTime.now(); // 时长统计从这里起表
     await _loadContextForCurrent();
+    // 目标解释文案（v14）随会话启动逐动作预载（历史链状态训练期间不变）
+    await _preloadTargetWhys();
     weightDraft = _recommendFor(currentEx!.name);
     _setPhase(WorkoutPhase.lifting);
     await _enterFocus();
@@ -494,15 +534,21 @@ class SessionController extends ChangeNotifier {
   // ---------- 记录 ----------
 
   /// 完成一组（kind: warmup/working/failure）。返回是否触发 PR。
+  /// [durationSec]（v14 计时动作）：实际保持秒数——落 duration_sec 列，
+  /// 且约定 reps 字段同样承载秒数（链判定原样复用次数语义）。
+  /// 单侧动作（logging='reps_per_side'）的 reps 是两侧总数，落库前
+  /// 就近取偶，保证总数可两侧均分。
   Future<bool> completeSet({
     required double weight,
     required int reps,
     required int rir,
     required String kind,
     String note = '',
+    int? durationSec,
   }) async {
     final ex = currentEx;
     if (ex == null) return false;
+    reps = normalizeTarget(reps, ex.logging);
     // 加练标注（v12，2026-10-08）：落库前先判定——只对正式组标注
     // （kind==working 才参与判据：加练态下 kind chips 仍可选，计划满后
     // 再记热身/力竭组不该被误标「加练」）；必须在 workingSetsDone++ 与
@@ -530,6 +576,7 @@ class SessionController extends ChangeNotifier {
       targetWeightKg: _recommendFor(ex.name),
       targetReps: chainTarget.targetReps,
       isExtra: isExtra,
+      durationSec: durationSec,
     );
     final id = await _db.insertSet(entry);
     setsByEx
