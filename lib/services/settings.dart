@@ -26,6 +26,10 @@ class Settings extends ChangeNotifier {
   /// 默认 70kg；设为 0 时关闭折算（自重动作容量回到记 0 的旧口径）。
   double bodyWeightKg = 70;
 
+  /// 目标体重 kg（数据页体重曲线目标线 + 30 天 Δ 颜色语义）：
+  /// 0 = 未设（不画目标线，Δ 按降绿涨红）。
+  double weightGoalKg = 0;
+
   // AI（OpenAI 兼容）
   String aiBaseUrl = '';
   String aiApiKey = '';
@@ -115,6 +119,7 @@ class Settings extends ChangeNotifier {
     restCompoundSec = _prefs.getInt('${_kprefix}restCompound') ?? 180;
     restAssistanceSec = _prefs.getInt('${_kprefix}restAssist') ?? 120;
     bodyWeightKg = _prefs.getDouble('${_kprefix}bodyWeight') ?? 70;
+    weightGoalKg = _prefs.getDouble('${_kprefix}weightGoal') ?? 0;
     vibrationOn = _prefs.getBool('${_kprefix}vibration') ?? true;
     soundOn = _prefs.getBool('${_kprefix}sound') ?? true;
     aiBaseUrl = _prefs.getString('${_kprefix}aiBaseUrl') ?? '';
@@ -181,6 +186,7 @@ class Settings extends ChangeNotifier {
     await _prefs.setInt('${_kprefix}restCompound', restCompoundSec);
     await _prefs.setInt('${_kprefix}restAssist', restAssistanceSec);
     await _prefs.setDouble('${_kprefix}bodyWeight', bodyWeightKg);
+    await _prefs.setDouble('${_kprefix}weightGoal', weightGoalKg);
     await _prefs.setBool('${_kprefix}vibration', vibrationOn);
     await _prefs.setBool('${_kprefix}sound', soundOn);
     await _prefs.setString('${_kprefix}aiBaseUrl', aiBaseUrl);
