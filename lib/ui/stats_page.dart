@@ -831,6 +831,9 @@ class _MuscleTabState extends State<_MuscleTab> {
         // 色带归一基准：列表内最大占比（重肌群→琥珀端、轻肌群→灰端）。
         // 2026-09-26 Arono：容量颜色按程度分档，不再清一色绿
         final maxShare = share.values.fold(0.0, math.max);
+        // 未练点名：统计期内占比近零的肌群直接点名（同一份 share，
+        // 周/月粒度切换重载后自动跟随；全部命中时不占版面）
+        final untrained = untrainedRegions(share);
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
           children: [
@@ -926,6 +929,18 @@ class _MuscleTabState extends State<_MuscleTab> {
                     );
                   }),
                   const SizedBox(height: 8),
+                  // 未练点名：漏练肌群一行点名，样式沿用页面既有警示提示
+                  if (untrained.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        tx('未练到：${untrained.map(mname).join(' · ')}',
+                            en:
+                                'Not trained: ${untrained.map(mname).join(' · ')}'),
+                        style: const TextStyle(
+                            color: AppTheme.warn, fontSize: 13),
+                      ),
+                    ),
                   if ((share['肩'] ?? 0) < 0.15 || (share['背'] ?? 0) < 0.15)
                     Text(
                         tx('提示：肩、背容量偏低——薄肌计划的目标是肩背偏重，注意补齐。',

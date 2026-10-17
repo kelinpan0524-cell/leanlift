@@ -7,6 +7,7 @@ import '../l10n/lang.dart';
 import '../l10n/names.dart';
 import '../services/plan_repository.dart';
 import 'exercise_picker_page.dart';
+import 'muscle_body_view.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
 
@@ -32,6 +33,7 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
   Map<String, ExerciseMeta> _metaByName = {};
   bool _loading = true;
   bool _dirty = false; // 本次进入是否改过内容
+  bool _previewOpen = false; // 肌群命中预览折叠态（缺省收起，贴合版面密度）
   // 循环模式的轮转编号（与 plan_page 模板日列表同口径）：
   // _rotation: dayId → 第几练；_slotRotation: 槽位(weekday) → 第几练（仅非空日）。
   Map<int, int> _rotation = {};
@@ -571,6 +573,9 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
                                     key: ValueKey(_exercises[i].id)),
                           ),
                         const SizedBox(height: 8),
+                        // 肌群命中预览：本日计划的静态推演
+                        _buildMusclePreview(),
+                        const SizedBox(height: 8),
                       ],
                     ),
                   ),
@@ -607,6 +612,78 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
                   ),
                 ],
               ),
+      ),
+    );
+  }
+
+  /// 肌群命中预览（可折叠）：planMuscleShare 纯计划推演，不读训练记录；
+  /// 动作增删/改组数次数都会走 _reload → setState，build 里直接重算即实时。
+  Widget _buildMusclePreview() {
+    final share = planMuscleShare(_exercises, _metaByName);
+    final untrained = untrainedRegions(share);
+    final covered = [
+      for (final r in kMuscleRegions)
+        if (r != '其他' && (share[r] ?? 0) > 0) r
+    ];
+    return Card(
+      margin: const EdgeInsets.only(top: 8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => setState(() => _previewOpen = !_previewOpen),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                        tx('肌群命中预览', en: 'Muscle coverage preview'),
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w700)),
+                  ),
+                  Icon(_previewOpen ? Icons.expand_less : Icons.expand_more,
+                      size: 20, color: AppTheme.textDim),
+                ],
+              ),
+              if (_previewOpen) ...[
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 160,
+                  child: Row(
+                    children: [
+                      Expanded(child: MuscleBodyView(share: share, front: true)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                          child: MuscleBodyView(share: share, front: false)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  covered.isEmpty
+                      ? tx('还没有能映射到肌群的动作',
+                          en: 'No exercises mapped to muscle regions yet')
+                      : tx('练到：${covered.map(mname).join(' · ')}',
+                          en: 'Covered: ${covered.map(mname).join(' · ')}'),
+                  style: const TextStyle(fontSize: 13),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  untrained.isEmpty
+                      ? tx('六大肌群全命中', en: 'All six regions covered')
+                      : tx('未练到：${untrained.map(mname).join(' · ')}',
+                          en: 'Not trained: ${untrained.map(mname).join(' · ')}'),
+                  style: TextStyle(
+                      fontSize: 13,
+                      color:
+                          untrained.isEmpty ? AppTheme.primary : AppTheme.warn),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
