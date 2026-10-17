@@ -52,8 +52,9 @@ class Db {
     final future = dir.then((d) => openDatabase(
           p.join(d, 'baoji_timer.db'),
           // v9=超级组（superset_tag），v10=全计划顺延（plans.shift_*），
-          // v11=动作库 gear，v12=加练标注（sets.is_extra）。
-          version: 12,
+          // v11=动作库 gear，v12=加练标注（sets.is_extra），
+          // v13=心率采样（hr_sample）。
+          version: 13,
           onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
           onCreate: (db, v) => createSchema(db),
           onUpgrade: _onUpgrade,
@@ -137,6 +138,9 @@ class Db {
     if (oldV < 12) {
       await upgradeV11to12(db);
     }
+    if (oldV < 13) {
+      await upgradeV12to13(db);
+    }
   }
 
   /// v10：plans 加全计划顺延字段（shift_days / shift_from）。
@@ -166,6 +170,22 @@ class Db {
   Future<void> upgradeV11to12(Database db) async {
     await db.execute(
         'ALTER TABLE sets ADD COLUMN is_extra INTEGER NOT NULL DEFAULT 0');
+  }
+
+  /// v13：心率采样（2026-10-17）——BLE 标准心率服务（0x180D/0x2A37）
+  /// 会话期间 ~1Hz 采样，会话结束一次性落库。一场训练几百到几千行，
+  /// 按 session_id 级联删除（删训练记录时心率曲线一并清掉）。
+  @visibleForTesting
+  Future<void> upgradeV12to13(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS hr_sample(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        ts INTEGER NOT NULL,
+        bpm INTEGER NOT NULL
+      )''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_hr_session ON hr_sample(session_id)');
   }
 
   /// v6：计划模板目标参数快照进训练记录（调研条目 14）。
@@ -365,6 +385,15 @@ class Db {
         snapshot TEXT NOT NULL,
         deleted_at TEXT NOT NULL
       )''');
+    await db.execute('''
+      CREATE TABLE hr_sample(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        ts INTEGER NOT NULL,
+        bpm INTEGER NOT NULL
+      )''');
+    await db
+        .execute('CREATE INDEX idx_hr_session ON hr_sample(session_id)');
   }
 
   // ---------- plans ----------
@@ -965,6 +994,32 @@ class Db {
     return rows.map(BodyMetric.fromMap).toList().reversed.toList();
   }
 
+  // ---------- hr samples（v13 心率采样） ----------
+  /// 会话结束一次性批量写入（~1Hz 一场几百到几千行，batch 一次事务）。
+  Future<void> insertHrSamples(int sessionId, List<HrPoint> points) async {
+    if (points.isEmpty) return;
+    final db = await database;
+    final batch = db.batch();
+    for (final p in points) {
+      batch.insert('hr_sample', {
+        'session_id': sessionId,
+        'ts': p.ts,
+        'bpm': p.bpm,
+      });
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// 某场训练的心率曲线（按时间正序）；无采样（没连设备/老记录）返回空。
+  Future<List<HrPoint>> hrSamplesOfSession(int sessionId) async {
+    final db = await database;
+    final rows = await db.query('hr_sample',
+        where: 'session_id = ?',
+        whereArgs: [sessionId],
+        orderBy: 'ts, id');
+    return rows.map(HrPoint.fromMap).toList();
+  }
+
   // ---------- lark sync ----------
   Future<void> upsertLarkSync(LarkSync sync) async {
     final db = await database;
@@ -1061,6 +1116,7 @@ class Db {
       'sets': await db.query('sets'),
       'body_metrics': await db.query('body_metrics'),
       'exercise_meta': await db.query('exercise_meta'),
+      'hr_sample': await db.query('hr_sample'),
     };
   }
 
@@ -1078,6 +1134,7 @@ class Db {
         'lark_sync',
         'sync_queue',
         'deleted_plans',
+        'hr_sample',
       ]) {
         await tx.delete(t);
       }
@@ -1101,6 +1158,7 @@ class Db {
         'body_metrics',
         'lark_sync',
         'sync_queue',
+        'hr_sample',
       ]) {
         await tx.delete(t);
       }
@@ -1115,6 +1173,7 @@ class Db {
         'sets',
         'body_metrics',
         'exercise_meta',
+        'hr_sample',
       ]) {
         final rows = data[t];
         if (rows is! List) continue;
@@ -1131,4 +1190,26 @@ class Db {
       }
     });
   }
+}
+
+/// 一条心率采样（v13 hr_sample 行）：ts = epoch ms，bpm 已在服务层
+/// 过滤非法值（0 / >250 / 短包不采样）。放在 db 层让服务、UI、测试
+/// 共用同一定义，db.dart 不反向依赖 services。
+class HrPoint {
+  const HrPoint(this.ts, this.bpm);
+
+  final int ts;
+  final int bpm;
+
+  factory HrPoint.fromMap(Map<String, Object?> m) => HrPoint(
+        m['ts'] as int,
+        m['bpm'] as int,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is HrPoint && other.ts == ts && other.bpm == bpm;
+
+  @override
+  int get hashCode => Object.hash(ts, bpm);
 }

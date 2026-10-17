@@ -83,6 +83,7 @@ flutter build apk --release
 - [ ] 完成一组有震动 + 视觉确认
 - [ ] 组间倒计时锁屏后照常走，到点有通知
 - [ ] 首次会依次申请：通知权限、勿扰权限、精确闹钟、忽略电池优化——全部是训练功能所需，逐项允许
+- [ ] 设置 → 训练 → 心率设备：扫描/连接手环需要「附近的设备」权限（Android 12+）或定位权限（11 及以下，仅用于扫描），首次使用时才申请
 
 ### 调试签名说明
 
@@ -203,7 +204,19 @@ iOS 首次启动会弹通知授权，属正常流程。`AndroidScheduleMode.exac
 
 `wakelock_plus` 跨端，开箱即用。
 
-#### (5) `lib/services/local_bridge.dart` — 局域网只读桥，iOS 需声明本地网络用途
+#### (5) `lib/services/heart_rate_service.dart` — BLE 心率，iOS 补两个小改动
+
+原理：走标准蓝牙心率 profile（0x180D/0x2A37，免配对），`flutter_blue_plus`
+跨端。服务里 `_ensureReady()` 与 `connectSaved()` 有 `Platform.isAndroid`
+闸——iOS 上心率设备页会提示"暂不支持"，不会崩。
+
+iOS 适配做法：
+
+1. `ios/Runner/Info.plist` 加 `NSBluetoothAlwaysUsageDescription`
+   （文案说明用途，如"连接你的心率手环以记录训练心率"），否则一点扫描就闪退；
+2. 去掉上述两处平台闸。其余（扫描/订阅通知/解析/落库）Flutter 层跨端直接能用。
+
+#### (6) `lib/services/local_bridge.dart` — 局域网只读桥，iOS 需声明本地网络用途
 
 原理：手机在自家 Wi-Fi 内开一个只读 HTTP 服务，电脑上的 AI 通过
 `tools/mcp-bridge/`（Node，无依赖）经 MCP 读训练数据。默认关闭，用户在
