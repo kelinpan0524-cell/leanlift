@@ -232,10 +232,10 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
       incrementKg: result.kind == 'compound' ? 2.5 : 1.25,
       workingSets: result.sets,
       desc: result.kind == 'compound'
-          ? tx('全部正式组达 ${result.repsMax} 次且末组余力≥1 → 加 2.5kg；有组低于 ${result.repsMin} 次 → 减 5%',
-              en: 'All working sets reach ${result.repsMax} reps with ≥1 in reserve on the last set → add 2.5kg; any set below ${result.repsMin} reps → reduce 5%')
-          : tx('全部正式组达 ${result.repsMax} 次且末组余力≥1 → 加 1.25kg',
-              en: 'All working sets reach ${result.repsMax} reps with ≥1 in reserve on the last set → add 1.25kg'),
+          ? tx('全部正式组达 ${result.repsMax} 次且末组余力≥1 → 加 ${fmtWt(2.5)}；有组低于 ${result.repsMin} 次 → 减 5%',
+              en: 'All working sets reach ${result.repsMax} reps with ≥1 in reserve on the last set → add ${fmtWt(2.5)}; any set below ${result.repsMin} reps → reduce 5%')
+          : tx('全部正式组达 ${result.repsMax} 次且末组余力≥1 → 加 ${fmtWt(1.25)}',
+              en: 'All working sets reach ${result.repsMax} reps with ≥1 in reserve on the last set → add ${fmtWt(1.25)}'),
     );
 
     // 肌群/场景标注写回动作库（保留既有次要肌群），热力图与动作库才正确

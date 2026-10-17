@@ -1,5 +1,6 @@
 import '../l10n/lang.dart';
 import 'engine.dart';
+import 'weight_unit.dart' show fmtWithUnit;
 
 export '../models/models.dart' show ChainRule;
 
@@ -262,9 +263,9 @@ ChainVerdict evaluateChain({
               en: 'Bodyweight tier has reached the end of the chain (${state.targetReps} $enUnit)')
           : tx(
               logging == LoggingMode.time
-                  ? '已到规则链尽头（保持 ${state.targetReps} 秒、重量 ${state.weightKg}kg 触顶）'
-                  : '已到规则链尽头（次数 ${state.targetReps} 次、重量 ${state.weightKg}kg 触顶）',
-              en: 'Chain topped out (${state.targetReps} $enUnit at ${state.weightKg}kg)');
+                  ? '已到规则链尽头（保持 ${state.targetReps} 秒、重量 ${fmtWithUnit(state.weightKg)} 触顶）'
+                  : '已到规则链尽头（次数 ${state.targetReps} 次、重量 ${fmtWithUnit(state.weightKg)} 触顶）',
+              en: 'Chain topped out (${state.targetReps} $enUnit at ${fmtWithUnit(state.weightKg)})');
       return ChainVerdict('hold', state,
           tx('$capDesc → 保持当前档', en: '$capDesc → hold this tier'));
     }
@@ -273,8 +274,8 @@ ChainVerdict evaluateChain({
         'advance',
         next,
         tx(
-            '${near.length} 组全部达到 ${state.targetReps} $unit目标，次数轴触顶 → 下次加重至 ${next.weightKg}kg、目标回到 ${next.targetReps} $unit',
-            en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target and the rep axis is topped out → add weight to ${next.weightKg}kg, target resets to ${next.targetReps} $enUnit'),
+            '${near.length} 组全部达到 ${state.targetReps} $unit目标，次数轴触顶 → 下次加重至 ${fmtWithUnit(next.weightKg)}、目标回到 ${next.targetReps} $unit',
+            en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target and the rep axis is topped out → add weight to ${fmtWithUnit(next.weightKg)}, target resets to ${next.targetReps} $enUnit'),
       );
     }
     return ChainVerdict(

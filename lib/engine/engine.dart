@@ -2,6 +2,7 @@ import '../l10n/lang.dart';
 import '../models/models.dart';
 import 'logging_modes.dart';
 import 'volume.dart';
+import 'weight_unit.dart' show fmtWithUnit;
 
 export '../models/models.dart';
 export 'hr_calories.dart';
@@ -95,9 +96,10 @@ ProgressionVerdict evaluateProgression({
         ProgressionAction.increase,
         rule.incrementKg,
         tx(
-        '${near.length} 组全部达到 ${rule.repsMax} $unit，末组余力 ${lastSet.rir} 次 → 下次加重 ${rule.incrementKg}kg',
+        // 建议文案随显示单位（2026-10-17）：kg 模式输出与旧版逐字节一致
+        '${near.length} 组全部达到 ${rule.repsMax} $unit，末组余力 ${lastSet.rir} 次 → 下次加重 ${fmtWithUnit(rule.incrementKg)}',
         en:
-            'All ${near.length} sets hit ${enRepPhrase(rule.repsMax, logging)}, last set RIR ${lastSet.rir} → add ${rule.incrementKg}kg next time'),
+            'All ${near.length} sets hit ${enRepPhrase(rule.repsMax, logging)}, last set RIR ${lastSet.rir} → add ${fmtWithUnit(rule.incrementKg)} next time'),
     );
   }
   if (anyBelowMin) {
@@ -106,8 +108,8 @@ ProgressionVerdict evaluateProgression({
     return ProgressionVerdict(
       ProgressionAction.decrease,
       cut,
-      tx('有组未达到下限 ${rule.repsMin} $unit → 建议减重约 5%（${cut}kg），先稳动作',
-        en: 'Some sets missed the ${enRepPhrase(rule.repsMin, logging)} floor → reduce ~5% (${cut}kg) and re-groove the form'),
+      tx('有组未达到下限 ${rule.repsMin} $unit → 建议减重约 5%（${fmtWithUnit(cut)}），先稳动作',
+        en: 'Some sets missed the ${enRepPhrase(rule.repsMin, logging)} floor → reduce ~5% (${fmtWithUnit(cut)}) and re-groove the form'),
     );
   }
   return ProgressionVerdict(

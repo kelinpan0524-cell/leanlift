@@ -8,6 +8,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../db/db.dart';
 import '../engine/engine.dart';
 import '../engine/superset.dart';
+import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
 import '../presets/baoji_plan.dart';
@@ -127,9 +128,10 @@ class SessionController extends ChangeNotifier {
         : tx('${rule.repsMin}-${rule.repsMax} 次',
             en: '${rule.repsMin}-${rule.repsMax} reps');
     final w = weightDraft;
+    // 单位感知（2026-10-17）：常驻通知卡与界面同一换算口径（kg 存储）
     final wText = w < 0
-        ? tx('辅 ${_fmtKg(-w)}kg', en: 'assist ${_fmtKg(-w)}kg')
-        : (w == 0 ? tx('自重', en: 'bodyweight') : '${_fmtKg(w)}kg');
+        ? tx('辅 ${fmtWithUnit(-w)}', en: 'assist ${fmtWithUnit(-w)}')
+        : (w == 0 ? tx('自重', en: 'bodyweight') : fmtWithUnit(w));
     if (phase == WorkoutPhase.resting) {
       final remainSec = restRemainingMs.value <= 0
           ? 0
@@ -1299,14 +1301,6 @@ double presetStartOf(String name) {
   }
   return 20;
 }
-
-/// 重量显示（与 UI 层 fmtKg 同规则；controller 不 import UI，这里留私有副本）。
-String _fmtKg(double v) => v == v.roundToDouble()
-    ? v.toStringAsFixed(0)
-    : v
-          .toStringAsFixed(2)
-          .replaceAll(RegExp(r'0+$'), '')
-          .replaceAll(RegExp(r'\.$'), '');
 
 /// 训练卡通知内容（原生前台服务展示，调研条目 1/3）。
 /// [remaining]/[total] 休息剩余秒与总秒（进度条，-1 = 无进度）；

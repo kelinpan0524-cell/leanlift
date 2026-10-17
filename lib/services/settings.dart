@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../models/app_release.dart';
 
@@ -96,6 +97,16 @@ class Settings extends ChangeNotifier {
   // 性别（Keytel 卡路里方程用）：0 未设=两式均值，1 男，2 女
   int hrSex = 0;
 
+  // 重量显示单位（2026-10-17）：kg 是唯一存储口径，lb 只在显示/输入层换算。
+  // 出差/换健身房混用 kg、lb 器械时全局一键切换，历史数据同步换算显示。
+  WeightUnit weightUnit = WeightUnit.kg;
+
+  /// 切换重量单位并同步全局静态值（持久化仍走 save()）。
+  void toggleWeightUnit() {
+    weightUnit = weightUnit == WeightUnit.kg ? WeightUnit.lb : WeightUnit.kg;
+    WeightUnits.setResolved(weightUnit);
+  }
+
   // 应用更新（GitHub 私仓 Releases）
   String ghUpdateToken = ''; // 只读令牌，与 AI Key 同一本地存放策略
   AppRelease? pendingUpdate; // 运行时状态（发现的新版），不落盘
@@ -164,8 +175,13 @@ class Settings extends ChangeNotifier {
       'en' => LangPref.en,
       _ => LangPref.system,
     };
+    weightUnit = switch (_prefs.getString('${_kprefix}weightUnit')) {
+      'lb' => WeightUnit.lb,
+      _ => WeightUnit.kg,
+    };
     // 服务侧（通知/导出/前台服务）读全局静态值，启动即与偏好同步一次
     Lang.setResolved(resolvedLang == 'en');
+    WeightUnits.setResolved(weightUnit);
   }
 
   // token 运行时字段
@@ -226,7 +242,9 @@ class Settings extends ChangeNotifier {
     await _prefs.setString('${_kprefix}aiChatHistory', aiChatHistoryJson);
     await _prefs.setInt('${_kprefix}lastExportJsonAt', lastExportJsonAt);
     await _prefs.setString('${_kprefix}lang', langPref.name);
+    await _prefs.setString('${_kprefix}weightUnit', weightUnit.name);
     Lang.setResolved(resolvedLang == 'en');
+    WeightUnits.setResolved(weightUnit);
     notifyListeners();
   }
 

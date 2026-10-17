@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../engine/engine.dart' show fmtDate, validateBodyMetric;
+import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../models/models.dart';
 import 'theme.dart';
@@ -36,8 +37,11 @@ class _WeightPromptSheet extends StatefulWidget {
 }
 
 class _WeightPromptSheetState extends State<_WeightPromptSheet> {
+  // lb 模式（2026-10-17）：输入框按 lb 初始显示，保存前换算回 kg
   late final _weightCtrl = TextEditingController(
-      text: widget.presetKg == null ? '' : _fmt(widget.presetKg!));
+      text: widget.presetKg == null
+          ? ''
+          : _fmt(WeightUnits.isLb ? lbSnap(kgToLb(widget.presetKg!)) : widget.presetKg!));
 
   /// 与设置页体重行同款显示：整数不带小数点，小数保留一位。
   static String _fmt(double v) =>
@@ -52,13 +56,14 @@ class _WeightPromptSheetState extends State<_WeightPromptSheet> {
   /// 保存今天的体重：BodyMetric 按天 upsert + 同步设置里的体重字段
   ///（自重容量折算与趋势图共用数据源）。成功后关闭并放行开练。
   Future<void> _saveAndStart() async {
-    final w = double.tryParse(_weightCtrl.text.trim());
-    if (w == null) {
+    final wDisp = double.tryParse(_weightCtrl.text.trim());
+    if (wDisp == null) {
       toast(context,
           tx('填个体重，或点「跳过」直接开练', en: 'Enter a weight, or tap Skip to start'));
       return;
     }
-    // 防呆区间（wger 口径，同数据页）：超界直接拦，防手滑多敲一位
+    // lb 模式换算回 kg；防呆区间（wger 口径，同数据页）：超界直接拦，防手滑多敲一位
+    final w = WeightUnits.isLb ? lbToKg(wDisp) : wDisp;
     final err = validateBodyMetric(weightKg: w);
     if (err != null) {
       toast(context, err);
@@ -102,7 +107,8 @@ class _WeightPromptSheetState extends State<_WeightPromptSheet> {
               FilteringTextInputFormatter.allow(RegExp(r'^\d{1,3}(\.\d?)?')),
             ],
             decoration: InputDecoration(
-              labelText: tx('体重 (kg)', en: 'Body Weight (kg)'),
+              labelText: tx('体重 (${unitLabel()})',
+                  en: 'Body Weight (${unitLabel()})'),
             ),
           ),
           const SizedBox(height: 16),
