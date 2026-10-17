@@ -55,7 +55,9 @@ export function loadConfig() {
         `配置文件位置：${configPath()}`,
     );
   }
-  if (cfg.apiVersion && cfg.apiVersion !== API_VERSION) {
+  if (cfg.apiVersion && cfg.apiVersion !== API_VERSION && !versionWarned) {
+    // serve 模式下这个函数每次请求都会调用，告警只该说一次
+    versionWarned = true;
     process.stderr.write(
       `[baoji] 警告：手机端接口版本 v${cfg.apiVersion} 与本代理 v${API_VERSION} 不一致，` +
         `请升级两端后重新配对。\n`,
@@ -63,6 +65,8 @@ export function loadConfig() {
   }
   return cfg;
 }
+
+let versionWarned = false;
 
 function saveConfig(cfg) {
   writeFileSync(configPath(), JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
@@ -99,11 +103,34 @@ export function createBackend(cfg, { fetchImpl = fetch } = {}) {
         } catch {
           /* 保持原文 */
         }
-        const err = new Error(`手机返回 ${res.status}：${msg}`);
+        const hint =
+          res.status === 401
+            ? '（提示：手机上的「局域网连接」可能没开；或配对已被撤销，重新在手机上开开关再 pair 一次）'
+            : '';
+        const err = new Error(`手机返回 ${res.status}：${msg}${hint}`);
         err.status = res.status;
         throw err;
       }
       return text;
+    },
+  };
+}
+
+/**
+ * serve 模式专用：**每次请求都重读一遍配置文件**。
+ *
+ * 这样"手机重开开关 → 电脑重新 pair → AI 客户端不用重启"才成立：
+ * 否则 serve 进程会把启动那一刻的旧令牌一直攥在手里，手机换了新令牌就全线 401。
+ * 配置文件很小，读一次的开销可以忽略。
+ */
+export function createReloadingBackend({ fetchImpl = fetch } = {}) {
+  return {
+    get base() {
+      const cfg = loadConfig();
+      return `http://${cfg.host}:${cfg.port}`;
+    },
+    async request(path, opts = {}) {
+      return createBackend(loadConfig(), { fetchImpl }).request(path, opts);
     },
   };
 }
@@ -343,10 +370,20 @@ async function cmdPair(argv) {
 }
 
 async function cmdStatus() {
-  const cfg = loadConfig();
-  const backend = createBackend(cfg);
+  const backend = createReloadingBackend();
   const text = await backend.request('/v1/health');
-  process.stdout.write(`手机在线 ✓ ${backend.base}\n${text}\n`);
+  let extra = '';
+  try {
+    const h = JSON.parse(text);
+    extra =
+      h.paired === true
+        ? '这台电脑：已配对 ✓\n'
+        : `这台电脑：未配对或配对已失效（手机上说配过 ${h.pairedDevices ?? 0} 台）\n` +
+          '→ 手机上重新开启「局域网连接」，再用 pair 命令配一次\n';
+  } catch {
+    /* 手机返回的不是 JSON 就照原样打印 */
+  }
+  process.stdout.write(`手机在线 ✓ ${backend.base}\n${extra}${text}\n`);
 }
 
 async function main() {
@@ -358,18 +395,18 @@ async function main() {
     case 'status':
       await cmdStatus();
       break;
-    case 'serve': {
-      const cfg = loadConfig();
-      await serveStdio(createBackend(cfg));
+    case 'serve':
+      // 用"每次请求重读配置"的 backend：手机上重新配对后无需重启 AI 客户端
+      await serveStdio(createReloadingBackend());
       break;
-    }
     default:
       process.stdout.write(
         '薄肌训练计时器 · 局域网数据桥（MCP 代理）\n\n' +
           '  node baoji-mcp.mjs pair   --host <手机IP> --port 8765 --code <配对码>\n' +
           '  node baoji-mcp.mjs status\n' +
           '  node baoji-mcp.mjs serve\n\n' +
-          '手机上：设置 → 连接与智能 → 局域网连接 → 开启。\n',
+          '手机上：设置 → 连接与智能 → 局域网连接 → 开启。\n' +
+          '完整图文步骤（含各 AI 客户端配置写法）：docs/MCP_GUIDE.md\n',
       );
   }
 }

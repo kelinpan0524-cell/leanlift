@@ -32,12 +32,16 @@ class AppContainer {
     ai = aiOverride ?? AiService(settings);
     lark = LarkService(settings, this.db);
     export = ExportService(this.db);
-    // 局域网只读桥（方案 B）：构造即挂容器，但**不自动启动**——
-    // 状态不落盘，每次都要用户在设置页主动开，空闲超时自动关。
+    // 局域网只读桥（方案 B）：构造即挂容器，但**默认不自动启动**——
+    // 开关状态不落盘，每次都要用户在设置页主动开，空闲超时自动关；
+    // 已配对设备（令牌摘要）落盘，所以"配对一次"成立，重开无需重配。
+    // 用户显式开过「常驻」的除外：在记住的那个局域网内启动 App 时
+    // 自动拉起（见 init 里的 maybeAutoStart），换网/流量一律不自启。
     // [bridgeOverride] 仅测试注入（自定义端口/IP，免依赖跑测机器的网卡）。
     bridge = bridgeOverride ??
         LocalBridgeService(
           db: this.db,
+          prefs: prefs,
           planRepo: planRepo,
           bodyWeightKg: () => settings.bodyWeightKg,
         );
@@ -166,6 +170,9 @@ class AppContainer {
   Future<void> init() async {
     // 通知插件初始化不挡首帧（只有进休息倒计时才需要），失败静默重试
     unawaited(notify.init().catchError((Object e) {}));
+    // 局域网桥常驻自启：只在「用户开过常驻 且 当前就在记住的局域网」时生效，
+    // 其余情况安静跳过。失败也不挡启动（用户手动开时会看到具体报错）。
+    unawaited(bridge.maybeAutoStart().catchError((Object e) => false));
     await ensureFirstRunSeeded();
     await planRepo.reload();
     await _syncAiSedimentLibrary();

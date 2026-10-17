@@ -6,7 +6,15 @@
 //   3) 手机没开/未配对时，工具返回的是"可读的错误文本"而不是协议级 error——
 //      模型据此能告诉用户"去手机上把开关打开"，而不是看到一串崩溃。
 import assert from 'node:assert/strict';
-import { callTool, createHandler, createBackend } from './baoji-mcp.mjs';
+import { rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  callTool,
+  createBackend,
+  createHandler,
+  createReloadingBackend,
+} from './baoji-mcp.mjs';
 
 let passed = 0;
 function check(name, fn) {
@@ -170,8 +178,81 @@ await checkAsync('未知方法与非法请求有恰当处理', async () => {
   assert.equal(r2.result.isError, true);
 });
 
-console.log('\nHTTP 客户端：');
+console.log('\n配置热重读（配对后不必重启 AI 客户端）：');
 
+await checkAsync('createReloadingBackend 每次请求都读最新配置', async () => {
+  const cfgPath = join(tmpdir(), `baoji_selftest_${Date.now()}.json`);
+  const prevCfgEnv = process.env.BAOJI_BRIDGE_CONFIG;
+  process.env.BAOJI_BRIDGE_CONFIG = cfgPath;
+  try {
+    const calls = [];
+    const backend = createReloadingBackend({
+      fetchImpl: async (url, opts) => {
+        calls.push({ url: String(url), auth: opts.headers.authorization });
+        return { ok: true, status: 200, text: async () => '{"ok":1}' };
+      },
+    });
+
+    // 先写一份配置（模拟第一次 pair）
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({ host: '10.0.0.1', port: 8765, token: 'tok-old' }),
+    );
+    await backend.request('/v1/health');
+    assert.equal(calls[0].url, 'http://10.0.0.1:8765/v1/health');
+    assert.equal(calls[0].auth, 'Bearer tok-old');
+
+    // 模拟「手机重新配对」→ 配置文件被改写；不重启进程也该用上新令牌
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({ host: '10.0.0.9', port: 9999, token: 'tok-new' }),
+    );
+    await backend.request('/v1/today');
+    assert.equal(calls[1].url, 'http://10.0.0.9:9999/v1/today');
+    assert.equal(calls[1].auth, 'Bearer tok-new');
+    assert.equal(backend.base, 'http://10.0.0.9:9999');
+  } finally {
+    if (prevCfgEnv === undefined) delete process.env.BAOJI_BRIDGE_CONFIG;
+    else process.env.BAOJI_BRIDGE_CONFIG = prevCfgEnv;
+    try {
+      rmSync(cfgPath, { force: true });
+    } catch {
+      /* 清理失败无所谓 */
+    }
+  }
+});
+
+await checkAsync('配置缺失时给出"先配对"的可读提示', async () => {
+  const prevCfgEnv = process.env.BAOJI_BRIDGE_CONFIG;
+  process.env.BAOJI_BRIDGE_CONFIG = join(tmpdir(), `baoji_nope_${Date.now()}.json`);
+  try {
+    const backend = createReloadingBackend({
+      fetchImpl: async () => {
+        throw new Error('不该走到这里——配置缺失应当先抛错');
+      },
+    });
+    await assert.rejects(() => backend.request('/v1/health'), /pair/);
+  } finally {
+    if (prevCfgEnv === undefined) delete process.env.BAOJI_BRIDGE_CONFIG;
+    else process.env.BAOJI_BRIDGE_CONFIG = prevCfgEnv;
+  }
+});
+
+await checkAsync('401 时附带"手机开关没开/需重配"的排查提示', async () => {
+  const backend = createBackend(
+    { host: 'h', port: 1, token: 't' },
+    {
+      fetchImpl: async () => ({
+        ok: false,
+        status: 401,
+        text: async () => '{"error":"未配对或令牌无效"}',
+      }),
+    },
+  );
+  await assert.rejects(() => backend.request('/v1/summary'), /局域网连接|重新.*pair/);
+});
+
+console.log('\nHTTP 客户端：');
 await checkAsync('请求自动带 Bearer 令牌、参数跳过空值', async () => {
   const calls = [];
   const backend = createBackend(

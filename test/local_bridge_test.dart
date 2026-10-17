@@ -31,6 +31,7 @@ void main() {
   late Db db;
   late PlanRepository repo;
   late LocalBridgeService bridge;
+  late SharedPreferences prefs;
 
   /// 造数据：启用中的周计划（今天=推日，含一个动作）+ 两次已完成的卧推训练。
   Future<void> seed() async {
@@ -90,7 +91,7 @@ void main() {
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
-    final prefs = await SharedPreferences.getInstance();
+    prefs = await SharedPreferences.getInstance();
     final dir = await databaseFactory.getDatabasesPath();
     final path =
         '$dir/test_bridge_${DateTime.now().microsecondsSinceEpoch}.db';
@@ -101,6 +102,7 @@ void main() {
     await seed();
     bridge = LocalBridgeService(
       db: db,
+      prefs: prefs,
       planRepo: repo,
       port: 0, // 测试用系统分配端口
       ipProbe: () async => const ['127.0.0.1'],
@@ -148,6 +150,7 @@ void main() {
   test('探不到局域网地址时拒绝启动（免得开了没人连得上）', () async {
     final lone = LocalBridgeService(
       db: db,
+      prefs: prefs,
       port: 0,
       ipProbe: () async => const [],
     );
@@ -242,18 +245,80 @@ void main() {
     }
   });
 
-  test('撤销设备后令牌立即失效', () async {
+  test('撤销设备后令牌立即失效，且重启也回不来', () async {
     expect(await bridge.start(), isTrue);
     final token = await pair();
     expect((await call('GET', '/v1/sessions', token: token)).status, 200);
-    expect(bridge.clients.length, 1);
-    bridge.revokeClient(bridge.clients.first.address);
+    expect(bridge.pairedDevices.length, 1);
+    // 断开按设备 id（令牌摘要）来，不是按 IP
+    bridge.revokeDevice(bridge.pairedDevices.first.id);
     expect((await call('GET', '/v1/sessions', token: token)).status, 401);
+    expect(bridge.pairedDevices, isEmpty);
+
+    // 落盘里也该删掉了：重启不会把它带回来
+    await bridge.stop();
+    expect(await bridge.start(), isTrue);
+    expect(bridge.pairedDevices, isEmpty);
+    expect((await call('GET', '/v1/sessions', token: token)).status, 401);
+  });
+
+  test('配对一次就够：重开服务后电脑端令牌仍然有效（这是教程里承诺的）', () async {
+    expect(await bridge.start(), isTrue);
+    final token = await pair();
+    expect((await call('GET', '/v1/sessions', token: token)).status, 200);
+
+    // 模拟"空闲自动关 → 用户回来重新打开开关"
+    await bridge.stop();
+    expect(bridge.pairedDevices.length, 1, reason: '关服务不该把已配对设备清掉');
+
+    expect(await bridge.start(), isTrue);
+    expect(bridge.pairingCode, isNotEmpty, reason: '配对码照旧每次换新');
+    // 关键断言：没重新配对，凭旧令牌照样能读
+    expect((await call('GET', '/v1/sessions', token: token)).status, 200);
+    expect((await call('GET', '/v1/today', token: token)).status, 200);
+  });
+
+  test('配对令牌只以摘要落盘，不落原文', () async {
+    expect(await bridge.start(), isTrue);
+    final token = await pair();
+    final raw = prefs.getString('bridge_devices_v1') ?? '';
+    expect(raw, isNotEmpty, reason: '设备摘要应已落盘');
+    expect(raw.contains(token), isFalse, reason: '落盘里绝不能出现令牌原文');
+    // 摘要是 SHA-256 hex，64 位
+    final list = jsonDecode(raw) as List;
+    expect((list.first as Map)['h'].toString().length, 64);
+  });
+
+  test('新开一个服务实例也能读到已配对的设备（模拟 App 重启后的第一次开启）', () async {
+    expect(await bridge.start(), isTrue);
+    final token = await pair();
+
+    final fresh = LocalBridgeService(
+      db: db,
+      prefs: prefs,
+      port: 0,
+      ipProbe: () async => const ['127.0.0.1'],
+    );
+    expect(await fresh.start(), isTrue);
+    expect(fresh.pairingCode, isNot(equals(bridge.pairingCode)));
+    final client = HttpClient();
+    try {
+      final req = await client.openUrl(
+          'GET', Uri.parse('http://127.0.0.1:${fresh.actualPort}/v1/sessions'));
+      req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      final res = await req.close();
+      expect(res.statusCode, 200);
+      await utf8.decodeStream(res);
+    } finally {
+      client.close(force: true);
+      await fresh.stop();
+    }
   });
 
   test('无请求超时后自动关闭（堵"开了忘了关"）', () async {
     final quick = LocalBridgeService(
       db: db,
+      prefs: prefs,
       port: 0,
       ipProbe: () async => const ['127.0.0.1'],
       idleTimeout: const Duration(milliseconds: 250),
@@ -270,17 +335,95 @@ void main() {
     await quick.stop();
   });
 
-  test('start/stop 幂等，重启会换新配对码并清空令牌', () async {
+  test('start/stop 幂等；重启换新配对码但记住已配对设备', () async {
     expect(await bridge.start(), isTrue);
     final code1 = bridge.pairingCode;
     final token = await pair();
     expect(await bridge.start(), isTrue); // 重复 start 无害
     await bridge.stop();
     expect(bridge.running, isFalse);
-    expect(bridge.clients, isEmpty);
+    expect(bridge.pairedDevices.length, 1, reason: '关服务保留已配对设备');
 
     expect(await bridge.start(), isTrue);
     expect(bridge.pairingCode, isNot(equals(code1)));
-    expect((await call('GET', '/v1/sessions', token: token)).status, 401);
+    expect((await call('GET', '/v1/sessions', token: token)).status, 200);
+  });
+
+  test('常驻：记住当前局域网，同网自启、异网不启', () async {
+    // prefs 里还没有常驻开关时，任何实例都绝不自启
+    final plain = LocalBridgeService(
+      db: db,
+      prefs: prefs,
+      port: 0,
+      ipProbe: () async => const ['127.0.0.1'],
+    );
+    expect(await plain.maybeAutoStart(), isFalse);
+    expect(plain.running, isFalse);
+
+    expect(await bridge.start(), isTrue);
+    expect(await bridge.enablePersistent(), isTrue);
+    expect(bridge.persistentEnabled, isTrue);
+    // 测试注入的 ipProbe 是 127.0.0.1 → 签名取前三段
+    expect(bridge.rememberedLan, '127.0.0');
+    expect(bridge.persistentActive, isTrue);
+    await bridge.stop();
+
+    // 同网：模拟 App 重启后的自动拉起路径
+    expect(await bridge.maybeAutoStart(), isTrue);
+    expect(bridge.running, isTrue);
+    // 自启的桥一样要令牌，常驻不是免检通道
+    expect((await call('GET', '/v1/sessions')).status, 401);
+    await bridge.stop();
+
+    // 换了个网（签名对不上）→ 不自启，且给 UI 留"没生效"的提示
+    final other = LocalBridgeService(
+      db: db,
+      prefs: prefs,
+      port: 0,
+      ipProbe: () async => const ['192.168.50.7'],
+    );
+    expect(await other.maybeAutoStart(), isFalse);
+    expect(other.running, isFalse);
+    expect(other.persistentMismatch, isTrue);
+    await other.stop();
+  });
+
+  test('常驻生效时不空闲自动关；关掉常驻后恢复空闲自动关', () async {
+    Future<LocalBridgeService> quick() async => LocalBridgeService(
+          db: db,
+          prefs: prefs,
+          port: 0,
+          ipProbe: () async => const ['127.0.0.1'],
+          idleTimeout: const Duration(milliseconds: 250),
+          sweepInterval: const Duration(milliseconds: 50),
+        );
+    final a = await quick();
+    expect(await a.start(), isTrue);
+    expect(await a.enablePersistent(), isTrue);
+    expect(a.persistentActive, isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    expect(a.running, isTrue, reason: '常驻生效中不该被空闲关掉');
+
+    // 关掉常驻 → 回到普通规则，空闲照关
+    await a.disablePersistent();
+    expect(a.persistentActive, isFalse);
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    expect(a.running, isFalse, reason: '关掉常驻后恢复空闲自动关');
+    await a.stop();
+  });
+
+  test('关闭常驻：开关与记住的局域网一起清掉（不牵连已配对设备）', () async {
+    expect(await bridge.start(), isTrue);
+    final token = await pair();
+    expect(await bridge.enablePersistent(), isTrue);
+    await bridge.disablePersistent();
+    expect(bridge.persistentEnabled, isFalse);
+    expect(bridge.rememberedLan, isNull);
+    expect(bridge.persistentActive, isFalse);
+    expect(bridge.persistentMismatch, isFalse);
+    // 常驻只是"免手动开开关"，跟"谁有资格连"是两码事
+    expect((await call('GET', '/v1/sessions', token: token)).status, 200);
+    expect(prefs.getString('bridge_lan_v1'), isNull);
+    expect(prefs.getBool('bridge_persistent_v1'), isFalse);
   });
 }
