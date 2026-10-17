@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../engine/engine.dart';
 import '../engine/superset.dart';
+import '../engine/weight_unit.dart' show unitLabel;
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
 import 'heart_rate_page.dart';
@@ -406,8 +407,8 @@ List<Widget> buildSessionDetailRows(
                     ? tx('目标 ${t.targetReps} 秒',
                         en: 'Target ${t.targetReps}s')
                     : tx(
-                        '目标 ${w == null ? '' : '${fmtKg(w)}kg × '}${t.targetReps} 次',
-                        en: 'Target ${w == null ? '' : '${fmtKg(w)}kg × '}${t.targetReps} reps',
+                        '目标 ${w == null ? '' : '${fmtWt(w)} × '}${t.targetReps} 次',
+                        en: 'Target ${w == null ? '' : '${fmtWt(w)} × '}${t.targetReps} reps',
                       );
               } else {
                 final tSets =
@@ -458,7 +459,7 @@ List<Widget> buildSessionDetailRows(
                   children: [
                     for (final h in [
                       tx('组', en: 'Set'),
-                      tx('重量 kg', en: 'Weight kg'),
+                      tx('重量 ${unitLabel()}', en: 'Weight ${unitLabel()}'),
                       // 计时动作次数列头换「时长」（v14）
                       timed ? tx('时长', en: 'Time') : tx('次数', en: 'Reps'),
                       tx('余力', en: 'RIR'),
@@ -479,7 +480,7 @@ List<Widget> buildSessionDetailRows(
                     children: [
                       for (final cell in [
                         sets[i].isExtra ? '${i + 1}（加练）' : '${i + 1}',
-                        fmtKg(sets[i].weightKg),
+                        fmtKgDisp(sets[i].weightKg),
                         // 次数列按记录形态（v14）：计时→「45s」（durationSec
                         // 优先）、单侧→「总 16 次（每边 8）」、其余原样
                         timed
@@ -520,8 +521,8 @@ List<Widget> buildSessionDetailRows(
           padding: const EdgeInsets.only(left: 14, bottom: 2),
           child: Text(
             tx(
-              '备注：${noted.map((x) => '${fmtKg(x.weightKg)}kg：${x.note.trim()}').join('；')}',
-              en: 'Notes: ${noted.map((x) => '${fmtKg(x.weightKg)}kg: ${x.note.trim()}').join('; ')}',
+              '备注：${noted.map((x) => '${fmtWt(x.weightKg)}：${x.note.trim()}').join('；')}',
+              en: 'Notes: ${noted.map((x) => '${fmtWt(x.weightKg)}: ${x.note.trim()}').join('; ')}',
             ),
             style: const TextStyle(color: AppTheme.textDim, fontSize: 13),
           ),

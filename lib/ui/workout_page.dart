@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../engine/engine.dart';
 import '../engine/superset.dart';
+import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
 import '../presets/exercise_library.dart' show libraryMetaByName;
@@ -18,6 +19,17 @@ import 'widgets/common.dart';
 /// 该动作是否属于超级组（跳页面板/休息页小标记共用，与轮转引擎同口径）。
 bool _sessionInSuperset(List<SessionExercise> exs, int i) =>
     supersetMembersOf(i, [for (final e in exs) e.supersetTag]) != null;
+
+/// 一键切换重量单位（kg↔lb，2026-10-17）：训练面板大数字旁与休息页步进区
+/// 两个入口共用。同步全局静态值 + 持久化 + 刷新常驻通知卡；
+/// 不弹窗（红线：训练中禁止弹窗打断），页面靠各自 setState / InheritedNotifier 刷新。
+void toggleWeightUnit(BuildContext context, SessionController s) {
+  HapticFeedback.selectionClick();
+  final c = app(context);
+  c.settings.toggleWeightUnit();
+  c.settings.save();
+  s.notifyCard();
+}
 
 /// 训练页（全屏）：动作态 / 休息态；折叠屏（≥840dp）双栏。
 /// 训练中不弹窗：结束训练用长按 2 秒环形进度（调研条目 5）；
@@ -1542,8 +1554,8 @@ class _ExerciseInfo extends StatelessWidget {
       }
       if (bodyweight) return en ? '$n reps' : '$n 次';
       return en
-          ? '${fmtKg(e.weightKg)}kg × $n'
-          : '${fmtKg(e.weightKg)}kg×$n';
+          ? '${fmtWt(e.weightKg)} × $n'
+          : '${fmtWt(e.weightKg)}×$n';
     }
 
     final lastText = last.isEmpty
@@ -1620,7 +1632,11 @@ class _ExerciseInfo extends StatelessWidget {
 /// 只在用户主动点按时出现、划掉或点空白处即取消，不属于训练中打断弹窗；
 /// 正数=负重，0=自重，负数=辅助器械配重。
 Future<void> showWeightInputSheet(BuildContext context, SessionController s) {
-  final ctrl = TextEditingController(text: fmtKg(s.weightDraft));
+  // lb 模式（2026-10-17）：输入框按 lb 初始与提交，落库前换算回 kg；
+  // 示例值也随单位给（62.5kg 量级 ≈ 135lb）。
+  final ctrl = TextEditingController(text: fmtVal(s.weightDraft));
+  final exPos = WeightUnits.isLb ? '135' : '62.5';
+  final exNeg = WeightUnits.isLb ? '-66' : '-30';
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -1634,7 +1650,7 @@ Future<void> showWeightInputSheet(BuildContext context, SessionController s) {
             return;
           }
           HapticFeedback.selectionClick();
-          s.setWeightDraft(v);
+          s.setWeightDraft(WeightUnits.isLb ? lbToKg(v) : v);
           Navigator.pop(sheetCtx);
         }
 
@@ -1651,14 +1667,15 @@ Future<void> showWeightInputSheet(BuildContext context, SessionController s) {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  tx('输入重量（kg）', en: 'Enter Weight (kg)'),
+                  tx('输入重量（${unitLabel()}）',
+                      en: 'Enter Weight (${unitLabel()})'),
                   style: const TextStyle(
                       fontSize: 16, fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  tx('正数 = 负重；0 = 自重；负数 = 辅助器械配重（如 -30）',
-                      en: 'Positive = loaded; 0 = bodyweight; negative = machine assist (e.g. -30)'),
+                  tx('正数 = 负重；0 = 自重；负数 = 辅助器械配重（如 $exNeg）',
+                      en: 'Positive = loaded; 0 = bodyweight; negative = machine assist (e.g. $exNeg)'),
                   style: const TextStyle(color: AppTheme.textDim, fontSize: 13),
                 ),
                 const SizedBox(height: 12),
@@ -1678,10 +1695,10 @@ Future<void> showWeightInputSheet(BuildContext context, SessionController s) {
                   onSubmitted: (_) => submit(),
                   style: AppTheme.bigNum(30),
                   decoration: InputDecoration(
-                    hintText: tx('如 62.5', en: 'e.g. 62.5'),
+                    hintText: tx('如 $exPos', en: 'e.g. $exPos'),
                     errorText: invalid
-                        ? tx('请输入数字，如 62.5 或 -30',
-                            en: 'Enter a number, e.g. 62.5 or -30')
+                        ? tx('请输入数字，如 $exPos 或 $exNeg',
+                            en: 'Enter a number, e.g. $exPos or $exNeg')
                         : null,
                   ),
                 ),
@@ -1834,7 +1851,14 @@ class _ActionPanelState extends State<_ActionPanel> {
   bool _noteOpen = false;
   bool _saving = false; // 防抖：力竭手抖双击不能记两组
   late final _noteCtrl = TextEditingController();
-  static const _steps = [0.5, 1.25, 2.5, 5.0];
+  // 步长随单位（2026-10-17）：kg [0.5,1.25,2.5,5] / lb [1.25,2.5,5,10]。
+  static List<double> get _steps => stepLabels();
+
+  /// 点单位标签切 kg↔lb 后立即刷新本面板（动态单位勿用 const 构造）。
+  void _toggleUnit(SessionController s) {
+    toggleWeightUnit(context, s);
+    setState(() {});
+  }
 
   // 工作计时（v14 计时动作）：墙钟起表 + 每秒刷新显示。
   // 与休息计时完全独立；从本页切走（撤销回退/跳页面板/换动作/翻组）即
@@ -1907,11 +1931,11 @@ class _ActionPanelState extends State<_ActionPanel> {
     final nextKg = round05(info.weightKg + rule.incrementKg);
     final msg = info.hitTop
         ? tx(
-            '已连续 ${info.sessions} 次·${info.days} 天 ${fmtKg(info.weightKg)}kg 且次数到顶——可以直接加重到 ${fmtKg(nextKg)}kg',
-            en: '${fmtKg(info.weightKg)}kg for ${info.sessions} sessions · ${info.days} days with top reps hit — add weight to ${fmtKg(nextKg)}kg now')
+            '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)} 且次数到顶——可以直接加重到 ${fmtWt(nextKg)}',
+            en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days with top reps hit — add weight to ${fmtWt(nextKg)} now')
         : tx(
-            '已连续 ${info.sessions} 次·${info.days} 天 ${fmtKg(info.weightKg)}kg——次数冲到 ${rule.repsMax} 就该 +${fmtKg(rule.incrementKg)}kg',
-            en: '${fmtKg(info.weightKg)}kg for ${info.sessions} sessions · ${info.days} days — once you reach ${rule.repsMax} reps, add +${fmtKg(rule.incrementKg)}kg');
+            '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——次数冲到 ${rule.repsMax} 就该 +${fmtWt(rule.incrementKg)}',
+            en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — once you reach ${rule.repsMax} reps, add +${fmtWt(rule.incrementKg)}');
     return [
       const SizedBox(height: 4),
       Row(
@@ -1953,8 +1977,8 @@ class _ActionPanelState extends State<_ActionPanel> {
       zhLast = '$lastNum 次';
       enLast = '$lastNum reps';
     } else {
-      zhLast = '${fmtKg(last.weightKg)}kg×$lastNum';
-      enLast = '${fmtKg(last.weightKg)}kg × $lastNum';
+      zhLast = '${fmtWt(last.weightKg)}×$lastNum';
+      enLast = '${fmtWt(last.weightKg)} × $lastNum';
     }
     return [
       const SizedBox(height: 4),
@@ -1970,7 +1994,7 @@ class _ActionPanelState extends State<_ActionPanel> {
         child: Semantics(
           button: true,
           label: tx(
-            '带入上次成绩：${timed || bodyweight ? '' : '${fmtKg(last.weightKg)}公斤'}$lastNum${timed ? '秒' : '次'}${last.rir >= 0 ? '余力${last.rir}' : ''}',
+            '带入上次成绩：${timed || bodyweight ? '' : fmtWt(last.weightKg)}$lastNum${timed ? '秒' : '次'}${last.rir >= 0 ? '余力${last.rir}' : ''}',
             en: 'Apply last set: $enLast${last.rir >= 0 ? ', RIR ${last.rir}' : ''}',
           ),
           child: Padding(
@@ -2177,14 +2201,23 @@ class _ActionPanelState extends State<_ActionPanel> {
                     ),
                   ),
                 ),
+                // 单位标签即开关（2026-10-17）：点一下 kg↔lb 全局切换，
+                // 大数字/步长/输入/历史同步换算；不弹窗、不抢焦点。
                 Padding(
                   padding: const EdgeInsets.only(left: 6, bottom: 10),
-                  child: Text(
-                    'kg',
-                    style: TextStyle(
-                      color: AppTheme.textDim,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w600,
+                  child: Tooltip(
+                    message: tx('点按切换重量单位（kg/lb），历史数据同步换算显示',
+                        en: 'Tap to switch weight unit (kg/lb); history converts too'),
+                    child: GestureDetector(
+                      onTap: () => _toggleUnit(s),
+                      child: Text(
+                        unitLabel(),
+                        style: TextStyle(
+                          color: AppTheme.primary,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -2248,7 +2281,8 @@ class _ActionPanelState extends State<_ActionPanel> {
                 for (final step in _steps)
                   WeightStepButton(
                     delta: step,
-                    onTap: () => s.setWeightDraft(s.weightDraft + step),
+                    // lb 模式先 snap 0.5lb 网格再加步长（防换算漂移），kg 原样
+                    onTap: () => s.setWeightDraft(nudgedKg(s.weightDraft, step)),
                   ),
               ],
             ),
@@ -2258,7 +2292,8 @@ class _ActionPanelState extends State<_ActionPanel> {
                 for (final step in _steps)
                   WeightStepButton(
                     delta: -step,
-                    onTap: () => s.setWeightDraft(s.weightDraft - step),
+                    onTap: () =>
+                        s.setWeightDraft(nudgedKg(s.weightDraft, -step)),
                   ),
               ],
             ),
@@ -2580,7 +2615,7 @@ class _ActionPanelState extends State<_ActionPanel> {
     widget.onRecorded?.call(
       timed
           ? tx('$durationSec 秒', en: '$durationSec s')
-          : '${fmtLoad(weight)}${weight != 0 ? 'kg' : ''} × $reps',
+          : '${fmtLoadU(weight)} × $reps',
     );
     // 重量 PR 祝贺只对常规负重形态有意义（计时/自重恒 0kg，没有重量轴）
     if (pr && !timed && !bodyweight) {
@@ -2626,7 +2661,8 @@ class _RestView extends StatefulWidget {
 
 class _RestViewState extends State<_RestView> {
   bool _weightOpen = false; // 展开"下一组重量"步进（休息中可调重量）
-  static const _steps = [0.5, 1.25, 2.5, 5.0];
+  // 步长随单位（2026-10-17）：kg [0.5,1.25,2.5,5] / lb [1.25,2.5,5,10]。
+  static List<double> get _steps => stepLabels();
 
   @override
   Widget build(BuildContext context) {
@@ -2643,13 +2679,13 @@ class _RestViewState extends State<_RestView> {
     final nextText = doneAll
         ? (isLastEx
               ? tx('准备结束训练', en: 'Ready to Finish')
-              : tx('下一组 · ${exname(ex?.name ?? '')} 加练：${fmtLoad(s.weightDraft)}${s.weightDraft != 0 ? 'kg' : ''} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} 次',
-                  en: 'Next · ${exname(ex?.name ?? '')} extra: ${fmtLoad(s.weightDraft)}${s.weightDraft != 0 ? 'kg' : ''} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} reps'))
+              : tx('下一组 · ${exname(ex?.name ?? '')} 加练：${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} 次',
+                  en: 'Next · ${exname(ex?.name ?? '')} extra: ${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} reps'))
         // 下一组带动作名 + 组号（2026-09-26 Arono：休息中要知道接下来
         // 练什么动作、第几组、做多少次）。尾巴不放操作提示：412 宽会
         // 折成两行，破坏休息页"一眼看完"的极简版式（点按展开本就是常态）
-        : tx('下一组 · ${exname(ex?.name ?? '')} 第 ${s.workingSetsDone + 1}/$plannedWorking 组：${fmtLoad(s.weightDraft)}${s.weightDraft != 0 ? 'kg' : ''} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} 次',
-            en: 'Next · ${exname(ex?.name ?? '')} set ${s.workingSetsDone + 1}/$plannedWorking · ${fmtLoad(s.weightDraft)}${s.weightDraft != 0 ? 'kg' : ''} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} reps');
+        : tx('下一组 · ${exname(ex?.name ?? '')} 第 ${s.workingSetsDone + 1}/$plannedWorking 组：${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} 次',
+            en: 'Next · ${exname(ex?.name ?? '')} set ${s.workingSetsDone + 1}/$plannedWorking · ${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} reps');
 
     // 上半（倒计时）+ 底部操作区装进同一滚动区：装得下时 min-height 撑满
     // 视口（操作区贴底，与原布局一致）；横屏/矮屏装不下时可滚动，
@@ -2771,22 +2807,52 @@ class _RestViewState extends State<_RestView> {
                       ),
                       if (_weightOpen) ...[
                         const SizedBox(height: 10),
-                        // 键盘直输入口：步进微调之外的整段重量输入
-                        OutlinedButton(
-                          onPressed: () {
-                            HapticFeedback.selectionClick();
-                            showWeightInputSheet(context, s);
-                          },
-                          style: OutlinedButton.styleFrom(
-                            minimumSize: const Size.fromHeight(48),
-                          ),
-                          child: Text(
-                            tx('直接输入重量', en: 'Enter Weight'),
-                            style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700,
+                        // 键盘直输入口 + 单位切换（2026-10-17）：休息中调重量
+                        // 也能一键 kg↔lb，与训练面板大数字旁同款入口
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: () {
+                                  HapticFeedback.selectionClick();
+                                  showWeightInputSheet(context, s);
+                                },
+                                style: OutlinedButton.styleFrom(
+                                  minimumSize: const Size.fromHeight(48),
+                                ),
+                                child: Text(
+                                  tx('直接输入重量', en: 'Enter Weight'),
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
                             ),
-                          ),
+                            const SizedBox(width: 8),
+                            Tooltip(
+                              message: tx(
+                                  '点按切换重量单位（kg/lb），历史数据同步换算显示',
+                                  en: 'Tap to switch weight unit (kg/lb); history converts too'),
+                              child: OutlinedButton(
+                                onPressed: () {
+                                  toggleWeightUnit(context, s);
+                                  setState(() {});
+                                },
+                                style: OutlinedButton.styleFrom(
+                                  minimumSize: const Size(64, 48),
+                                  padding: EdgeInsets.zero,
+                                ),
+                                child: Text(
+                                  unitLabel(),
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 6),
                         Row(
@@ -2794,8 +2860,9 @@ class _RestViewState extends State<_RestView> {
                             for (final step in _steps)
                               WeightStepButton(
                                 delta: step,
-                                onTap: () =>
-                                    s.setWeightDraft(s.weightDraft + step),
+                                // lb 模式先 snap 0.5lb 网格再加步长（防漂移）
+                                onTap: () => s.setWeightDraft(
+                                    nudgedKg(s.weightDraft, step)),
                               ),
                           ],
                         ),
@@ -2805,8 +2872,8 @@ class _RestViewState extends State<_RestView> {
                             for (final step in _steps)
                               WeightStepButton(
                                 delta: -step,
-                                onTap: () =>
-                                    s.setWeightDraft(s.weightDraft - step),
+                                onTap: () => s.setWeightDraft(
+                                    nudgedKg(s.weightDraft, -step)),
                               ),
                           ],
                         ),
@@ -2817,8 +2884,8 @@ class _RestViewState extends State<_RestView> {
                             s.weightDraft == 0
                                 ? tx('当前：自重', en: 'Current: bodyweight')
                                 : (s.weightDraft < 0
-                                      ? tx('当前：辅 ${fmtKg(-s.weightDraft)}（点切自重）',
-                                          en: 'Current: assist ${fmtKg(-s.weightDraft)} (tap for bodyweight)')
+                                      ? tx('当前：${fmtLoadU(s.weightDraft)}（点切自重）',
+                                          en: 'Current: ${fmtLoadU(s.weightDraft)} (tap for bodyweight)')
                                       : tx('改为自重', en: 'Switch to bodyweight')),
                             style: const TextStyle(
                               color: AppTheme.textDim,
@@ -3042,8 +3109,8 @@ class _ProgressNudges extends StatelessWidget {
           icon: Icons.emoji_events_outlined,
           color: AppTheme.warn,
           text: tx(
-              '新纪录！${fmtKg(last.weightKg)}kg × ${last.reps}（此前最佳 ${fmtKg(priorBest)}kg）',
-              en: 'New PR! ${fmtKg(last.weightKg)}kg × ${last.reps} (previous best ${fmtKg(priorBest)}kg)'),
+              '新纪录！${fmtWt(last.weightKg)} × ${last.reps}（此前最佳 ${fmtWt(priorBest)}）',
+              en: 'New PR! ${fmtWt(last.weightKg)} × ${last.reps} (previous best ${fmtWt(priorBest)})'),
         ));
       }
     }
@@ -3058,11 +3125,11 @@ class _ProgressNudges extends StatelessWidget {
         color: AppTheme.primary,
         text: info.hitTop
             ? tx(
-                '已连续 ${info.sessions} 次·${info.days} 天 ${fmtKg(info.weightKg)}kg——次数到顶了，下一组可以直接 ${fmtKg(nextKg)}kg',
-                en: '${fmtKg(info.weightKg)}kg for ${info.sessions} sessions · ${info.days} days — reps maxed out, go ${fmtKg(nextKg)}kg next set')
+                '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——次数到顶了，下一组可以直接 ${fmtWt(nextKg)}',
+                en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — reps maxed out, go ${fmtWt(nextKg)} next set')
             : tx(
-                '已连续 ${info.sessions} 次·${info.days} 天 ${fmtKg(info.weightKg)}kg——次数冲到 ${rule.repsMax} 就 +${fmtKg(rule.incrementKg)}kg',
-                en: '${fmtKg(info.weightKg)}kg for ${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax} reps, then +${fmtKg(rule.incrementKg)}kg'),
+                '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——次数冲到 ${rule.repsMax} 就 +${fmtWt(rule.incrementKg)}',
+                en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax} reps, then +${fmtWt(rule.incrementKg)}'),
       ));
     }
     if (banners.isEmpty) return const SizedBox.shrink();
@@ -3550,16 +3617,23 @@ class _PlateHintStripState extends State<_PlateHintStrip> {
       _collapse();
       return;
     }
-    final b = platesForLoad(w);
+    // lb 模式（2026-10-17）：整体在 lb 空间配片（45lb 杆 + 美制片组），
+    // 显示值先 snap 0.5lb 网格；kg 模式维持原口径
+    final b = WeightUnits.isLb
+        ? platesForLoad(lbSnap(kgToLb(w)),
+            barKg: kLbBar, inventory: kLbPlateSizes)
+        : platesForLoad(w);
     final String t;
     if (b.perSide.isEmpty) {
-      t = tx('空杆 20kg，不用挂片', en: 'Empty 20kg bar, no plates needed');
+      t = WeightUnits.isLb
+          ? tx('空杆 45lb，不用挂片', en: 'Empty 45lb bar, no plates needed')
+          : tx('空杆 20kg，不用挂片', en: 'Empty 20kg bar, no plates needed');
     } else if (b.exact) {
       t = tx('每边 ${b.perSide.map(_fmtPlate).join(' + ')}',
           en: 'Per side: ${b.perSide.map(_fmtPlate).join(' + ')}');
     } else {
-      t = tx('配不平：每边还差 ${_fmtPlate(b.leftoverPerSide)}kg',
-          en: "Can't match exactly: ${_fmtPlate(b.leftoverPerSide)}kg short per side");
+      t = tx('配不平：每边还差 ${_fmtPlate(b.leftoverPerSide)}${unitLabel()}',
+          en: "Can't match exactly: ${_fmtPlate(b.leftoverPerSide)}${unitLabel()} short per side");
     }
     setState(() {
       _visible = true;

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/app.dart';
+import '../../engine/weight_unit.dart';
 import '../../l10n/lang.dart';
 import '../theme.dart';
 
@@ -187,15 +188,32 @@ String fmtKg(double v) => v == v.roundToDouble()
           .replaceAll(RegExp(r'0+$'), '')
           .replaceAll(RegExp(r'\.$'), '');
 
-/// 自重动作（0kg）显示"自重"而不是"0"。
-String fmtWeight(double v) => v <= 0 ? tx('自重', en: 'Bodyweight') : fmtKg(v);
+/// 当前单位下的重量数值（不带后缀，2026-10-17 单位支持）：
+/// kg 模式与 fmtKg 同值；lb 模式换算并 snap 到 0.5lb 网格。
+String fmtKgDisp(double kg) => fmtVal(kg);
 
-/// 训练页重量显示：负值 = 辅助器械配重（辅30 = 辅助 30kg，配重越大越轻），
-/// 0 = 自重，正值 = 常规负重。
+/// 「数值+单位」串（100kg / 220.5lb）：统一替换各处 `${fmtKg(x)}kg` 拼接。
+String fmtWt(double kg) => fmtWithUnit(kg);
+
+/// 自重动作（0kg）显示"自重"而不是"0"。
+String fmtWeight(double v) =>
+    v <= 0 ? tx('自重', en: 'Bodyweight') : fmtKgDisp(v);
+
+/// 训练页重量口径（不带单位后缀，2026-10-17 单位支持）：
+/// 负值 = 辅助器械配重（辅30 = 辅助 30kg，配重越大越轻），
+/// 0 = 自重，正值 = 常规负重；数值按当前单位换算显示。
 String fmtLoad(double v) {
-  if (v < 0) return tx('辅 ${fmtKg(-v)}', en: 'Assist ${fmtKg(-v)}');
+  if (v < 0) return tx('辅 ${fmtKgDisp(-v)}', en: 'Assist ${fmtKgDisp(-v)}');
   if (v == 0) return tx('自重', en: 'Bodyweight');
-  return fmtKg(v);
+  return fmtKgDisp(v);
+}
+
+/// 同 [fmtLoad] 但非零值自带单位后缀（辅 30kg / 自重 / 220.5lb），
+/// 供行内文案使用（大数字旁另有单位标签，用 [fmtLoad] 免重复）。
+String fmtLoadU(double v) {
+  if (v < 0) return tx('辅 ${fmtWt(-v)}', en: 'Assist ${fmtWt(-v)}');
+  if (v == 0) return tx('自重', en: 'Bodyweight');
+  return fmtWt(v);
 }
 
 String fmtDuration(int totalSeconds) {
@@ -205,7 +223,9 @@ String fmtDuration(int totalSeconds) {
 }
 
 String fmtVolume(double v) {
+  // 吨是公制口径、与显示单位无关；小容量在 lb 模式按整数 lb 显示。
   if (v >= 10000) return '${(v / 1000).toStringAsFixed(1)}t';
+  if (WeightUnits.isLb) return '${kgToLb(v).round()}lb';
   return '${v.toStringAsFixed(0)}kg';
 }
 

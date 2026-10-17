@@ -7,9 +7,11 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../core/app.dart';
+import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../services/ai_service.dart';
 import '../services/focus_service.dart';
+import '../services/settings.dart';
 import '../services/update_service.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
@@ -48,6 +50,9 @@ class TrainingPrefsPage extends StatelessWidget {
         title: tx('休息与负荷', en: 'Rest & Load'),
         child: Column(
           children: [
+            // 重量单位（2026-10-17）：kg 唯一存储口径，lb 只在显示/输入层换算；
+            // 出差/换健身房混用时全局一键切换，历史数据同步换算显示。
+            _unitRow(s),
             _numRow(
                 tx('复合动作休息（秒）', en: 'Rest for compound exercises (sec)'),
                 s.restCompoundSec, (v) {
@@ -267,18 +272,78 @@ class TrainingPrefsPage extends StatelessWidget {
     );
   }
 
+  /// 重量单位行（2026-10-17）：kg/lb 二选一，切换即全局生效
+  /// （含训练中大数字旁的同款开关），历史数据同步换算显示。
+  Widget _unitRow(Settings s) {
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(tx('重量单位', en: 'Weight unit')),
+              Text(
+                tx('出差/换健身房混用 kg、lb 器械时一键切换，历史数据同步换算',
+                    en: 'For travel or a mixed kg/lb gym; history converts too'),
+                style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+        for (final u in WeightUnit.values)
+          Padding(
+            padding: const EdgeInsets.only(left: 6),
+            child: OutlinedButton(
+              onPressed: u == s.weightUnit
+                  ? null
+                  : () {
+                      s.toggleWeightUnit();
+                      s.save();
+                    },
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(56, 40),
+                padding: EdgeInsets.zero,
+                backgroundColor:
+                    u == s.weightUnit ? AppTheme.accent : AppTheme.cardHi,
+                side: BorderSide.none,
+              ),
+              child: Text(
+                u.name,
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: u == s.weightUnit
+                      ? const Color(0xFF06220F)
+                      : AppTheme.textDim,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
   Widget _weightRow(String label, double value, ValueChanged<double> onChanged) {
+    final lb = WeightUnits.isLb;
+    // lb 模式：显示换算值、步长 ±1lb、上限 440lb；存储口径始终 kg
+    String disp(double kg) => kg <= 0
+        ? tx('关', en: 'Off')
+        : '${_fmtWeight(lb ? lbSnap(kgToLb(kg)) : kg)} ${unitLabel()}';
+    double step(double kg, int sign) {
+      if (!lb) return (kg + sign).clamp(0.0, 200.0);
+      return lbToKg((lbSnap(kgToLb(kg)) + sign).clamp(0.0, 440.0));
+    }
+
     return Row(
       children: [
         Expanded(child: Text(label)),
         IconButton(
-          onPressed: () => onChanged((value - 1).clamp(0, 200)),
+          onPressed: () => onChanged(step(value, -1)),
           icon: const Icon(Icons.remove_circle_outline),
         ),
-        Text(value <= 0 ? tx('关', en: 'Off') : '${_fmtWeight(value)} kg',
-            style: const TextStyle(fontSize: 17)),
+        Text(disp(value), style: const TextStyle(fontSize: 17)),
         IconButton(
-          onPressed: () => onChanged((value + 1).clamp(0, 200)),
+          onPressed: () => onChanged(step(value, 1)),
           icon: const Icon(Icons.add_circle_outline),
         ),
       ],

@@ -1,6 +1,7 @@
 import '../l10n/lang.dart';
 import '../models/models.dart';
 import 'progression_chain.dart';
+import 'weight_unit.dart' show fmtWithUnit;
 
 /// 动作记录形态支持（v14）：按时间记录、单侧动作、自重负荷的纯函数工具。
 ///
@@ -92,8 +93,8 @@ String chainTargetWhy({
   }
   if (next.weightKg != state.weightKg) {
     return tx(
-      '全部组顶住 ${zhN()} → 下次加重至 ${next.weightKg}kg、目标回到 ${zhN(next.targetReps)}',
-      en: 'Hold ${enN()} across all sets → add weight to ${next.weightKg}kg, target resets to ${enN(next.targetReps)}',
+      '全部组顶住 ${zhN()} → 下次加重至 ${fmtWithUnit(next.weightKg)}、目标回到 ${zhN(next.targetReps)}',
+      en: 'Hold ${enN()} across all sets → add weight to ${fmtWithUnit(next.weightKg)}, target resets to ${enN(next.targetReps)}',
     );
   }
   return tx(

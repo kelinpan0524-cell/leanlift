@@ -313,7 +313,7 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
       if (rm > bestRm) {
         bestRm = rm;
         bestRmDesc =
-            tx('${fmtKg(w)}kg × $reps 次', en: '${fmtKg(w)}kg × $reps reps');
+            tx('${fmtWt(w)} × $reps 次', en: '${fmtWt(w)} × $reps reps');
       }
       if (w > bestW) bestW = w;
     }
@@ -356,9 +356,9 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
                   style: const TextStyle(color: AppTheme.textDim))
             else ...[
               Row(children: [
-                _bestCell(tx('估算 1RM', en: 'Est. 1RM'), '${fmtKg(bestRm)}kg'),
+                _bestCell(tx('估算 1RM', en: 'Est. 1RM'), fmtWt(bestRm)),
                 _bestCell(tx('最佳一组', en: 'Best set'), bestRmDesc),
-                _bestCell(tx('最大重量', en: 'Max weight'), '${fmtKg(bestW)}kg'),
+                _bestCell(tx('最大重量', en: 'Max weight'), fmtWt(bestW)),
               ]),
               const SizedBox(height: 14),
               Text(tx('最近训练', en: 'Recent Workouts'),
@@ -370,8 +370,8 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
                   padding: const EdgeInsets.symmetric(vertical: 3),
                   child: Text(
                     tx(
-                        '$d：${byDate[d]!.map((x) => '${fmtKg(x.weightKg)}×${x.reps}').join('  ')}',
-                        en: '$d: ${byDate[d]!.map((x) => '${fmtKg(x.weightKg)}×${x.reps}').join('  ')}'),
+                        '$d：${byDate[d]!.map((x) => '${fmtWt(x.weightKg)}×${x.reps}').join('  ')}',
+                        en: '$d: ${byDate[d]!.map((x) => '${fmtWt(x.weightKg)}×${x.reps}').join('  ')}'),
                     style: const TextStyle(fontSize: 14),
                   ),
                 ),

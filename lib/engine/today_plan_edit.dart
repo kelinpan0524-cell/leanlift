@@ -15,6 +15,7 @@
 import '../l10n/lang.dart';
 import '../models/models.dart';
 import 'superset.dart';
+import 'weight_unit.dart' show fmtWithUnit;
 
 /// 从动作库挑入当天时的默认参数（照抄 PlanEditorPage._pickFromLibrary）：
 /// 复合 4 组×6-10 次/休 150s/步长 2.5kg；辅助 3 组×8-12 次/休 90s/步长 1.25kg。
@@ -56,10 +57,10 @@ ProgressionRule todayRuleFor({
     incrementKg: compound ? 2.5 : 1.25,
     workingSets: sets,
     desc: compound
-        ? tx('全部正式组达 $repsMax 次且末组余力≥1 → 加 2.5kg；有组低于 $repsMin 次 → 减 5%',
-            en: 'All working sets reach $repsMax reps with ≥1 in reserve on the last set → add 2.5kg; any set below $repsMin reps → reduce 5%')
-        : tx('全部正式组达 $repsMax 次且末组余力≥1 → 加 1.25kg',
-            en: 'All working sets reach $repsMax reps with ≥1 in reserve on the last set → add 1.25kg'),
+        ? tx('全部正式组达 $repsMax 次且末组余力≥1 → 加 ${fmtWithUnit(2.5)}；有组低于 $repsMin 次 → 减 5%',
+            en: 'All working sets reach $repsMax reps with ≥1 in reserve on the last set → add ${fmtWithUnit(2.5)}; any set below $repsMin reps → reduce 5%')
+        : tx('全部正式组达 $repsMax 次且末组余力≥1 → 加 ${fmtWithUnit(1.25)}',
+            en: 'All working sets reach $repsMax reps with ≥1 in reserve on the last set → add ${fmtWithUnit(1.25)}'),
   );
 }
 

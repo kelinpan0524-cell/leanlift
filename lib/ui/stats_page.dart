@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../core/app.dart';
 import '../engine/engine.dart';
+import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
 import '../presets/exercise_library.dart';
@@ -14,6 +15,16 @@ import 'muscle_body_view.dart';
 import 'recovery_card.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
+
+/// 体重/负荷 kg → 当前显示单位数值（lb 模式换算并 snap 0.5lb 网格，2026-10-17）。
+/// 图表数据点转显示空间后，轴刻度/标签/弹tip同一空间，不再二次换算。
+double _dispVal(double kg) => WeightUnits.isLb ? lbSnap(kgToLb(kg)) : kg;
+
+/// 体重差值（kg 口径）→ 带符号的当前单位文本（+3.5kg / +7.7lb）。
+String _fmtDeltaKg(double deltaKg) {
+  final v = WeightUnits.isLb ? kgToLb(deltaKg) : deltaKg;
+  return '${deltaKg > 0 ? '+' : ''}${v.toStringAsFixed(1)}${unitLabel()}';
+}
 
 /// 数据页：概览 / 肌肉 / 身体 三个 Tab + AI 分析包入口。
 class StatsPage extends StatefulWidget {
@@ -600,7 +611,9 @@ class _OverviewTabState extends State<_OverviewTab> {
         .toList();
     final pts = [
       for (var i = 0; i < keys.length; i++)
-        FlSpot(i.toDouble(), byDate![keys[i]]!)
+        // 图表整体在显示单位空间绘制（2026-10-17）：lb 模式换算并 snap 0.5lb，
+        // 轴刻度/弹tip/区间随之同空间，避免 kg 值配 lb 标签的错位
+        FlSpot(i.toDouble(), _dispVal(byDate![keys[i]]!))
     ];
     if (lift == null || pts.length < 2) {
       return Center(
@@ -619,8 +632,8 @@ class _OverviewTabState extends State<_OverviewTab> {
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
-                  tx('当前 1RM ≈ ${fmtKg(pts.last.y)} kg · 再练几场出进步趋势',
-                      en: 'Current 1RM ≈ ${fmtKg(pts.last.y)} kg · keep training to see the trend'),
+                  tx('当前 1RM ≈ ${fmtKg(pts.last.y)}${unitLabel()} · 再练几场出进步趋势',
+                      en: 'Current 1RM ≈ ${fmtKg(pts.last.y)}${unitLabel()} · keep training to see the trend'),
                   style: const TextStyle(
                       color: AppTheme.textDim, fontSize: 13),
                 ),
@@ -631,7 +644,10 @@ class _OverviewTabState extends State<_OverviewTab> {
     }
     final maxY = pts.map((p) => p.y).reduce((a, b) => a > b ? a : b);
     final minY = pts.map((p) => p.y).reduce((a, b) => a < b ? a : b);
-    final leftInterval = (((maxY - minY) / 3).clamp(2.5, 50.0)).toDouble();
+    // 轴区间上下限随单位缩放（2.5kg≈5.5lb、50kg≈110lb）
+    final leftInterval = (((maxY - minY) / 3).clamp(
+            WeightUnits.isLb ? 5.5 : 2.5, WeightUnits.isLb ? 110.0 : 50.0))
+        .toDouble();
     return LineChart(
       LineChartData(
         gridData: const FlGridData(show: false),
@@ -707,7 +723,7 @@ class _OverviewTabState extends State<_OverviewTab> {
     final dt = (i >= 0 && i < keys.length)
         ? DateTime.fromMillisecondsSinceEpoch(keys[i] * 86400000)
         : null;
-    return '${dt == null ? '' : '${dt.month}/${dt.day}'} · ${fmtKg(s.y)} kg';
+    return '${dt == null ? '' : '${dt.month}/${dt.day}'} · ${fmtKg(s.y)}${unitLabel()}';
   }
 
   // ================ openGym 借鉴升级（2026-10-17） ================
@@ -722,9 +738,7 @@ class _OverviewTabState extends State<_OverviewTab> {
         : delta.abs() < 0.05
             ? AppTheme.textDim
             : _weightDeltaColor(delta, d.weightGoalKg, d.latestWeightKg);
-    final deltaText = delta == null
-        ? '—'
-        : '${delta > 0 ? '+' : ''}${delta.toStringAsFixed(1)} kg';
+    final deltaText = delta == null ? '—' : _fmtDeltaKg(delta);
     Widget cell(String value, String label, {Color? color}) => Expanded(
           child: Container(
             margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
@@ -1457,7 +1471,8 @@ class _BodyTabState extends State<_BodyTab>
         final weights = <FlSpot>[];
         for (var i = 0; i < data.length; i++) {
           if (data[i].weightKg != null) {
-            weights.add(FlSpot(i.toDouble(), data[i].weightKg!));
+            // 体重曲线同 1RM 图：显示单位空间绘制（2026-10-17）
+            weights.add(FlSpot(i.toDouble(), _dispVal(data[i].weightKg!)));
           }
         }
         // 30 天 Δ 小标注：复用 KPI 口径（不传 sessions，只算体重差）
@@ -1490,8 +1505,8 @@ class _BodyTabState extends State<_BodyTab>
                     Align(
                       alignment: Alignment.centerRight,
                       child: Text(
-                        tx('30 天 ${delta30 > 0 ? '+' : ''}${delta30.toStringAsFixed(1)} kg',
-                            en: '30-day ${delta30 > 0 ? '+' : ''}${delta30.toStringAsFixed(1)} kg'),
+                        tx('30 天 ${_fmtDeltaKg(delta30)}',
+                            en: '30-day ${_fmtDeltaKg(delta30)}'),
                         style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
@@ -1517,7 +1532,8 @@ class _BodyTabState extends State<_BodyTab>
                               extraLinesData: goal > 0
                                   ? ExtraLinesData(horizontalLines: [
                                       HorizontalLine(
-                                        y: goal,
+                                        // 目标线与数据点同在显示单位空间
+                                        y: _dispVal(goal),
                                         color: AppTheme.primary,
                                         strokeWidth: 1,
                                         dashArray: [6, 4],
@@ -1530,9 +1546,8 @@ class _BodyTabState extends State<_BodyTab>
                                               color: AppTheme.primary,
                                               fontSize: 10),
                                           labelResolver: (_) => tx(
-                                              '目标 ${fmtKg(goal)}kg',
-                                              en:
-                                                  'Goal ${fmtKg(goal)}kg'),
+                                              '目标 ${fmtWt(goal)}',
+                                              en: 'Goal ${fmtWt(goal)}'),
                                         ),
                                       ),
                                     ])
@@ -1571,9 +1586,7 @@ class _BodyTabState extends State<_BodyTab>
                                 fontSize: 15, fontWeight: FontWeight.w600)),
                       ),
                       Text(
-                        goal > 0
-                            ? '${fmtKg(goal)} kg'
-                            : tx('未设', en: 'Not set'),
+                        goal > 0 ? fmtWt(goal) : tx('未设', en: 'Not set'),
                         style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w700,
@@ -1598,8 +1611,8 @@ class _BodyTabState extends State<_BodyTab>
                     controller: _weightCtrl,
                     keyboardType: TextInputType.number,
                     decoration: InputDecoration(
-                        labelText:
-                            tx('体重 (kg)', en: 'Body Weight (kg)')),
+                        labelText: tx('体重 (${unitLabel()})',
+                            en: 'Body Weight (${unitLabel()})')),
                   ),
                   const SizedBox(height: 8),
                   TextField(
@@ -1620,14 +1633,18 @@ class _BodyTabState extends State<_BodyTab>
                   const SizedBox(height: 12),
                   FilledButton(
                     onPressed: () async {
-                      final w = double.tryParse(_weightCtrl.text);
+                      final wDisp = double.tryParse(_weightCtrl.text);
                       final waist = double.tryParse(_waistCtrl.text);
                       final fat = double.tryParse(_fatCtrl.text);
-                      if (w == null && waist == null && fat == null) {
+                      if (wDisp == null && waist == null && fat == null) {
                         toast(this.context,
                             tx('至少填一项', en: 'Fill in at least one field'));
                         return;
                       }
+                      // lb 模式：输入按 lb，落库前换算回 kg（kg 唯一存储口径）
+                      final w = wDisp == null
+                          ? null
+                          : (WeightUnits.isLb ? lbToKg(wDisp) : wDisp);
                       // 防呆区间（wger measurements/limits 口径）：超界直接拦，
                       // 防手滑多敲一位把曲线打飞（单位填错也拦得住）
                       final err = validateBodyMetric(
@@ -1669,7 +1686,7 @@ class _BodyTabState extends State<_BodyTab>
   Future<void> _editGoalWeight(AppContainer c) async {
     final ctrl = TextEditingController(
         text: c.settings.weightGoalKg > 0
-            ? fmtKg(c.settings.weightGoalKg)
+            ? fmtVal(c.settings.weightGoalKg)
             : '');
     final result = await showModalBottomSheet<String>(
       context: context,
@@ -1694,7 +1711,8 @@ class _BodyTabState extends State<_BodyTab>
                 autofocus: true,
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
-                    labelText: tx('目标体重 (kg)', en: 'Goal Weight (kg)')),
+                    labelText: tx('目标体重 (${unitLabel()})',
+                        en: 'Goal Weight (${unitLabel()})')),
               ),
               const SizedBox(height: 16),
               Row(
@@ -1737,12 +1755,13 @@ class _BodyTabState extends State<_BodyTab>
       }
       return;
     }
-    final v = double.tryParse(ctrl.text.trim());
-    if (v == null) {
+    final vDisp = double.tryParse(ctrl.text.trim());
+    if (vDisp == null) {
       toast(context, tx('请输入数字，如 65.5', en: 'Enter a number, e.g. 65.5'));
       return;
     }
-    // 防呆区间与身体录入同一套（体重 20-350kg）
+    // lb 模式输入换算回 kg；防呆区间与身体录入同一套（体重 20-350kg）
+    final v = WeightUnits.isLb ? lbToKg(vDisp) : vDisp;
     final err = validateBodyMetric(weightKg: v);
     if (err != null) {
       toast(context, err);
@@ -1751,8 +1770,8 @@ class _BodyTabState extends State<_BodyTab>
     c.settings.weightGoalKg = v;
     await c.settings.save();
     if (mounted) {
-      toast(context, tx('目标体重已设为 ${fmtKg(v)} kg',
-          en: 'Goal weight set to ${fmtKg(v)} kg'));
+      toast(context, tx('目标体重已设为 ${fmtWt(v)}',
+          en: 'Goal weight set to ${fmtWt(v)}'));
       setState(() {});
     }
   }

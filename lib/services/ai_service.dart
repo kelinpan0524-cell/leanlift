@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../engine/engine.dart';
+import '../engine/weight_unit.dart' show unitLabel;
 import '../presets/exercise_library.dart';
 import 'plan_repository.dart';
 import 'settings.dart';
@@ -126,7 +127,12 @@ class AiService {
     String userText = '',
   }) {
     return [
-      AiMessage('system', '$kCoachPersona\n\n${planChatContract()}'),
+      // 重量单位说明（2026-10-17）：数据包/存储口径全 kg，App 显示单位可切 lb——
+      // AI 建议的加重数字需按用户正在看的单位给，避免对不上界面
+      AiMessage('system',
+          '$kCoachPersona\n\n${planChatContract()}\n\n重量单位口径：训练数据里的所有重量数字一律是 kg（存储口径）；'
+              '用户 App 界面当前显示单位是 ${unitLabel()}。给加重/目标重量建议时，'
+              '请用用户界面正在显示的单位表述（必要时自行换算，lb 可取 2.5 的整数倍），并说明换算结果。'),
       AiMessage('system',
           '以下是用户 App 导出的真实训练数据。开头的「当前计划与日程」是用户此刻的真实计划状态：'
               '使用中计划、今天/明天练什么、未来 7 天日程；日期均为绝对日期，'

@@ -8,6 +8,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../db/db.dart';
 import '../engine/engine.dart';
+import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../services/ai_service.dart';
 import '../services/heart_rate_service.dart';
@@ -803,13 +804,22 @@ class _LoadParamsCard extends StatelessWidget {
           ),
           _row(
             tx('体重', en: 'Body Weight'),
-            '${s.bodyWeightKg.toStringAsFixed(s.bodyWeightKg == s.bodyWeightKg.roundToDouble() ? 0 : 1)} kg',
-            () => _editDouble(
-                context, tx('体重 (kg)', en: 'Body weight (kg)'),
-                s.bodyWeightKg, 30, 250, (v) {
-              s.bodyWeightKg = v;
-              save();
-            }),
+            // 单位感知显示（2026-10-17）：存 kg，显示随当前单位换算
+            fmtWt(s.bodyWeightKg),
+            () {
+              final lb = WeightUnits.isLb;
+              _editDouble(
+                  context,
+                  tx('体重 (${unitLabel()})',
+                      en: 'Body weight (${unitLabel()})'),
+                  lb ? lbSnap(kgToLb(s.bodyWeightKg)) : s.bodyWeightKg,
+                  lb ? 66.0 : 30.0,
+                  lb ? 551.0 : 250.0, (v) {
+                // lb 输入换算回 kg 落库
+                s.bodyWeightKg = lb ? lbToKg(v) : v;
+                save();
+              });
+            },
           ),
           const SizedBox(height: 6),
           Text(
