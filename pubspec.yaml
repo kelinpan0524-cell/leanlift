@@ -28,6 +28,8 @@ dependencies:
   share_plus: ^10.1.2
   flutter_markdown_plus: ^1.0.12
   video_player: ^2.9.2
+  # 局域网数据桥：配对令牌只以 SHA-256 摘要落盘（不存令牌原文）
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:

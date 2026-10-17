@@ -84,6 +84,13 @@ A lean physique comes from low body fat, training 3× a week, and progressive ov
 - **AI coach**: attaches your last 8 weeks of real training data and self-ratings for one-tap phase reviews or Q&A anytime; a built-in coach persona with safety guardrails, and failures say why so you can retry
 - OpenAI-compatible — local Ollama works too; one-tap "test connection" in settings
 
+### 🔗 Let an AI on your computer read your logs (LAN MCP)
+- The phone serves a **read-only** endpoint on your own Wi-Fi; an AI on your computer (Claude Desktop / Cursor) reads it through MCP
+- So you can ask "is my bench stalling?" or "what should I train next week?" and the AI sees your real records — no copy-pasting
+- **Pair once**: the phone remembers paired computers (only an irreversible digest of the token), so re-opening the switch needs no re-pairing
+- Read-only · not persistent by default (you enable it; auto-stops after 10 idle minutes; optional keep-alive, home Wi-Fi only, bound to the remembered network) · data never leaves your local network
+- Step-by-step guide (phone + computer, with troubleshooting): [docs/MCP_GUIDE.md](docs/MCP_GUIDE.md)
+
 ### 📊 Analytics
 - Training calendar; weekly/monthly trends across volume · sets · average intensity; upper/lower split — whether you showed up this month is visible at a glance
 - Top-lift 1RM curves (auto-picked by volume, daily best, date axis) — progress you can point at
@@ -119,6 +126,7 @@ Android-only officially. To build it yourself, maintain a fork, or adapt it for 
 
 - **No server**: everything runs on-device; training data lives in local SQLite
 - **Only three network touchpoints** (all optional): Feishu/Lark calendar, AI features (your key, your provider), update checks (GitHub Releases)
+- The LAN MCP bridge adds **no** network access: it only answers inside your own Wi-Fi ([guide](docs/MCP_GUIDE.md))
 - AI keys / calendar credentials stay on your phone — never uploaded, never committed
 - No ads, no analytics SDK, no crash reporting
 

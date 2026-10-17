@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../db/db.dart';
 import '../engine/engine.dart';
@@ -19,14 +21,22 @@ import 'plan_repository.dart';
 ///
 /// 安全边界（有意为之，不是遗漏）：
 /// - **只读**：不暴露任何写入口，计划/组的增删改一律不响应；
-/// - **不常驻**：开关状态不进 shared_preferences，每次都要用户主动开启，
-///   空闲 [idleTimeout] 无请求即自动关闭——堵"开了忘了关"；
+/// - **默认不常驻**：开关状态不进 shared_preferences，每次都要用户主动开启，
+///   空闲 [idleTimeout] 无请求即自动关闭——堵"开了忘了关"。
+///   用户可显式开「常驻」（[enablePersistent]）：但**只在记住的那个局域网里
+///   生效**（落盘当前网络的签名，见 [_lanKey]），换到别的 Wi-Fi / 流量既不
+///   自启、也不豁免空闲关闭；UI 上明示"仅建议在自家 Wi-Fi 开启"。
 /// - **配对码**：6 位一次性码，错 5 次即作废，需重新生成；堵"配对太弱"；
 /// - **令牌**：配对成功换 256-bit（32 字节）随机令牌，此后每个请求都要带；
+/// - **记住设备**（2026-10-17 起）：已配对设备只存**令牌的 SHA-256 摘要**
+///   （存摘要不存原文，泄了也换不成令牌），按令牌而非 IP 认设备（换 IP 不失效）。
+///   这样"配对一次"才真的成立——重开开关或手机重启后电脑端无需重配；
+///   想取消授权就在设置页把该设备「断开」，摘要随之从落盘里删掉。
 /// - 数据不出手机、不出局域网，不经任何云端（符合仓库「无服务器」红线）。
 class LocalBridgeService extends ChangeNotifier {
   LocalBridgeService({
     required this.db,
+    required this.prefs,
     this.planRepo,
     this.bodyWeightKg,
     this.port = 8765,
@@ -38,6 +48,7 @@ class LocalBridgeService extends ChangeNotifier {
   }) : _export = ExportService(db);
 
   final Db db;
+  final SharedPreferences prefs;
   final PlanRepository? planRepo;
 
   /// 自重容量折算体重（与统计页/AI 数据包同一口径）；不传 = 旧口径记 0。
@@ -74,8 +85,27 @@ class LocalBridgeService extends ChangeNotifier {
   /// 当前 6 位配对码（用户主动"重新生成"或每次启动都会换新）。
   String _pairingCode = '';
 
-  /// 已配对设备（IP → 令牌/时间）。令牌按 IP 隔离，一台电脑配一次即可。
-  final Map<String, _BridgeClient> _clients = {};
+  /// 已配对设备：**按令牌的 SHA-256 摘要索引**（不是按 IP——换个 IP 不该掉线，
+  /// 令牌才是凭证）。落盘一份摘要，重开服务后免重新配对。
+  final Map<String, _BridgeDevice> _devices = {};
+
+  /// 摘要落盘键；值形如 [{h, ip, ua, f, l}]。
+  static const String _devicesKey = 'bridge_devices_v1';
+
+  /// 记住的设备条数上限（防无限增长；超了就丢最久没用过的）。
+  static const int _maxDevices = 10;
+
+  /// 常驻开关落盘键（用户显式开启；没有它，App 重启后桥一律不自启）。
+  static const String _persistentKey = 'bridge_persistent_v1';
+
+  /// 记住的局域网签名落盘键。签名取本机 IPv4 的前 3 段（如 `192.168.1`）：
+  /// 不用 SSID 是有意的——Android 8+ 读 SSID 要定位权限，违背本 App
+  /// 「不要权限」的底线；前三段签名零权限、对家用路由（同网段）足够准，
+  /// 且令牌仍是真正的门禁，签名的职责只是"别在陌生网络自启"。
+  static const String _lanKey = 'bridge_lan_v1';
+
+  /// 自动拉起失败时给 UI 的提示（当前不在记住的局域网）。
+  bool _persistentMismatch = false;
 
   /// 最近的请求记录（诊断用：确认"电脑确实连上了"）。
   final List<BridgeAccessEntry> _accessLog = [];
@@ -91,10 +121,29 @@ class LocalBridgeService extends ChangeNotifier {
   bool get pairingLocked => _pairingLocked;
   int get requestCount => _requestCount;
   int get pairAttemptsUsed => _pairAttempts;
-  List<BridgeClient> get clients => List.unmodifiable(
-      _clients.values.map((c) => c.toPublic()));
+  List<BridgeDevice> get pairedDevices =>
+      List.unmodifiable(_devices.values.map((d) => d.toPublic()));
   List<BridgeAccessEntry> get accessLog =>
       List.unmodifiable(_accessLog.reversed);
+
+  // ---------- 常驻（仅记住的局域网） ----------
+
+  /// 用户是否开了常驻（落盘，App 重启后仍在）。
+  bool get persistentEnabled => prefs.getBool(_persistentKey) ?? false;
+
+  /// 记住的局域网签名（如 `192.168.1`；没开过常驻时为 null）。
+  String? get rememberedLan => prefs.getString(_lanKey);
+
+  /// 常驻此刻是否生效：开了常驻 **且** 当前就在记住的局域网里。
+  /// 运行中按已探测到的网卡判断（空闲巡检会顺带刷新，见 [_sweep]）。
+  bool get persistentActive {
+    final lan = rememberedLan;
+    if (lan == null || !persistentEnabled) return false;
+    return _lanOfIps(_localIps) == lan;
+  }
+
+  /// App 启动尝试自启但不在记住的局域网时置位，供页面提示"常驻没生效"。
+  bool get persistentMismatch => _persistentMismatch;
 
   /// 相对空闲超时还剩多久自动关闭（未运行或刚启动时给满值）。
   Duration get remainingUntilAutoStop {
@@ -135,8 +184,10 @@ class LocalBridgeService extends ChangeNotifier {
     _requestCount = 0;
     _pairAttempts = 0;
     _pairingLocked = false;
+    _persistentMismatch = false;
     _pairingCode = _newPairingCode();
-    _clients.clear();
+    // 已配对设备从落盘里恢复：重开开关不该把电脑端踢下线（配对一次就够）
+    _loadDevices();
     _accessLog.clear();
     _startedAt = DateTime.now();
     _lastActivityAt = DateTime.now();
@@ -160,17 +211,19 @@ class LocalBridgeService extends ChangeNotifier {
     }
   }
 
-  /// 停止服务并清空全部令牌（断开所有已配对设备）。
+  /// 停止服务。**已配对设备保留**（落盘不动）——下次开启无需重新配对；
+  /// 要取消授权得在设置页显式「断开」那台设备。
   Future<void> stop() async {
     _sweepTimer?.cancel();
     _sweepTimer = null;
     final s = _server;
     _server = null;
-    _clients.clear();
     _pairingCode = '';
     _actualPort = 0;
     _localIps = const [];
     _startedAt = null;
+    // 顺带把这一轮的"最近活动"落盘（平时不为每个请求写盘，只在关服务时收口）
+    _saveDevices();
     if (s != null) {
       await s.close(force: true);
     }
@@ -186,9 +239,71 @@ class LocalBridgeService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 主动断开某台已配对设备（撤销其令牌）。
-  void revokeClient(String address) {
-    if (_clients.remove(address) == null) return;
+  // ---------- 常驻：开启 / 关闭 / 自启 ----------
+
+  /// 开启常驻：把「当前局域网签名 + 开关」落盘。
+  /// 探不到局域网地址（没连 Wi-Fi）时拒绝并返回 false，免得记住一个空网。
+  /// 只动常驻两项偏好，**不碰已配对设备**。
+  Future<bool> enablePersistent() async {
+    final lan = await _currentLan();
+    if (lan == null) return false;
+    await prefs.setBool(_persistentKey, true);
+    await prefs.setString(_lanKey, lan);
+    _persistentMismatch = false;
+    notifyListeners();
+    return true;
+  }
+
+  /// 关闭常驻：开关与记住的局域网一起清掉。已配对设备照旧保留——
+  /// 常驻只是"免手动开开关"，跟"谁有资格连"是两码事。
+  Future<void> disablePersistent() async {
+    await prefs.setBool(_persistentKey, false);
+    await prefs.remove(_lanKey);
+    _persistentMismatch = false;
+    notifyListeners();
+  }
+
+  /// App 启动时的自动拉起：**仅当**用户开了常驻、且当前就连在记住的那个
+  /// 局域网里。任何不满足都安静返回 false——常驻绝不变成"到处自启"。
+  Future<bool> maybeAutoStart() async {
+    if (running) return true;
+    final lan = rememberedLan;
+    if (lan == null || !persistentEnabled) return false;
+    final here = await _currentLan();
+    if (here != lan) {
+      // 留个提示给设置页："常驻没生效，因为你现在不在家里的网"
+      _persistentMismatch = true;
+      notifyListeners();
+      return false;
+    }
+    return start();
+  }
+
+  /// 当前网络的局域网签名（探不到返回 null）。探测失败按"未知网络"算，
+  /// 宁可不自启，也不在陌生网络里冒险。
+  Future<String?> _currentLan() async {
+    final ips = _localIps.isNotEmpty && running
+        ? _localIps
+        : await (ipProbe ?? probeLocalIps)();
+    return _lanOfIps(ips);
+  }
+
+  /// 签名 = 首个 IPv4 地址的前 3 段。测试注入的 loopback 也会走到这
+  /// （生产探测不含 loopback），不影响正确性。
+  static String? _lanOfIps(List<String> ips) {
+    for (final ip in ips) {
+      if (ip.contains(':')) continue; // 跳过 IPv6
+      final parts = ip.split('.');
+      if (parts.length == 4) return parts.take(3).join('.');
+    }
+    return null;
+  }
+
+  /// 主动断开某台已配对设备（撤销其令牌，并从落盘里删掉摘要）。
+  /// [id] 为 [BridgeDevice.id]（令牌摘要）。
+  void revokeDevice(String id) {
+    if (_devices.remove(id) == null) return;
+    _saveDevices();
     notifyListeners();
   }
 
@@ -200,8 +315,24 @@ class LocalBridgeService extends ChangeNotifier {
 
   // ---------- 空闲自动关闭 ----------
 
+  /// 空闲巡检。常驻生效中不自动关——但"还在不在家"每次都重新探一遍网卡：
+  /// 手机换了网（从家里走到外面）就自动回到普通规则，空闲照关。
   void _sweep() {
     if (!running) return;
+    if (!persistentEnabled) {
+      _idleStopIfDue();
+      return;
+    }
+    unawaited(() async {
+      final ips = await (ipProbe ?? probeLocalIps)();
+      if (!running) return; // 巡检间隙里被关了就别再动
+      _localIps = ips; // 顺带刷新，设置页"常驻是否生效"才不会骗人
+      _idleStopIfDue();
+    }());
+  }
+
+  void _idleStopIfDue() {
+    if (persistentActive) return; // 还在记住的局域网里：豁免空闲关闭
     if (DateTime.now().difference(_lastActivityAt) >= idleTimeout) {
       unawaited(stop());
     }
@@ -237,12 +368,15 @@ class LocalBridgeService extends ChangeNotifier {
 
   Future<int> _route(HttpRequest req, String addr) async {
     final path = req.uri.path;
-    // 免令牌：健康检查（代理据此确认手机在线且接口版本一致）
+    // 免令牌：健康检查（代理据此确认手机在线、接口版本一致、以及自己配没配上）
     if (req.method == 'GET' && (path == '/v1/health' || path == '/')) {
+      final presented = _bearer(req);
       return _json(req.response, 200, {
         'app': 'baoji-timer',
         'api': apiVersion,
-        'paired': _clients.containsKey(addr),
+        // 带上令牌问"我这台配了吗"，代理的 status 命令据此给出可读结论
+        'paired': presented != null && _authorize(addr, presented, touch: false),
+        'pairedDevices': _devices.length,
       });
     }
     // 免令牌：配对（配对码本身就是凭证）
@@ -256,7 +390,6 @@ class LocalBridgeService extends ChangeNotifier {
       return _json(req.response, 401, {'error': '未配对或令牌无效'});
     }
     _touch();
-    _markSeen(addr);
     if (req.method != 'GET') {
       return _json(req.response, 405, {'error': '本桥只读，不支持的请求方法'});
     }
@@ -304,12 +437,8 @@ class LocalBridgeService extends ChangeNotifier {
           {'error': '配对码不正确（还剩 ${maxPairAttempts - _pairAttempts} 次）'});
     }
     final token = _newToken();
-    _clients[addr] = _BridgeClient(
-      address: addr,
-      token: token,
-      userAgent: (req.headers.value(HttpHeaders.userAgentHeader) ?? '')
-          .toString(),
-    );
+    _rememberDevice(token, addr,
+        (req.headers.value(HttpHeaders.userAgentHeader) ?? '').toString());
     // 配对成功后旧码立即失效：避免"配完还有人拿旧码再配一台"
     _pairingCode = _newPairingCode();
     _pairAttempts = 0;
@@ -485,14 +614,67 @@ class LocalBridgeService extends ChangeNotifier {
     return addr.startsWith('::ffff:') ? addr.substring(7) : addr;
   }
 
-  /// 令牌校验：按来源 IP 索引 + 常数时间比较，避免时序侧信道。
-  bool _authorize(String addr, String token) {
-    final c = _clients[addr];
-    if (c == null) return false;
-    return _constEq(c.token, token);
+  /// 令牌校验：把请求里的令牌取摘要后按摘要索引，再常数时间比较。
+  /// 顺带记一次"最近活动"（[touch] 为 false 时只读，别让 health 探测反复重置空闲计时）。
+  bool _authorize(String addr, String token, {bool touch = true}) {
+    final hash = _hashToken(token);
+    final d = _devices[hash];
+    if (d == null) return false;
+    if (touch) {
+      d.lastSeenAt = DateTime.now();
+      d.lastAddress = addr;
+      // 每次活动都刷一次落盘太频繁（每个请求一次写）；真正的落盘留给
+      // 配对/断开/服务停止这三个时刻。
+    }
+    return true;
   }
 
-  void _markSeen(String addr) => _clients[addr]?.lastSeenAt = DateTime.now();
+  /// 记住一台设备：存**摘要**，不存令牌原文。
+  void _rememberDevice(String token, String addr, String userAgent) {
+    _devices[_hashToken(token)] = _BridgeDevice(
+      hash: _hashToken(token),
+      lastAddress: addr,
+      userAgent: userAgent,
+    );
+    // 超上限就丢最久没活动的（电脑换得再多也不至于塞爆 prefs）
+    if (_devices.length > _maxDevices) {
+      final sorted = _devices.values.toList()
+        ..sort((a, b) => a.lastSeenAt.compareTo(b.lastSeenAt));
+      for (final old in sorted.take(_devices.length - _maxDevices)) {
+        _devices.remove(old.hash);
+      }
+    }
+    _saveDevices();
+  }
+
+  /// 令牌 → SHA-256 摘要（hex）。存摘要而非原文：prefs 万一被翻出来，
+  /// 也换不出可用的令牌。
+  static String _hashToken(String token) =>
+      sha256.convert(utf8.encode(token)).toString();
+
+  // ---------- 设备落盘 ----------
+
+  void _loadDevices() {
+    _devices.clear();
+    final raw = prefs.getString(_devicesKey);
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return;
+      for (final e in list) {
+        if (e is! Map) continue;
+        final d = _BridgeDevice.fromJson(Map<String, dynamic>.from(e));
+        if (d != null) _devices[d.hash] = d;
+      }
+    } on FormatException catch (_) {
+      // 落盘坏了就当没配过（用户重新配对即可），不让它拖住服务启动
+    }
+  }
+
+  void _saveDevices() {
+    final list = _devices.values.map((d) => d.toJson()).toList();
+    unawaited(prefs.setString(_devicesKey, jsonEncode(list)));
+  }
 
   String? _bearer(HttpRequest req) {
     final raw = req.headers.value(HttpHeaders.authorizationHeader);
@@ -537,16 +719,6 @@ class LocalBridgeService extends ChangeNotifier {
     return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 
-  /// 常数时间字符串比较（长度不同立刻返回 false，不泄露逐位信息）。
-  static bool _constEq(String a, String b) {
-    if (a.length != b.length) return false;
-    var diff = 0;
-    for (var i = 0; i < a.length; i++) {
-      diff |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
-    }
-    return diff == 0;
-  }
-
   Future<int> _json(HttpResponse res, int status, Object body) async {
     res.statusCode = status;
     res.headers.contentType = ContentType('application', 'json', charset: 'utf-8');
@@ -574,37 +746,85 @@ class LocalBridgeService extends ChangeNotifier {
   }
 }
 
-/// 已配对设备（对外暴露的只读视图，不含令牌原文）。
-class BridgeClient {
-  const BridgeClient({
+/// 已配对设备（对外暴露的只读视图，**不含令牌，也不含摘要全文**）。
+class BridgeDevice {
+  const BridgeDevice({
+    required this.id,
     required this.address,
     required this.firstSeenAt,
     required this.lastSeenAt,
     required this.userAgent,
   });
 
+  /// 设备标识：令牌的 SHA-256 摘要（hex）。摘要不可逆，泄了也换不出令牌，
+  /// 所以可以放心当 ID 用；UI 只显示前 8 位。
+  final String id;
+
+  /// 最近一次请求的来源 IP（换 IP 不影响配对，这里只是给人看的）。
   final String address;
   final DateTime firstSeenAt;
   final DateTime lastSeenAt;
   final String userAgent;
+
+  /// 给用户看的名字：优先浏览器/客户端自报的名字，没有就说"某台电脑"。
+  String get label {
+    final ua = userAgent.trim();
+    if (ua.isEmpty) return '电脑（未署名）';
+    // UA 往往是又臭又长的一串；只取能认出来的关键字
+    for (final key in ['Claude', 'Cursor', 'VSCode', 'node', 'curl', 'Python']) {
+      if (ua.contains(key)) return key;
+    }
+    return ua.length > 24 ? '${ua.substring(0, 24)}…' : ua;
+  }
 }
 
-class _BridgeClient {
-  _BridgeClient({
-    required this.address,
-    required this.token,
+class _BridgeDevice {
+  _BridgeDevice({
+    required this.hash,
+    required this.lastAddress,
     required this.userAgent,
   })  : firstSeenAt = DateTime.now(),
         lastSeenAt = DateTime.now();
 
-  final String address;
-  final String token;
+  /// 令牌的 SHA-256 摘要（hex，64 位）——这是落盘的那份，不是令牌本身。
+  final String hash;
+  String lastAddress;
   final String userAgent;
-  final DateTime firstSeenAt;
+  DateTime firstSeenAt;
   DateTime lastSeenAt;
 
-  BridgeClient toPublic() => BridgeClient(
-        address: address,
+  Map<String, Object?> toJson() => {
+        'h': hash,
+        'ip': lastAddress,
+        'ua': userAgent,
+        'f': firstSeenAt.millisecondsSinceEpoch,
+        'l': lastSeenAt.millisecondsSinceEpoch,
+      };
+
+  /// 反序列化；摘要格式不对（旧版/损坏）就返回 null，当作没配过。
+  /// 时间戳缺了就按"现在"算——宁可显示不准，也不该影响配对本身。
+  static _BridgeDevice? fromJson(Map<String, dynamic> j) {
+    final h = j['h'];
+    if (h is! String || h.length != 64) return null;
+    final d = _BridgeDevice(
+      hash: h,
+      lastAddress: (j['ip'] ?? '').toString(),
+      userAgent: (j['ua'] ?? '').toString(),
+    );
+    final f = j['f'];
+    final l = j['l'];
+    if (f is int && f > 0) {
+      d.firstSeenAt = DateTime.fromMillisecondsSinceEpoch(f);
+    }
+    if (l is int && l > 0) {
+      d.lastSeenAt = DateTime.fromMillisecondsSinceEpoch(l);
+    }
+    return d;
+  }
+
+  BridgeDevice toPublic() => BridgeDevice(
+        id: hash,
+        address: lastAddress,
         firstSeenAt: firstSeenAt,
         lastSeenAt: lastSeenAt,
         userAgent: userAgent,
