@@ -298,6 +298,20 @@ class HrChartBlock extends StatelessWidget {
         ? tx('循环负荷 ${load.trimp.round()} · ${load.zoneSummary()}',
             en: 'Cardio Load ${load.trimp.round()} · ${load.zoneSummary()}')
         : '';
+    // 卡路里（Keytel 2005 + 力量训练 0.82 修正 + EPOC），参数全部来自
+    // 设置；体重/年龄缺省引擎内部兜底，任何情况下都能给数。
+    final cal = computeHrCalories(
+      [for (final p in points) (ts: p.ts, bpm: p.bpm)],
+      bodyWeightKg: s.bodyWeightKg,
+      age: s.hrAge,
+      sex: HrSex.values[s.hrSex.clamp(0, HrSex.values.length - 1)],
+      z4Sec: load.zoneSec[3],
+      z5Sec: load.zoneSec[4],
+    );
+    final kcalLine = cal.totalKcal >= 1
+        ? tx('约 ${cal.totalKcal.round()} kcal（练后 +${cal.epocKcal.round()}）',
+            en: '~${cal.totalKcal.round()} kcal (+${cal.epocKcal.round()} afterburn)')
+        : '';
     final t0 = points.first.ts;
     final spots = [
       for (final p in points)
@@ -326,6 +340,11 @@ class HrChartBlock extends StatelessWidget {
         if (loadLine.isNotEmpty) ...[
           const SizedBox(height: 4),
           Text(loadLine,
+              style: const TextStyle(color: AppTheme.textDim, fontSize: 13)),
+        ],
+        if (kcalLine.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(kcalLine,
               style: const TextStyle(color: AppTheme.textDim, fontSize: 13)),
         ],
         const SizedBox(height: 8),
@@ -506,11 +525,24 @@ class _HrAiPanelState extends State<HrAiPanel> {
       final loadNote = load.trimp >= 1
           ? '本场循环负荷（Edwards TRIMP）约 ${load.trimp.round()}，区间停留：${load.zoneSummary()}（最大心率按 ${load.hrMaxUsed} / 静息 ${load.hrRestUsed} 估算）'
           : null;
+      // 卡路里估算同样给 AI 做锚点（力量训练修正口径）
+      final cal = computeHrCalories(
+        [for (final p in widget.points) (ts: p.ts, bpm: p.bpm)],
+        bodyWeightKg: s.bodyWeightKg,
+        age: s.hrAge,
+        sex: HrSex.values[s.hrSex.clamp(0, HrSex.values.length - 1)],
+        z4Sec: load.zoneSec[3],
+        z5Sec: load.zoneSec[4],
+      );
+      final calorieNote = cal.totalKcal >= 1
+          ? '训练消耗估算约 ${cal.totalKcal.round()} kcal（训练中 ${cal.activeKcal.round()} + 练后 EPOC ${cal.epocKcal.round()}，力量训练修正口径，仅供参考）'
+          : null;
+      final note = [loadNote, calorieNote].whereType<String>().join('\n');
       final reply = await c.ai.chat([
         AiMessage(
             'user',
             buildHrAnalysisPrompt(pts,
-                durationMin: durationMin, loadNote: loadNote)),
+                durationMin: durationMin, loadNote: note.isEmpty ? null : note)),
       ]);
       if (!mounted) return;
       setState(() => _result = reply);
@@ -632,6 +664,72 @@ class _LoadParamsCard extends StatelessWidget {
     onSave(v < lo ? lo : (v > hi ? hi : v));
   }
 
+  Future<void> _editDouble(BuildContext context, String title, double current,
+      double lo, double hi, ValueChanged<double> onSave) async {
+    final ctrl = TextEditingController(
+        text: current == current.roundToDouble()
+            ? current.toStringAsFixed(0)
+            : current.toString());
+    final v = await showDialog<double>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: AppTheme.card,
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: Text(tx('取消', en: 'Cancel'),
+                style: const TextStyle(color: AppTheme.textDim)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, double.tryParse(ctrl.text)),
+            child: Text(tx('保存', en: 'Save'),
+                style: const TextStyle(color: AppTheme.primary)),
+          ),
+        ],
+      ),
+    );
+    if (v == null) return;
+    onSave(v < lo ? lo : (v > hi ? hi : v));
+  }
+
+  Future<void> _editSex(BuildContext context) async {
+    const opts = [
+      (0, '未设置（按男女均值）', 'Unset (avg of m/f)'),
+      (1, '男', 'Male'),
+      (2, '女', 'Female'),
+    ];
+    final v = await showDialog<int>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        backgroundColor: AppTheme.card,
+        title: Text(tx('性别', en: 'Sex')),
+        children: [
+          for (final o in opts)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(c, o.$1),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(tx(o.$2, en: o.$3),
+                    style: const TextStyle(fontSize: 16)),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (v == null) return;
+    s.hrSex = v;
+    unawaited(s.save());
+  }
+
   Widget _row(String label, String value, VoidCallback onTap) => InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
@@ -655,7 +753,7 @@ class _LoadParamsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     void save() => unawaited(s.save());
     return SectionCard(
-      title: tx('循环负荷参数', en: 'Cardio Load Parameters'),
+      title: tx('心率与消耗参数', en: 'HR & Calorie Parameters'),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -694,11 +792,30 @@ class _LoadParamsCard extends StatelessWidget {
               save();
             }),
           ),
+          _row(
+            tx('性别', en: 'Sex'),
+            switch (s.hrSex) {
+              1 => tx('男', en: 'Male'),
+              2 => tx('女', en: 'Female'),
+              _ => tx('未设置', en: 'Unset'),
+            },
+            () => _editSex(context),
+          ),
+          _row(
+            tx('体重', en: 'Body Weight'),
+            '${s.bodyWeightKg.toStringAsFixed(s.bodyWeightKg == s.bodyWeightKg.roundToDouble() ? 0 : 1)} kg',
+            () => _editDouble(
+                context, tx('体重 (kg)', en: 'Body weight (kg)'),
+                s.bodyWeightKg, 30, 250, (v) {
+              s.bodyWeightKg = v;
+              save();
+            }),
+          ),
           const SizedBox(height: 6),
           Text(
             tx(
-                '用于训练后自动估算循环负荷（Edwards TRIMP，按心率区间加权）；年龄不填按 190 估最大心率。',
-                en: 'Estimates post-workout cardio load (Edwards TRIMP, zone-weighted); max HR defaults to 190 without age.'),
+                '用于训练后估算循环负荷（Edwards TRIMP）与卡路里（Keytel 心率方程 × 力量训练修正，数字仅供参考）；年龄不填按 190 估最大心率，性别/体重未设用默认值。',
+                en: 'Estimates post-workout cardio load (Edwards TRIMP) and calories (Keytel HR equation with resistance adjustment; indicative only). Max HR defaults to 190 without age.'),
             style: const TextStyle(
                 color: AppTheme.textDim, fontSize: 12, height: 1.5),
           ),

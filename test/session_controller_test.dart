@@ -85,6 +85,8 @@ void main() {
     int restSec = 120,
     int workingSets = 3,
     String supersetTag = '',
+    String logging = LoggingMode.reps,
+    String loadType = LoadMode.weighted,
   }) async {
     final pe = PlanExercise(
       dayId: day.id!,
@@ -97,6 +99,8 @@ void main() {
       kind: 'compound',
       rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: workingSets),
       supersetTag: supersetTag,
+      logging: logging,
+      loadType: loadType,
     );
     final id = await db.insertPlanExercise(pe);
     return pe.copyWith(id: id);
@@ -367,12 +371,18 @@ void main() {
     await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
     expect(c.curExIdx, 1, reason: '动作甲练满已推进');
     expect(c.extraSetExerciseName, '动作甲', reason: '休息页应有加练入口');
+    final restEndBefore = c.restEndAt;
 
     await c.startExtraSet();
-    expect(c.phase, WorkoutPhase.lifting);
+    expect(c.phase, WorkoutPhase.resting,
+        reason: '加练也带休息计时：只回退落点，休息倒计时继续走');
+    expect(c.restEndAt, restEndBefore, reason: '倒计时不中断，精确闹钟不重排');
     expect(c.curExIdx, 0);
-    expect(c.extraSetExerciseName, isNull);
+    expect(c.extraSetExerciseName, isNull, reason: '入口即消费，按钮不再残留');
     expect(c.workingSetsDone, 1);
+
+    c.skipRest(); // 到点/跳过休息 → 落到加练动作态
+    expect(c.phase, WorkoutPhase.lifting);
 
     // 加练一组：作为正式组落库
     await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
@@ -398,7 +408,9 @@ void main() {
     expect(c.extraSetExerciseName, '动作甲', reason: '组间休息也提供「再来一组」回到本动作');
 
     await c.startExtraSet();
-    expect(c.phase, WorkoutPhase.lifting);
+    expect(c.phase, WorkoutPhase.resting,
+        reason: '组间「再来一组」同样保留休息计时（备场时间）');
+    expect(c.curExIdx, 0);
     expect(c.weightDraft, 52.5, reason: '再来一组继承最后一组实际重量，不被推荐值冲回');
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });
@@ -1217,7 +1229,8 @@ void main() {
       // 计划内第 1 组
       expect(c.buildCard().text, contains('第 1/1 组'));
       await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
-      await c.startExtraSet(); // 回到动作甲加练
+      await c.startExtraSet(); // 回到动作甲加练（2026-10-17：休息继续只改落点）
+      c.skipRest(); // 跳过休息落到加练动作态
       final card = c.buildCard();
       // 2026-10-08 口径统一：绝对组号 doneRaw+1（与跳页面板/总结页一个写法）
       expect(card.text, contains('第 2 组（加练）'), reason: '加练组按绝对组号显性计数');
@@ -1225,6 +1238,7 @@ void main() {
 
       await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
       await c.startExtraSet();
+      c.skipRest();
       expect(c.buildCard().text, contains('第 3 组（加练）'),
           reason: '第二次加练组号继续涨');
     });
@@ -1503,6 +1517,59 @@ void main() {
       await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
       expect(c.hasActive, isFalse, reason: '未接线时维持旧行为：练满即自动结束');
       expect(c.session!.status, 'done');
+      await drainContinuations();
+    });
+  });
+
+  group('v14 记录形态：计时/单侧/目标可解释化', () {
+    // completeSet → _beginRestFor 的悬挂续体排干（与休息规则组同模式）
+    Future<void> drainContinuations() =>
+        Future<void>.delayed(const Duration(milliseconds: 120));
+
+    test('targetWhyOf：启动预载链推导文案；越界返回空串', () async {
+      final day = await makePlanDay('推日');
+      final a = await addPlanEx(day, '卧推', 0);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      // 无历史：链状态回 repsMin（5）→ 次数轴有空间的爬升口径
+      final why = c.targetWhyOf(0);
+      expect(why, isNotEmpty);
+      expect(why, contains('全部组做到 5 次'));
+      expect(why, contains('下次目标 6 次'));
+      expect(c.targetWhyOf(99), '', reason: '越界收起，UI 不显示');
+      await drainContinuations();
+    });
+
+    test('计时动作 completeSet：durationSec 落库、reps 同秒数、weight=0', () async {
+      final day = await makePlanDay('核心日');
+      final a = await addPlanEx(day, '平板支撑', 0,
+          logging: LoggingMode.time, loadType: LoadMode.bodyweight);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      await c.completeSet(
+        weight: 0,
+        reps: 45,
+        rir: 2,
+        kind: SetKind.working,
+        durationSec: 45,
+      );
+      final sets = await db.setsOfExercise(c.exercises[0].id!);
+      expect(sets, hasLength(1));
+      expect(sets.single.durationSec, 45, reason: '计时组实际保持秒数落列');
+      expect(sets.single.reps, 45, reason: 'reps 同步存秒（引擎判定同源）');
+      expect(sets.single.weightKg, 0);
+      await drainContinuations();
+    });
+
+    test('单侧动作 completeSet：奇数保存自动就近取偶', () async {
+      final day = await makePlanDay('腿日');
+      final a =
+          await addPlanEx(day, '箭步蹲', 0, logging: LoggingMode.repsPerSide);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      await c.completeSet(weight: 20, reps: 7, rir: 2, kind: SetKind.working);
+      final sets = await db.setsOfExercise(c.exercises[0].id!);
+      expect(sets.single.reps, 8, reason: '7 → 取偶 8（每边 4 均分口径）');
       await drainContinuations();
     });
   });

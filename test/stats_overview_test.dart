@@ -171,4 +171,80 @@ void main() {
     expect(find.text('${exname('深蹲')}：已记 1 天'), findsOneWidget,
         reason: '选中动作的 1RM 空态（第二个动作也能看，不再锁死前 4）');
   });
+
+  /// 切到「肌肉」Tab 并等肌群占比加载完成（同 pumpStats 的真实延时节奏）
+  Future<void> openMuscleTab(WidgetTester tester) async {
+    await tester.tap(find.text('肌肉'));
+    for (var i = 0; i < 8; i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 150)));
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+  }
+
+  /// 肌群卡很长：800×600 测试视口下未练点名行在折 fold 之下，
+  /// Lazy ListView 未物化就找不到——滚到卡尾（以下一张卡出现为准）
+  Future<void> scrollToMuscleCardEnd(WidgetTester tester) async {
+    for (var i = 0; i < 8; i++) {
+      if (find.text('上下肢分布').evaluate().isNotEmpty) return;
+      await tester.drag(find.byType(ListView).first, const Offset(0, -400));
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+  }
+
+  testWidgets('肌群卡未练点名：有漏练肌群时出现', (tester) async {
+    await tester.runAsync(seed); // 只练卧推+深蹲（词表外 → 全归「其他」）
+    await pumpStats(tester);
+    await openMuscleTab(tester);
+    await scrollToMuscleCardEnd(tester);
+    expect(find.textContaining('未练到'), findsOneWidget,
+        reason: '统计期内肩/背/手臂/核心等近零占比 → 一行点名');
+  });
+
+  testWidgets('肌群卡未练点名：六大肌群全命中时不出现', (tester) async {
+    // 一个 session 覆盖全部六区（词表内动作，主肌群各占 1/6 ≥ 2%）。
+    // DB 操作必须包 runAsync：flutter_test 的 FakeAsync 区里真异步不会推进
+    await tester.runAsync(() async {
+      final now = DateTime.now();
+      final ses = await container.db.insertSession(Session(
+        date: fmtDate(now),
+        planDayTitle: '全身日',
+        startedAt: now.millisecondsSinceEpoch - 3600000,
+        endedAt: now.millisecondsSinceEpoch,
+        status: 'done',
+      ));
+      final covers = [
+        '杠铃卧推', // 胸
+        '坐姿哑铃推举', // 肩
+        '引体向上', // 背
+        '哑铃弯举', // 手臂
+        '杠铃深蹲', // 腿
+        '卷腹', // 核心
+      ];
+      for (var i = 0; i < covers.length; i++) {
+        final seId = await container.db.insertSessionExercise(SessionExercise(
+          sessionId: ses.id!,
+          name: covers[i],
+          orderIdx: i,
+          kind: 'compound',
+          rule: ProgressionRule(repsMin: 8, repsMax: 12, workingSets: 1),
+        ));
+        await container.db.insertSet(SetEntry(
+          sessionExerciseId: seId,
+          weightKg: 20,
+          reps: 10,
+          rir: 2,
+          kind: SetKind.working,
+          doneAt: now.millisecondsSinceEpoch,
+        ));
+      }
+    });
+    await pumpStats(tester);
+    await openMuscleTab(tester);
+    await scrollToMuscleCardEnd(tester);
+    expect(find.text('上下肢分布'), findsOneWidget,
+        reason: '确认已滚过整张肌群卡（否则「不出现」断言不可信）');
+    expect(find.textContaining('未练到'), findsNothing,
+        reason: '每区都有足量容量 → 不点名、不占版面');
+  });
 }

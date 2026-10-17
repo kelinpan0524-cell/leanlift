@@ -730,7 +730,10 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
           onSessionEnded: _finishFlow,
         );
       case FlowPageKind.rest:
-        return const _RestView();
+        // 非 const：休息页内容（「再来一组」按钮、「下一组 · 加练」文案）
+        // 要随 session notify 重渲染——const 实例会让 Flutter 短路跳过
+        // 整棵子树（2026-10-17 加练带休息计时后不再靠换页刷新）。
+        return _RestView();
       case FlowPageKind.summary:
         final sum = _summary;
         if (sum == null) return null;
@@ -878,6 +881,50 @@ class _FlowHeader extends StatelessWidget {
   }
 }
 
+/// 本组目标文案（v14 按记录形态换口径）：计时→秒、单侧→每边均分、
+/// 常规→次数；上下限相同只给单值。记录页目标行与起始页共用。
+String targetTextFor(SessionExercise ex) {
+  final lo = ex.rule.repsMin;
+  final hi = ex.rule.repsMax;
+  if (isTimedLogging(ex.logging)) {
+    return lo == hi
+        ? tx('目标 $lo 秒', en: 'Target ${lo}s')
+        : tx('目标 $lo-$hi 秒', en: 'Target $lo-$hi s');
+  }
+  if (isPerSideLogging(ex.logging)) {
+    final plo = normalizeTarget(lo, ex.logging) ~/ 2;
+    final phi = normalizeTarget(hi, ex.logging) ~/ 2;
+    return plo == phi
+        ? tx('目标 每边 $plo 次', en: 'Target $plo/side')
+        : tx('目标 每边 $plo-$phi 次', en: 'Target $plo-$phi/side');
+  }
+  return lo == hi
+      ? tx('目标 $lo 次', en: 'Target $lo reps')
+      : tx('目标 $lo-$hi 次', en: 'Target $lo-$hi reps');
+}
+
+/// 起始页动作卡副标题：组数 × 目标（口径随记录形态：计时=秒、
+/// 单侧=每边均分）· RIR。
+String startCardSub(SessionExercise ex) {
+  final sets = ex.rule.workingSets;
+  final rir = ex.rule.rirTarget;
+  if (isTimedLogging(ex.logging)) {
+    return tx('$sets 组 × ${ex.rule.repsMin}-${ex.rule.repsMax} 秒 · RIR $rir',
+        en: '$sets sets × ${ex.rule.repsMin}-${ex.rule.repsMax}s · RIR $rir');
+  }
+  if (isPerSideLogging(ex.logging)) {
+    final lo = normalizeTarget(ex.rule.repsMin, ex.logging) ~/ 2;
+    final hi = normalizeTarget(ex.rule.repsMax, ex.logging) ~/ 2;
+    return lo == hi
+        ? tx('$sets 组 × 每边 $lo 次 · RIR $rir',
+            en: '$sets sets × $lo/side · RIR $rir')
+        : tx('$sets 组 × 每边 $lo-$hi 次 · RIR $rir',
+            en: '$sets sets × $lo-$hi/side · RIR $rir');
+  }
+  return tx('$sets 组 × ${ex.rule.repsMin}-${ex.rule.repsMax} 次 · RIR $rir',
+      en: '$sets sets × ${ex.rule.repsMin}-${ex.rule.repsMax} reps · RIR $rir');
+}
+
 /// 起始页（wger gym_mode 的开始页思路）：先看一眼今天练什么——
 /// 计划文案 + 每个动作的组次目标；大按钮进第一记录页。
 /// 只在"零记录"的全新会话出现；中途恢复直接落到当前记录页。
@@ -951,16 +998,16 @@ class _StartPage extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(height: 2),
+                        // 目标口径随记录形态（v14）：计时→秒、单侧→每边
                         Text(
-                          tx(
-                            '${s.exercises[i].rule.workingSets} 组 × ${s.exercises[i].rule.repsMin}-${s.exercises[i].rule.repsMax} 次 · RIR ${s.exercises[i].rule.rirTarget}',
-                            en: '${s.exercises[i].rule.workingSets} sets × ${s.exercises[i].rule.repsMin}-${s.exercises[i].rule.repsMax} reps · RIR ${s.exercises[i].rule.rirTarget}',
-                          ),
+                          startCardSub(s.exercises[i]),
                           style: const TextStyle(
                             color: AppTheme.textDim,
                             fontSize: 13,
                           ),
                         ),
+                        // 「为什么是这个数字」主口在记录页目标行下（小屏/横屏
+                        // 起始页不加行——800×360 下会把开始按钮挤出视口）。
                       ],
                     ),
                   ),
@@ -1482,10 +1529,28 @@ class _ExerciseInfo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final last = s.lastWorkout[ex.name] ?? const <SetEntry>[];
+    // 上次成绩口径随记录形态（v14）：计时→秒、单侧→总次数（每边 M）、
+    // 自重→纯次数；不再出现「0kg×N」假重量。
+    final bool timed = isTimedLogging(ex.logging);
+    final bool perSide = isPerSideLogging(ex.logging);
+    final bool bodyweight = isBodyweightLoad(ex.loadType);
+    String lastCell(SetEntry e, bool en) {
+      final n = timed ? (e.durationSec ?? e.reps) : e.reps;
+      if (timed) return en ? '${n}s' : '$n 秒';
+      if (perSide) {
+        return en ? 'total $n (${n ~/ 2}/side)' : '总 $n 次（每边 ${n ~/ 2}）';
+      }
+      if (bodyweight) return en ? '$n reps' : '$n 次';
+      return en
+          ? '${fmtKg(e.weightKg)}kg × $n'
+          : '${fmtKg(e.weightKg)}kg×$n';
+    }
+
     final lastText = last.isEmpty
         ? tx('首次训练这个动作', en: 'First time on this exercise')
-        : tx('上次：${last.map((e) => '${fmtKg(e.weightKg)}kg×${e.reps}').join('  ')}',
-            en: 'Last time: ${last.map((e) => '${fmtKg(e.weightKg)}kg×${e.reps}').join('  ')}');
+        : tx(
+            '上次：${last.map((e) => lastCell(e, false)).join('  ')}',
+            en: 'Last time: ${last.map((e) => lastCell(e, true)).join('  ')}');
     // 组数/目标行已升格为动作面板第一行的大字号条（2026-09-26 Arono），
     // 这里不再重复显示，避免同屏两处组号且挤占小屏纵向空间。
     return Column(
@@ -1771,6 +1836,42 @@ class _ActionPanelState extends State<_ActionPanel> {
   late final _noteCtrl = TextEditingController();
   static const _steps = [0.5, 1.25, 2.5, 5.0];
 
+  // 工作计时（v14 计时动作）：墙钟起表 + 每秒刷新显示。
+  // 与休息计时完全独立；从本页切走（撤销回退/跳页面板/换动作/翻组）即
+  // 放弃当次计时——面板状态销毁或重新起表，不落库。
+  int _workStartMs = 0;
+  Timer? _workTick;
+
+  @override
+  void initState() {
+    super.initState();
+    if (isTimedLogging(widget.ex.logging)) _armWorkTimer();
+  }
+
+  /// 工作计时起表：进入本页（或新的一组页）从零累计。
+  void _armWorkTimer() {
+    _workStartMs = DateTime.now().millisecondsSinceEpoch;
+    _workTick?.cancel();
+    _workTick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {}); // 只刷计时数字
+    });
+  }
+
+  /// 本页已保持秒数（墙钟差值，地板 1——起表即按也算这组开始了）。
+  int get _elapsedSec {
+    if (_workStartMs == 0) return 0;
+    final sec =
+        ((DateTime.now().millisecondsSinceEpoch - _workStartMs) / 1000).floor();
+    return sec < 1 ? 1 : sec;
+  }
+
+  /// 工作计时展示（分:秒，与休息倒计时同风格的大数字）。
+  String get _workClockText {
+    final total = _elapsedSec;
+    return '${(total ~/ 60).toString().padLeft(2, '0')}:'
+        '${(total % 60).toString().padLeft(2, '0')}';
+  }
+
   @override
   void didUpdateWidget(_ActionPanel old) {
     super.didUpdateWidget(old);
@@ -1779,6 +1880,20 @@ class _ActionPanelState extends State<_ActionPanel> {
       _kind = SetKind.working;
       _rirPrompt = false;
     }
+    // 计时动作换了「组页」（换动作/撤销回退改变完成组数）→ 重新起表：
+    // 上一组的计时已随翻页放弃，这一组从 0 秒开始
+    if (isTimedLogging(widget.ex.logging) &&
+        (old.ex.id != widget.ex.id ||
+            old.s.workingSetsDone != widget.s.workingSetsDone)) {
+      _armWorkTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    _workTick?.cancel();
+    _noteCtrl.dispose();
+    super.dispose();
   }
 
   /// 渐进提醒行（2026-09-26）：当前重量与平台期重量一致时提醒可加重。
@@ -1819,10 +1934,28 @@ class _ActionPanelState extends State<_ActionPanel> {
   }
 
   /// 上次成绩行（无历史不显示）。
+  /// 计时动作比秒数、自重动作比次数（v14）——「上次：0kg×45」这类
+  /// 假重量口径不再出现。
   List<Widget> _lastPerformanceRow(BuildContext context, SessionController s) {
     final last = s.lastPerformance(widget.ex.name);
     if (last == null) return const [];
     final rirText = last.rir >= 0 ? ' R${last.rir}' : '';
+    final bool timed = isTimedLogging(widget.ex.logging);
+    final bool bodyweight = isBodyweightLoad(widget.ex.loadType);
+    final lastNum =
+        timed ? (last.durationSec ?? last.reps) : last.reps;
+    final String zhLast;
+    final String enLast;
+    if (timed) {
+      zhLast = '$lastNum 秒';
+      enLast = '${lastNum}s';
+    } else if (bodyweight) {
+      zhLast = '$lastNum 次';
+      enLast = '$lastNum reps';
+    } else {
+      zhLast = '${fmtKg(last.weightKg)}kg×$lastNum';
+      enLast = '${fmtKg(last.weightKg)}kg × $lastNum';
+    }
     return [
       const SizedBox(height: 4),
       GestureDetector(
@@ -1837,8 +1970,8 @@ class _ActionPanelState extends State<_ActionPanel> {
         child: Semantics(
           button: true,
           label: tx(
-            '带入上次成绩：${fmtKg(last.weightKg)}公斤${last.reps}次${last.rir >= 0 ? '余力${last.rir}' : ''}',
-            en: 'Apply last set: ${fmtKg(last.weightKg)}kg × ${last.reps} reps${last.rir >= 0 ? ', RIR ${last.rir}' : ''}',
+            '带入上次成绩：${timed || bodyweight ? '' : '${fmtKg(last.weightKg)}公斤'}$lastNum${timed ? '秒' : '次'}${last.rir >= 0 ? '余力${last.rir}' : ''}',
+            en: 'Apply last set: $enLast${last.rir >= 0 ? ', RIR ${last.rir}' : ''}',
           ),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 2),
@@ -1848,8 +1981,8 @@ class _ActionPanelState extends State<_ActionPanel> {
                 const Icon(Icons.history, size: 15, color: AppTheme.accent),
                 const SizedBox(width: 5),
                 Text(
-                  tx('上次：${fmtKg(last.weightKg)}kg×${last.reps}$rirText（点按整套带入）',
-                      en: 'Last time: ${fmtKg(last.weightKg)}kg×${last.reps}$rirText (tap to apply)'),
+                  tx('上次：$zhLast$rirText（点按整套带入）',
+                      en: 'Last time: $enLast$rirText (tap to apply)'),
                   style: const TextStyle(color: AppTheme.textDim, fontSize: 13),
                 ),
               ],
@@ -1865,14 +1998,32 @@ class _ActionPanelState extends State<_ActionPanel> {
     final s = widget.s;
     final ex = widget.ex;
     final compact = widget.compact;
-    final repsChoices = <int>{
-      for (
-        var r = (ex.rule.repsMin - 2).clamp(1, 99);
-        r <= ex.rule.repsMax + 2;
-        r++
-      )
-        r,
-    }.toList()..sort();
+    // 动作记录形态（v14）：计时 / 单侧 / 自重，三种形态共用本面板
+    final timed = isTimedLogging(ex.logging);
+    final perSide = isPerSideLogging(ex.logging);
+    final bodyweight = isBodyweightLoad(ex.loadType);
+    // 次数点选：单侧动作 ±2 步进（总数要能两侧均分），其余 ±1
+    final List<int> repsChoices;
+    if (perSide) {
+      var start = normalizeTarget(ex.rule.repsMin, ex.logging) - 2;
+      if (start < 2) start = 2;
+      repsChoices = [
+        for (var r = start;
+            r <= normalizeTarget(ex.rule.repsMax, ex.logging) + 2;
+            r += 2)
+          r,
+      ];
+    } else {
+      repsChoices = <int>{
+        for (
+          var r = (ex.rule.repsMin - 2).clamp(1, 99);
+          r <= ex.rule.repsMax + 2;
+          r++
+        )
+          r,
+      }.toList()
+        ..sort();
+    }
     final doneAll = s.workingSetsDone >= ex.rule.workingSets;
 
     return Container(
@@ -1891,11 +2042,8 @@ class _ActionPanelState extends State<_ActionPanel> {
           Builder(
             builder: (context) {
               final planned = ex.rule.workingSets;
-              final targetText = ex.rule.repsMin == ex.rule.repsMax
-                  ? tx('目标 ${ex.rule.repsMin} 次',
-                      en: 'Target ${ex.rule.repsMin} reps')
-                  : tx('目标 ${ex.rule.repsMin}-${ex.rule.repsMax} 次',
-                      en: 'Target ${ex.rule.repsMin}-${ex.rule.repsMax} reps');
+              // 目标行按记录形态换口径（v14）：计时→秒、单侧→每边均分
+              final targetText = targetTextFor(ex);
               final setText = s.workingSetsDone >= planned
                   ? tx('第 ${s.workingSetsDone + 1} 组（加练）',
                       en: 'Set ${s.workingSetsDone + 1} (extra)')
@@ -1936,117 +2084,185 @@ class _ActionPanelState extends State<_ActionPanel> {
               );
             },
           ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              // Flexible+FittedBox：键盘可输任意值（999.5 / 辅 300），
-              // 数字放不下时等比缩小而不是溢出裁切；放得下保持原字号
-              Flexible(
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: GestureDetector(
-                    onTap: () {
-                      HapticFeedback.selectionClick();
-                      showWeightInputSheet(context, s);
-                    },
-                    onLongPress: () => s.setWeightDraft(0),
-                    // 负值=辅助配重（辅30），0=自重，正值=常规负重（fmtLoad 统一口径）；
-                    // 点按弹数字键盘直输，长按清零（老入口保留）
-                    child: Text(
-                      fmtLoad(s.weightDraft),
-                      key: const ValueKey('weightDraftNum'),
-                      style: AppTheme.bigNum(
-                        compact || s.weightDraft <= 0 ? 56 : 84,
-                      ),
+          // 「目标为什么是这个数字」（v14 可解释化）：规则链推导一句话，
+          // 视觉从属的小字行——在目标下方、不抢三要素；空串（未预载的
+          // 临时动作）不占位直接收起。
+          Builder(
+            builder: (context) {
+              final why = s.targetWhyOf(s.curExIdx);
+              if (why.isEmpty) return const SizedBox.shrink();
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  why,
+                  textAlign: TextAlign.center,
+                  style:
+                      const TextStyle(color: AppTheme.textDim, fontSize: 12),
+                ),
+              );
+            },
+          ),
+          // 中部主区按记录形态分块（v14）：
+          // 计时 → 大号工作计时（分:秒、墙钟累计，屏幕最大元素之一），
+          // 与休息计时完全独立，切走/跳过即放弃不落库；
+          // 自重 → 「自重」标识 + 上次对比（不再出现 0kg 假重量）；
+          // 常规负重 → 原重量大数字 + 杠铃片速配 + ± 步进（交互不动）。
+          if (timed) ...[
+            const SizedBox(height: 12),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                _workClockText,
+                key: const Key('workTimerText'),
+                style: AppTheme.bigNum(compact ? 56 : 84),
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              tx('计时中 · 点「完成」记录本组用时',
+                  en: 'Timing · tap Done to log this hold'),
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+            ),
+            ..._lastPerformanceRow(context, s),
+          ] else if (bodyweight) ...[
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    tx('自重', en: 'Bodyweight'),
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF06220F),
                     ),
                   ),
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(left: 6, bottom: 10),
-                child: Text(
-                  'kg',
-                  style: TextStyle(
-                    color: AppTheme.textDim,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              // 自重/负重一键切换（长按清零的老入口保留，这里给可见入口）
-              Padding(
-                padding: const EdgeInsets.only(left: 12, bottom: 12),
-                child: Tooltip(
-                  message: tx(
-                    '自重/辅助动作点这里：在自重和上次重量间切换；点大数字可直接键入重量（负值 = 辅助器械配重，如 -30）',
-                    en: 'For bodyweight/assisted moves: switch between bodyweight and last weight; tap the big number to type a weight (negative = machine assist, e.g. -30)',
-                  ),
-                  child: GestureDetector(
-                    onTap: () {
-                      HapticFeedback.selectionClick();
-                      s.toggleBodyweightDraft();
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
-                      ),
-                      decoration: BoxDecoration(
-                        color: s.weightDraft == 0
-                            ? AppTheme.accent
-                            : AppTheme.cardHi,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
+              ],
+            ),
+            ..._lastPerformanceRow(context, s),
+          ] else ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                // Flexible+FittedBox：键盘可输任意值（999.5 / 辅 300），
+                // 数字放不下时等比缩小而不是溢出裁切；放得下保持原字号
+                Flexible(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: GestureDetector(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        showWeightInputSheet(context, s);
+                      },
+                      onLongPress: () => s.setWeightDraft(0),
+                      // 负值=辅助配重（辅30），0=自重，正值=常规负重（fmtLoad 统一口径）；
+                      // 点按弹数字键盘直输，长按清零（老入口保留）
                       child: Text(
-                        s.weightDraft == 0
-                            ? tx('自重', en: 'Bodyweight')
-                            : tx('自重?', en: 'Bodyweight?'),
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: s.weightDraft == 0
-                              ? const Color(0xFF06220F)
-                              : AppTheme.textDim,
+                        fmtLoad(s.weightDraft),
+                        key: const ValueKey('weightDraftNum'),
+                        style: AppTheme.bigNum(
+                          compact || s.weightDraft <= 0 ? 56 : 84,
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          // 杠铃片速配（2026-09-26 Arono）：杠铃动作改重量时短暂显示
-          // 每边挂片，约 4 秒自动收起；非杠铃动作完全不占位。
-          _PlateHintStrip(s: s, gear: libraryMetaByName(ex.name)?.gear ?? ''),
-          // 上次成绩行（调研条目 7，wger/LibreFit 思路）：与渐进引擎建议值
-          // （大数字 = 本组推荐起点）并列的第二起点，点按整套带入重量/次数/
-          // RIR；不替换建议值、不弹窗，无需手动步进即可重现上次配置。
-          ..._lastPerformanceRow(context, s),
-          // 渐进提醒行（2026-09-26 Arono：薄肌渐进超负荷主动提示）：
-          // 同一重量停留过久时一行小字提醒可加重——与上次成绩行同级克制，
-          // 不弹窗不打断（红线：训练中禁止弹窗）。
-          ..._plateauRow(context, s),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              for (final step in _steps)
-                WeightStepButton(
-                  delta: step,
-                  onTap: () => s.setWeightDraft(s.weightDraft + step),
+                Padding(
+                  padding: const EdgeInsets.only(left: 6, bottom: 10),
+                  child: Text(
+                    'kg',
+                    style: TextStyle(
+                      color: AppTheme.textDim,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              for (final step in _steps)
-                WeightStepButton(
-                  delta: -step,
-                  onTap: () => s.setWeightDraft(s.weightDraft - step),
+                // 自重/负重一键切换（长按清零的老入口保留，这里给可见入口）
+                Padding(
+                  padding: const EdgeInsets.only(left: 12, bottom: 12),
+                  child: Tooltip(
+                    message: tx(
+                      '自重/辅助动作点这里：在自重和上次重量间切换；点大数字可直接键入重量（负值 = 辅助器械配重，如 -30）',
+                      en: 'For bodyweight/assisted moves: switch between bodyweight and last weight; tap the big number to type a weight (negative = machine assist, e.g. -30)',
+                    ),
+                    child: GestureDetector(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        s.toggleBodyweightDraft();
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: s.weightDraft == 0
+                              ? AppTheme.accent
+                              : AppTheme.cardHi,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          s.weightDraft == 0
+                              ? tx('自重', en: 'Bodyweight')
+                              : tx('自重?', en: 'Bodyweight?'),
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: s.weightDraft == 0
+                                ? const Color(0xFF06220F)
+                                : AppTheme.textDim,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-            ],
-          ),
+              ],
+            ),
+            // 杠铃片速配（2026-09-26 Arono）：杠铃动作改重量时短暂显示
+            // 每边挂片，约 4 秒自动收起；非杠铃动作完全不占位。
+            _PlateHintStrip(
+                s: s, gear: libraryMetaByName(ex.name)?.gear ?? ''),
+            // 上次成绩行（调研条目 7，wger/LibreFit 思路）：与渐进引擎建议值
+            // （大数字 = 本组推荐起点）并列的第二起点，点按整套带入重量/次数/
+            // RIR；不替换建议值、不弹窗，无需手动步进即可重现上次配置。
+            ..._lastPerformanceRow(context, s),
+            // 渐进提醒行（2026-09-26 Arono：薄肌渐进超负荷主动提示）：
+            // 同一重量停留过久时一行小字提醒可加重——与上次成绩行同级克制，
+            // 不弹窗不打断（红线：训练中禁止弹窗）。
+            ..._plateauRow(context, s),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                for (final step in _steps)
+                  WeightStepButton(
+                    delta: step,
+                    onTap: () => s.setWeightDraft(s.weightDraft + step),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                for (final step in _steps)
+                  WeightStepButton(
+                    delta: -step,
+                    onTap: () => s.setWeightDraft(s.weightDraft - step),
+                  ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           // 组类型三选：Wrap 而非 Row——系统大字号（1.6x）下三枚 chip
           // 挤不进一行的窄屏时自动换行，不再 RenderFlex 溢出
@@ -2145,51 +2361,24 @@ class _ActionPanelState extends State<_ActionPanel> {
               ],
             ),
           ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.center,
-            children: [
-              for (final r in repsChoices)
-                ChoiceChip(
-                  label: Text('$r'),
-                  selected: _reps == r,
-                  labelStyle: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                    color: _reps == r ? const Color(0xFF06220F) : AppTheme.text,
-                  ),
-                  selectedColor: AppTheme.primary,
-                  backgroundColor: AppTheme.cardHi,
-                  side: BorderSide.none,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                  onSelected: (_) {
-                    HapticFeedback.selectionClick();
-                    setState(() => _reps = r);
-                  },
-                ),
-              // 自定义次数（2026-09-26 Arono）：轻重量高次数（12/15+）
-              // 超出计划 ±2 的点选范围时直接键入；选中后 chip 显示实际次数。
-              Builder(
-                builder: (context) {
-                  final custom =
-                      (_reps != null && !repsChoices.contains(_reps))
-                          ? _reps!
-                          : null;
-                  return ChoiceChip(
-                    label: Text(
-                        custom != null ? '$custom' : tx('自定义', en: 'Custom')),
-                    selected: custom != null,
+          // 次数点选（v14）：计时动作没有次数概念，整块收起——
+          // 「完成」记实际用时；单侧动作 chips 走 ±2 步进（每边均分）。
+          if (!timed) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: [
+                for (final r in repsChoices)
+                  ChoiceChip(
+                    label: Text('$r'),
+                    selected: _reps == r,
                     labelStyle: TextStyle(
-                      fontSize: custom != null ? 17 : 14,
+                      fontSize: 17,
                       fontWeight: FontWeight.w700,
-                      color: custom != null
-                          ? const Color(0xFF06220F)
-                          : AppTheme.textDim,
+                      color:
+                          _reps == r ? const Color(0xFF06220F) : AppTheme.text,
                     ),
                     selectedColor: AppTheme.primary,
                     backgroundColor: AppTheme.cardHi,
@@ -2200,17 +2389,51 @@ class _ActionPanelState extends State<_ActionPanel> {
                     ),
                     onSelected: (_) {
                       HapticFeedback.selectionClick();
-                      showRepsInputSheet(
-                        context,
-                        current: _reps ?? ex.rule.repsMin,
-                        onPicked: (v) => setState(() => _reps = v),
-                      );
+                      setState(() => _reps = r);
                     },
-                  );
-                },
-              ),
-            ],
-          ),
+                  ),
+                // 自定义次数（2026-09-26 Arono）：轻重量高次数（12/15+）
+                // 超出计划 ±2 的点选范围时直接键入；选中后 chip 显示实际次数。
+                // 单侧动作键入值就近取偶（保存口径与 chips 一致）。
+                Builder(
+                  builder: (context) {
+                    final custom =
+                        (_reps != null && !repsChoices.contains(_reps))
+                            ? _reps!
+                            : null;
+                    return ChoiceChip(
+                      label: Text(
+                          custom != null ? '$custom' : tx('自定义', en: 'Custom')),
+                      selected: custom != null,
+                      labelStyle: TextStyle(
+                        fontSize: custom != null ? 17 : 14,
+                        fontWeight: FontWeight.w700,
+                        color: custom != null
+                            ? const Color(0xFF06220F)
+                            : AppTheme.textDim,
+                      ),
+                      selectedColor: AppTheme.primary,
+                      backgroundColor: AppTheme.cardHi,
+                      side: BorderSide.none,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      onSelected: (_) {
+                        HapticFeedback.selectionClick();
+                        showRepsInputSheet(
+                          context,
+                          current: _reps ?? ex.rule.repsMin,
+                          onPicked: (v) =>
+                              setState(() => _reps = normalizeTarget(v, ex.logging)),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ],
+            ),
+          ],
           // 备注入口（默认收起，PRD P0 字段：单组备注）；
           // <600dp 窄屏压缩时整段收起，给完成按钮留高度。
           if (!compact) ...[
@@ -2248,62 +2471,122 @@ class _ActionPanelState extends State<_ActionPanel> {
           const SizedBox(height: 12),
           // key 仅供 widget 测试定位（test/widget_layout_test.dart），无行为含义。
           // 计划组练满后按钮变成"加练一组"（加练组按正式组记录），不再是死灰按钮。
-          BigButton(
-            key: const Key('workoutCompleteSet'),
-            label: doneAll
-                ? tx('加练一组（正式组）', en: 'Extra Set (Working)')
-                : tx('完成本组', en: 'Done'),
-            color: _kind == SetKind.failure ? AppTheme.warn : AppTheme.primary,
-            onPressed: _saving
-                ? null
-                : () async {
-                    // 余力没填写提醒（2026-09-26 Arono）：正式组第一按不落库，
-                    // 高亮余力行提示补填；再按一次按计划默认记（不拦人）。
-                    // 热身/力竭组不提醒（力竭本身就是 RIR 0）。
-                    if (_kind == SetKind.working &&
-                        _rir == null &&
-                        !_rirPrompt) {
-                      HapticFeedback.selectionClick();
-                      setState(() => _rirPrompt = true);
-                      return;
-                    }
-                    _saving = true;
-                    HapticFeedback.mediumImpact();
-                    final reps = _reps ?? ex.rule.repsMin;
-                    final weight = s.weightDraft;
-                    final pr = await s.completeSet(
-                      weight: weight,
-                      reps: reps,
-                      rir: _rir ?? ex.rule.rirTarget,
-                      kind: _kind,
-                      note: _note,
-                    );
-                    _saving = false;
-                    _rirPrompt = false;
-                    _noteCtrl.clear();
-                    _note = '';
-                    if (_noteOpen) setState(() => _noteOpen = false);
-                    if (!context.mounted) return;
-                    // 最后一个动作的最后一组：状态机已自动结束，
-                    // 宿主收尾（总结页 + 渐进建议 + 飞书回填）接进页面流
-                    if (!s.hasActive) {
-                      await widget.onSessionEnded?.call();
-                      return;
-                    }
-                    // 保存流程（调研条目 8）：校验→写库（completeSet）→
-                    // 划线标记→自动翻页（宿主在窗口结束后应用下一页）
-                    widget.onRecorded?.call(
-                      '${fmtLoad(weight)}${weight != 0 ? 'kg' : ''} × $reps',
-                    );
-                    if (pr) {
-                      s.showFocusBanner(tx('🏆 ${exname(ex.name)} 重量新高 PR！',
-                          en: '🏆 ${exname(ex.name)} New PR!'));
-                    }
-                  },
-          ),
+          // 计时动作（v14）：「完成」记录实际用时；旁边「跳过」放弃本次
+          // 计时直接翻组——不落库、不弹窗（红线：训练中禁止弹窗）。
+          if (timed)
+            Row(
+              children: [
+                Expanded(
+                  child: BigButton(
+                    key: const Key('workoutCompleteSet'),
+                    label: doneAll
+                        ? tx('加练一组（正式组）', en: 'Extra Set (Working)')
+                        : tx('完成', en: 'Done'),
+                    color:
+                        _kind == SetKind.failure ? AppTheme.warn : AppTheme.primary,
+                    onPressed:
+                        _saving ? null : () => _saveCurrentSet(context),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                TextButton(
+                  onPressed: _saving
+                      ? null
+                      : () {
+                          HapticFeedback.selectionClick();
+                          // 跳过 = 重起工作计时、不落库（与"切走放弃"同语义）
+                          setState(_armWorkTimer);
+                        },
+                  child: Text(
+                    tx('跳过', en: 'Skip'),
+                    style: const TextStyle(
+                        color: AppTheme.textDim, fontSize: 15),
+                  ),
+                ),
+              ],
+            )
+          else
+            BigButton(
+              key: const Key('workoutCompleteSet'),
+              label: doneAll
+                  ? tx('加练一组（正式组）', en: 'Extra Set (Working)')
+                  : tx('完成本组', en: 'Done'),
+              color: _kind == SetKind.failure ? AppTheme.warn : AppTheme.primary,
+              onPressed: _saving ? null : () => _saveCurrentSet(context),
+            ),
         ],
       ),
     );
+  }
+
+  /// 「完成本组 / 完成」统一落库路径：先过余力提醒，再按记录形态组装
+  /// 数据写库（v14）：
+  /// - 计时：weight=0、reps=durationSec=实际秒数，划线文案「N 秒」；
+  /// - 单侧：保存值就近取偶（每边均分口径，奇数输入自动归一）；
+  /// - 常规负重：重量取当前草稿、次数取点选值（原行为不变）。
+  Future<void> _saveCurrentSet(BuildContext context) async {
+    final s = widget.s;
+    final ex = widget.ex;
+    final timed = isTimedLogging(ex.logging);
+    final bodyweight = isBodyweightLoad(ex.loadType);
+    // 余力没填写提醒（2026-09-26 Arono）：正式组第一按不落库，
+    // 高亮余力行提示补填；再按一次按计划默认记（不拦人）。
+    // 热身/力竭组不提醒（力竭本身就是 RIR 0）。
+    if (_kind == SetKind.working && _rir == null && !_rirPrompt) {
+      HapticFeedback.selectionClick();
+      setState(() => _rirPrompt = true);
+      return;
+    }
+    _saving = true;
+    HapticFeedback.mediumImpact();
+    final int? durationSec;
+    final int reps;
+    if (timed) {
+      durationSec = _elapsedSec; // 墙钟差值，切走前最后一刻取值
+      reps = durationSec;
+    } else {
+      durationSec = null;
+      // 单侧动作保存取偶（normalizeTarget 非单侧原样返回）
+      reps = normalizeTarget(_reps ?? ex.rule.repsMin, ex.logging);
+    }
+    // 计时/自重动作不落重量（自重链 recommendWeight 恒 0，保持 0kg 口径）
+    final weight = (timed || bodyweight) ? 0.0 : s.weightDraft;
+    final pr = await s.completeSet(
+      weight: weight,
+      reps: reps,
+      rir: _rir ?? ex.rule.rirTarget,
+      kind: _kind,
+      note: _note,
+      durationSec: durationSec,
+    );
+    _saving = false;
+    _rirPrompt = false;
+    _note = '';
+    // await 期间面板可能已被换页卸载（最后一组 → 确认收尾 → 总结页）：
+    // 已 dispose 的 TextEditingController 不可再 clear，全部守卫
+    if (mounted) {
+      _noteCtrl.clear();
+      if (_noteOpen) setState(() => _noteOpen = false);
+    }
+    if (!context.mounted) return;
+    // 最后一个动作的最后一组：状态机已自动结束，
+    // 宿主收尾（总结页 + 渐进建议 + 飞书回填）接进页面流
+    if (!s.hasActive) {
+      await widget.onSessionEnded?.call();
+      return;
+    }
+    // 保存流程（调研条目 8）：校验→写库（completeSet）→
+    // 划线标记→自动翻页（宿主在窗口结束后应用下一页）
+    widget.onRecorded?.call(
+      timed
+          ? tx('$durationSec 秒', en: '$durationSec s')
+          : '${fmtLoad(weight)}${weight != 0 ? 'kg' : ''} × $reps',
+    );
+    // 重量 PR 祝贺只对常规负重形态有意义（计时/自重恒 0kg，没有重量轴）
+    if (pr && !timed && !bodyweight) {
+      s.showFocusBanner(tx('🏆 ${exname(ex.name)} 重量新高 PR！',
+          en: '🏆 ${exname(ex.name)} New PR!'));
+    }
   }
 
   Widget _kindChip(String label, String kind) {
@@ -2352,11 +2635,16 @@ class _RestViewState extends State<_RestView> {
     final ex = s.currentEx;
     final isLastEx = s.curExIdx >= s.exercises.length - 1;
     final plannedWorking = ex?.rule.workingSets ?? 0;
-    final nextText = s.workingSetsDone >= plannedWorking
+    final doneAll = s.workingSetsDone >= plannedWorking;
+    // 练满动作上的休息 = 落点是它的加练组（「再来一组」回退后休息继续；
+    // 或收尾确认选「继续训练」后的加练态——含轮转末组落在非末位动作的
+    // 情形）。练满必已切走或回退，不存在「练满且未练满下一动作」的
+    // 普通推进休息，所以不再有「下一个动作：X」分支（2026-10-17）。
+    final nextText = doneAll
         ? (isLastEx
               ? tx('准备结束训练', en: 'Ready to Finish')
-              : tx('下一个动作：${exname(s.exercises[s.curExIdx + 1].name)}',
-                  en: 'Next exercise: ${exname(s.exercises[s.curExIdx + 1].name)}'))
+              : tx('下一组 · ${exname(ex?.name ?? '')} 加练：${fmtLoad(s.weightDraft)}${s.weightDraft != 0 ? 'kg' : ''} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} 次',
+                  en: 'Next · ${exname(ex?.name ?? '')} extra: ${fmtLoad(s.weightDraft)}${s.weightDraft != 0 ? 'kg' : ''} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} reps'))
         // 下一组带动作名 + 组号（2026-09-26 Arono：休息中要知道接下来
         // 练什么动作、第几组、做多少次）。尾巴不放操作提示：412 宽会
         // 折成两行，破坏休息页"一眼看完"的极简版式（点按展开本就是常态）
@@ -3029,8 +3317,10 @@ class _SummaryPage extends StatelessWidget {
                         children: [
                           for (final ex in s.exercises)
                             if ((s.setsByEx[ex.id] ?? const <SetEntry>[])
-                                .isNotEmpty)
+                                .isNotEmpty) ...[
                               _sessionSetsRow(ex),
+                              ..._bwExtraHint(ex),
+                            ],
                         ],
                       ),
                     ),
@@ -3114,6 +3404,35 @@ class _SummaryPage extends StatelessWidget {
         style: const TextStyle(fontSize: 15),
       ),
     );
+  }
+
+  /// 自重动作「次数到顶 → 下次加练一组」提示（v14）：全部正式组记满后
+  /// 用本场表现回放链状态，触顶才给一行建议——只做展示层口径，
+  /// 不改计划本身（改组数走计划编辑）。
+  List<Widget> _bwExtraHint(SessionExercise ex) {
+    if (!isBodyweightLoad(ex.loadType)) return const [];
+    final today = (s.setsByEx[ex.id] ?? const <SetEntry>[])
+        .where((x) => x.kind == SetKind.working)
+        .toList();
+    final plannedDone = today.where((x) => !x.isExtra).length;
+    if (plannedDone < ex.rule.workingSets) return const [];
+    final state = chainStateFromHistory(today, ex.rule);
+    final extra = bodyweightExtraSetTarget(
+      state: state,
+      rule: ex.rule,
+      loadType: ex.loadType,
+    );
+    if (extra == null) return const [];
+    return [
+      Padding(
+        padding: const EdgeInsets.only(left: 4, bottom: 6),
+        child: Text(
+          tx('次数到顶，下次建议加练一组（$extra 组）',
+              en: 'Reps topped out — add an extra set next time ($extra sets)'),
+          style: const TextStyle(color: AppTheme.primary, fontSize: 12.5),
+        ),
+      ),
+    ];
   }
 }
 

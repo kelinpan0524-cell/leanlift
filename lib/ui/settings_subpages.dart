@@ -69,6 +69,23 @@ class TrainingPrefsPage extends StatelessWidget {
               s.bodyWeightKg = v;
               s.save();
             }),
+            // 开练前顺手记体重（2026-10 开场设置）：与上面的体重折算共用
+            // 数据源（BodyMetric + 设置里的体重字段）。
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(tx('开练前记体重', en: 'Weigh-in before workout')),
+              subtitle: Text(
+                tx('开始训练时今天还没记体重，就先弹面板顺手记一条（可跳过）',
+                    en: 'If today has no weigh-in yet, a quick sheet pops up before starting (skippable)'),
+                style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+              ),
+              value: s.askWeightOnStart,
+              activeThumbColor: AppTheme.primary,
+              onChanged: (v) {
+                s.askWeightOnStart = v;
+                s.save();
+              },
+            ),
           ],
         ),
       ),
@@ -119,6 +136,21 @@ class TrainingPrefsPage extends StatelessWidget {
                 },
               ),
             const Divider(height: 1, thickness: 1, color: AppTheme.cardHi),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(tx('训练中屏幕常亮', en: 'Keep screen on during workout')),
+              subtitle: Text(
+                tx('训练计时期间屏幕不灭，抬眼即见；暂停/结束照常灭屏',
+                    en: 'The screen stays on while the timer runs; it sleeps as usual on pause or finish'),
+                style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+              ),
+              value: s.wakelockEnabled,
+              activeThumbColor: AppTheme.primary,
+              onChanged: (v) {
+                s.wakelockEnabled = v;
+                s.save();
+              },
+            ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: Text(tx('锁屏时保持显示', en: 'Keep on lock screen')),

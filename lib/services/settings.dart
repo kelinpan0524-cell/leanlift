@@ -26,6 +26,10 @@ class Settings extends ChangeNotifier {
   /// 默认 70kg；设为 0 时关闭折算（自重动作容量回到记 0 的旧口径）。
   double bodyWeightKg = 70;
 
+  /// 目标体重 kg（数据页体重曲线目标线 + 30 天 Δ 颜色语义）：
+  /// 0 = 未设（不画目标线，Δ 按降绿涨红）。
+  double weightGoalKg = 0;
+
   // AI（OpenAI 兼容）
   String aiBaseUrl = '';
   String aiApiKey = '';
@@ -76,10 +80,21 @@ class Settings extends ChangeNotifier {
   // 默认关：与常亮（训练时屏幕不灭）是两个独立维度。
   bool lockScreenKeepOn = false;
 
+  // 训练中屏幕常亮（2026-10 开场设置）：计时态屏幕不灭，抬眼即见数字。
+  // 默认开（训练核心体验）；关了以后训练中屏幕可正常熄灭省电，
+  // 暂停/结束灭屏逻辑不受影响。
+  bool wakelockEnabled = true;
+
+  // 开练前记体重（2026-10 开场设置）：开始训练时若今天还没记过体重，
+  // 先弹底部面板顺手记一条（预填上次体重）。默认开；跳过即直接开练。
+  bool askWeightOnStart = true;
+
   // 心率循环负荷参数（2026-10-17：Edwards TRIMP 估算用）
   int hrAge = 0; // 0 = 未填（最大心率回落 190 兜底）
   int hrRest = 60; // 静息心率
   int hrMaxOverride = 0; // 0 = 自动（220-年龄）
+  // 性别（Keytel 卡路里方程用）：0 未设=两式均值，1 男，2 女
+  int hrSex = 0;
 
   // 应用更新（GitHub 私仓 Releases）
   String ghUpdateToken = ''; // 只读令牌，与 AI Key 同一本地存放策略
@@ -106,6 +121,7 @@ class Settings extends ChangeNotifier {
     restCompoundSec = _prefs.getInt('${_kprefix}restCompound') ?? 180;
     restAssistanceSec = _prefs.getInt('${_kprefix}restAssist') ?? 120;
     bodyWeightKg = _prefs.getDouble('${_kprefix}bodyWeight') ?? 70;
+    weightGoalKg = _prefs.getDouble('${_kprefix}weightGoal') ?? 0;
     vibrationOn = _prefs.getBool('${_kprefix}vibration') ?? true;
     soundOn = _prefs.getBool('${_kprefix}sound') ?? true;
     aiBaseUrl = _prefs.getString('${_kprefix}aiBaseUrl') ?? '';
@@ -132,9 +148,12 @@ class Settings extends ChangeNotifier {
         _prefs.getInt('${_kprefix}trainRemindMin') ?? 20 * 60;
     autoShiftOnMiss = _prefs.getBool('${_kprefix}autoShiftOnMiss') ?? true;
     lockScreenKeepOn = _prefs.getBool('${_kprefix}lockScreenKeepOn') ?? false;
+    wakelockEnabled = _prefs.getBool('${_kprefix}wakelockOn') ?? true;
+    askWeightOnStart = _prefs.getBool('${_kprefix}askWeightOnStart') ?? true;
     hrAge = _prefs.getInt('${_kprefix}hrAge') ?? 0;
     hrRest = _prefs.getInt('${_kprefix}hrRest') ?? 60;
     hrMaxOverride = _prefs.getInt('${_kprefix}hrMax') ?? 0;
+    hrSex = _prefs.getInt('${_kprefix}hrSex') ?? 0;
     ghUpdateToken = _prefs.getString('${_kprefix}ghToken') ?? '';
     larkAccessToken = _prefs.getString('${_kprefix}larkAccess') ?? '';
     larkTokenExpiry = _prefs.getInt('${_kprefix}larkExpiry') ?? 0;
@@ -170,6 +189,7 @@ class Settings extends ChangeNotifier {
     await _prefs.setInt('${_kprefix}restCompound', restCompoundSec);
     await _prefs.setInt('${_kprefix}restAssist', restAssistanceSec);
     await _prefs.setDouble('${_kprefix}bodyWeight', bodyWeightKg);
+    await _prefs.setDouble('${_kprefix}weightGoal', weightGoalKg);
     await _prefs.setBool('${_kprefix}vibration', vibrationOn);
     await _prefs.setBool('${_kprefix}sound', soundOn);
     await _prefs.setString('${_kprefix}aiBaseUrl', aiBaseUrl);
@@ -194,9 +214,12 @@ class Settings extends ChangeNotifier {
     await _prefs.setInt('${_kprefix}trainRemindMin', trainReminderMinOfDay);
     await _prefs.setBool('${_kprefix}autoShiftOnMiss', autoShiftOnMiss);
     await _prefs.setBool('${_kprefix}lockScreenKeepOn', lockScreenKeepOn);
+    await _prefs.setBool('${_kprefix}wakelockOn', wakelockEnabled);
+    await _prefs.setBool('${_kprefix}askWeightOnStart', askWeightOnStart);
     await _prefs.setInt('${_kprefix}hrAge', hrAge);
     await _prefs.setInt('${_kprefix}hrRest', hrRest);
     await _prefs.setInt('${_kprefix}hrMax', hrMaxOverride);
+    await _prefs.setInt('${_kprefix}hrSex', hrSex);
     await _prefs.setString('${_kprefix}ghToken', ghUpdateToken);
     await _prefs.setString('${_kprefix}larkAccess', larkAccessToken);
     await _prefs.setInt('${_kprefix}larkExpiry', larkTokenExpiry);

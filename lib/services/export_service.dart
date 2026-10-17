@@ -49,15 +49,17 @@ class ExportService {
 
   Future<String> buildCsv() async {
     final sessions = await _db.recentSessions(limit: 100000);
+    // v14 起带动作记录形态三列：logging/load_type（动作行）、duration_sec
+    // （计时组实际保持秒数，非计时/老记录为空）。
     final buf = StringBuffer(
-        'date,plan_day,exercise,weight_kg,reps,rir,kind,done_at\n');
+        'date,plan_day,exercise,weight_kg,reps,rir,kind,done_at,logging,load_type,duration_sec\n');
     for (final s in sessions) {
       final ses = await _db.sessionExercises(s.id!);
       final map = await _db.setsOfSession(s.id!);
       for (final se in ses) {
         for (final set in map[se.id!] ?? const <SetEntry>[]) {
           buf.writeln(
-              '${s.date},${_csv(s.planDayTitle)},${_csv(se.name)},${set.weightKg},${set.reps},${set.rir},${set.kind},${set.doneAt}');
+              '${s.date},${_csv(s.planDayTitle)},${_csv(se.name)},${set.weightKg},${set.reps},${set.rir},${set.kind},${set.doneAt},${se.logging},${se.loadType},${set.durationSec ?? ''}');
         }
       }
     }
@@ -71,6 +73,8 @@ class ExportService {
 
   /// 从全量 JSON 恢复（清空后写入）。返回恢复的训练次数；
   /// 缺关键数据段时抛 FormatException，行损坏交给 Db.restoreAll 的事务兜底。
+  /// v14 键（logging/load_type/duration_sec）老备份行缺失时由列 DEFAULT
+  /// 回默认（按次数 + 常规负重），无需预处理。
   Future<int> restoreFromJson(Map<String, dynamic> data) async {
     for (final k in const [
       'plans',
@@ -157,10 +161,12 @@ class ExportService {
       for (final se in ses) {
         final sets = map[se.id!] ?? const <SetEntry>[];
         if (sets.isEmpty) continue;
+        // 计时动作（v14）组表述带秒数单位，按次数动作保持原样
         final desc = sets
-            .map((x) => '${x.weightKg}kg×${x.reps}${x.kind == SetKind.warmup ? '(热)' : x.kind == SetKind.failure ? '(失)' : ''}')
+            .map((x) =>
+                '${x.weightKg}kg×${x.durationSec != null ? '${x.durationSec}秒' : '${x.reps}'}${x.kind == SetKind.warmup ? '(热)' : x.kind == SetKind.failure ? '(失)' : ''}')
             .join(', ');
-        buf.writeln('- ${se.name}: $desc${_actualRestNote(se, sets)}');
+        buf.writeln('- ${se.name}${_loggingNote(se)}: $desc${_actualRestNote(se, sets)}');
         byNameVolume[se.name] = (byNameVolume[se.name] ?? 0) +
             sets.fold(
                 0.0,
@@ -204,9 +210,18 @@ class ExportService {
           for (final se in ses)
             {
               'name': se.name,
+              // v14：非默认记录形态才带键，默认形态保持老结构
+              if (se.logging != LoggingMode.reps) 'logging': se.logging,
+              if (se.loadType != LoadMode.weighted) 'load_type': se.loadType,
               'sets': [
                 for (final x in map[se.id!] ?? const <SetEntry>[])
-                  {'w': x.weightKg, 'r': x.reps, 'rir': x.rir, 'kind': x.kind}
+                  {
+                    'w': x.weightKg,
+                    'r': x.reps,
+                    'rir': x.rir,
+                    'kind': x.kind,
+                    if (x.durationSec != null) 'dur_s': x.durationSec,
+                  }
               ],
             }
         ],
@@ -334,6 +349,17 @@ class ExportService {
     if (k > 0 && exs[k - 1].supersetTag == t) return ''; // 段中/段尾
     if (k + 1 >= exs.length || exs[k + 1].supersetTag != t) return '';
     return '（超级组：与「${exs[k + 1].name}」配对交替）';
+  }
+
+  /// 记录形态标注（v14，AI 教练数据包用）：仅非默认形态加尾巴，教练才
+  /// 读得懂「60秒×3组」与单侧/自重的口径。默认形态输出空串（老格式不变）。
+  static String _loggingNote(SessionExercise se) {
+    final tags = <String>[
+      if (se.logging == LoggingMode.time) '按时间记秒',
+      if (se.logging == LoggingMode.repsPerSide) '单侧动作记总数',
+      if (se.loadType == LoadMode.bodyweight) '自重',
+    ];
+    return tags.isEmpty ? '' : '（${tags.join('·')}）';
   }
 }
 

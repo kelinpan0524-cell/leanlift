@@ -343,6 +343,8 @@ class SessionController extends ChangeNotifier {
         .where((e) => e.kind == SetKind.working)
         .length;
     await _loadContextForCurrent();
+    // 恢复会话同样重灌目标解释（文案数据源是会话前历史，与首次启动同口径）
+    await _preloadTargetWhys();
     weightDraft = _recommendFor(currentEx!.name);
     _setPhase(WorkoutPhase.lifting, silent: true);
     return true;
@@ -376,6 +378,38 @@ class SessionController extends ChangeNotifier {
   SetEntry? lastPerformance(String name) {
     final list = lastWorkout[name] ?? const <SetEntry>[];
     return list.isEmpty ? null : list.first;
+  }
+
+  // ---------- 目标可解释化（v14「为什么是这个数字」） ----------
+
+  /// 会话启动时逐动作算好的目标解释文案（sessionExerciseId → 文案）。
+  /// 数据源是"本次之前"的历史链状态，训练期间不变，缓存整个会话安全；
+  /// 训练中临时追加/替换的动作没有预载（targetWhyOf 返回空串，UI 收起）。
+  final Map<int, String> _targetWhy = {};
+
+  /// 动作 [exerciseIndex] 本组目标的一句话解释（「为什么是这个数字」）。
+  /// 未预载/下标越界返回空串（UI 层空串不显示，不占三要素空间）。
+  String targetWhyOf(int exerciseIndex) {
+    if (exerciseIndex < 0 || exerciseIndex >= exercises.length) return '';
+    final ex = exercises[exerciseIndex];
+    return _targetWhy[ex.id] ?? '';
+  }
+
+  /// 从该动作的历史正式组推链状态，算「为什么是这个数字」文案。
+  Future<void> _preloadTargetWhys() async {
+    final map = <int, String>{};
+    for (final ex in exercises) {
+      final last = await _db.lastWorkingSets(ex.name);
+      map[ex.id!] = chainTargetWhy(
+        rule: ex.rule,
+        state: chainStateFromHistory(last, ex.rule),
+        loadType: ex.loadType,
+        logging: ex.logging,
+      );
+    }
+    _targetWhy
+      ..clear()
+      ..addAll(map);
   }
 
   /// 平台期提醒缓存（2026-09-26 Arono：同重量停留过久 → 训练中途
@@ -446,6 +480,10 @@ class SessionController extends ChangeNotifier {
           // 超级组标记同样快照（v9）：训练中的轮转推进按它分组，
           // 模板日后取消配对不影响进行中/历史会话。
           supersetTag: pe.supersetTag,
+          // 记录形态快照（v14）：计时/单侧/自重口径随会话固化，
+          // 模板日后改形态不影响进行中会话与历史回放。
+          logging: pe.logging,
+          loadType: pe.loadType,
         ),
     ];
     final (s, withIds) = await _db.insertSessionWithExercises(
@@ -468,6 +506,8 @@ class SessionController extends ChangeNotifier {
     activeMs = 0;
     _phaseSince = DateTime.now(); // 时长统计从这里起表
     await _loadContextForCurrent();
+    // 目标解释文案（v14）随会话启动逐动作预载（历史链状态训练期间不变）
+    await _preloadTargetWhys();
     weightDraft = _recommendFor(currentEx!.name);
     _setPhase(WorkoutPhase.lifting);
     await _enterFocus();
@@ -494,15 +534,21 @@ class SessionController extends ChangeNotifier {
   // ---------- 记录 ----------
 
   /// 完成一组（kind: warmup/working/failure）。返回是否触发 PR。
+  /// [durationSec]（v14 计时动作）：实际保持秒数——落 duration_sec 列，
+  /// 且约定 reps 字段同样承载秒数（链判定原样复用次数语义）。
+  /// 单侧动作（logging='reps_per_side'）的 reps 是两侧总数，落库前
+  /// 就近取偶，保证总数可两侧均分。
   Future<bool> completeSet({
     required double weight,
     required int reps,
     required int rir,
     required String kind,
     String note = '',
+    int? durationSec,
   }) async {
     final ex = currentEx;
     if (ex == null) return false;
+    reps = normalizeTarget(reps, ex.logging);
     // 加练标注（v12，2026-10-08）：落库前先判定——只对正式组标注
     // （kind==working 才参与判据：加练态下 kind chips 仍可选，计划满后
     // 再记热身/力竭组不该被误标「加练」）；必须在 workingSetsDone++ 与
@@ -530,6 +576,7 @@ class SessionController extends ChangeNotifier {
       targetWeightKg: _recommendFor(ex.name),
       targetReps: chainTarget.targetReps,
       isExtra: isExtra,
+      durationSec: durationSec,
     );
     final id = await _db.insertSet(entry);
     setsByEx
@@ -789,7 +836,9 @@ class SessionController extends ChangeNotifier {
 
   void skipRest() => _finishRest(cancelAlarm: true);
 
-  /// 休息中「刚完成的动作再来一组」：回退到该动作进入动作态，
+  /// 休息中「刚完成的动作再来一组」：回退到该动作，休息倒计时继续走
+  /// （2026-10-17：加练也带休息计时——剩余时间即备场时间，到点震动/
+  /// 提示音提醒开练；±30s/暂停/跳过照常，「跳过休息」= 立即进入这一组）。
   /// 再完成的组按正式组记录（同样参与渐进判定与 PR）。
   /// 重量继承该动作最后一组的实际重量（手调过的配重不从头再来），
   /// 没有历史组才回落到推荐值。
@@ -798,14 +847,16 @@ class SessionController extends ChangeNotifier {
     if (name == null || !hasActive) return;
     final idx = exercises.indexWhere((e) => e.name == name);
     if (idx < 0) return;
-    _restPaused = false; // 暂停态回退前先解除，避免 resume 语义错乱
     curExIdx = idx;
     final list = setsByEx[exercises[idx].id] ?? const <SetEntry>[];
     workingSetsDone = list.where((e) => e.kind == SetKind.working).length;
     curSetIdx = list.length;
     await _loadContextForCurrent();
     weightDraft = list.isNotEmpty ? list.last.weightKg : _recommendFor(name);
-    _finishRest(cancelAlarm: true);
+    // 不结束休息：落点改为该动作的加练组，倒计时自然走完再进动作态。
+    // 入口即消费（清空后按钮消失，休息页由「下一组 · 加练」文案报状态）。
+    extraSetExerciseName = null;
+    notifyCard();
     notifyListeners();
   }
 
@@ -1161,7 +1212,9 @@ class SessionController extends ChangeNotifier {
   void Function()? onSessionClosed;
 
   Future<void> _enterFocus() async {
-    WakelockPlus.enable();
+    // 常亮开关兜底：startFromDay 里 _setPhase(_applyWakelock) 先按设置
+    // 收口，随后这里不能又无条件强制亮屏（否则开关形同虚设）。
+    if (_settings.wakelockEnabled) WakelockPlus.enable();
     await onEnterFocus?.call();
   }
 
@@ -1202,6 +1255,12 @@ class SessionController extends ChangeNotifier {
   }) => hasActive && (phase != WorkoutPhase.resting || !restPaused);
 
   void _applyWakelock() {
+    // 常亮开关（2026-10 开场设置）：设置关时训练中也不再强制亮屏；
+    // 暂停/结束的灭屏收口（shouldKeepScreenOn=false → disable）保持原样。
+    if (!_settings.wakelockEnabled) {
+      WakelockPlus.disable();
+      return;
+    }
     if (shouldKeepScreenOn(
       hasActive: hasActive,
       phase: phase,

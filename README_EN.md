@@ -53,30 +53,36 @@ A lean physique comes from low body fat, training 3× a week, and progressive ov
 ## ✨ Highlights
 
 ### 🏋️ Mid-workout: distraction-free by design
-- Full-screen, thumb-sized controls: weight stepping (±0.5 / 1.25 / 2.5 / 5kg, no keyboard), rep picking, RIR, warm-up/working/failure tags; tap "Custom" for high-rep sets
-- Automatic rest countdown (180s compound / 120s assistance, adjustable) that keeps running on lock screens, with notification-bar + exact-alarm reminders
-- Last-session comparison and automatic PR detection; Do-Not-Disturb turns itself on, and switching apps mid-set gets you nudged back
-- Completing a set: haptic + visual confirmation, no screen-reading needed
-- Barbell exercises briefly show plates-per-side when you change weight, then fade away
-- Forgot to stop the timer? A guard asks before saving and trims the session to your last set
+- Full-screen, thumb-sized controls: step weight by ±0.5 / 1.25 / 2.5 / 5kg (no keyboard), tap reps in, tag RIR and warm-up/working/failure on the fly; high-rep sets (12/15+) take the "Custom" key-in
+- Completing a set: haptic + visual confirmation — you know it logged without reading the screen
+- The rest countdown runs itself (180s compound / 120s assistance, adjustable): it keeps ticking through lock screen and background, and a notification-bar + exact alarm calls you back — rest never slips away silently
+- Last session's numbers stay in view and PRs announce themselves; Do-Not-Disturb turns on automatically, and drifting into another app gets you nudged back
+- Changing barbell weight briefly flashes plates-per-side, then fades — no mental plate math
+- Timed holds — planks, hangs, farmer's walks — log by the second: a dedicated work timer counts how long you held, separate from the rest clock, so last week's 40s vs this week's 55s sits right there in history
+- Unilateral lifts like lunges and single-arm rows log total reps and show "N per side": 12 total means 6 per side — targets are always even, so "7 per side" can never happen
+- Screen stays awake mid-workout so the countdown never blacks out; it sleeps the moment you pause, with a switch in settings
+- Forgot to stop the timer? A guard asks before saving and trims the session to your last set — no inflated duration
 
-### 📖 Illustrated exercise guides (157 exercises)
-- 157 built-in exercises, **every one with form cues** (how-to + common mistakes), bilingual
-- 145 exercises come with start/end demonstration photos; 14 core lifts (bench, squat and deadlift families, pull-ups, leg press, …) include **silent demo videos** on loop
+### 📖 Illustrated exercise guides (186 exercises)
+- 186 built-in exercises (glute/leg specials, commercial-gym machines, band-at-home series), each with form cues: how-to + common mistakes (e.g. bench press: "shoulders shrug, bar drifts toward the neck"), bilingual
+- 175 exercises come with start/end demonstration photos — one glance before your first set shows you the setup; 14 core lifts (bench, squat and deadlift families, pull-ups, leg press, …) add **silent demo videos** on loop
 - **Available mid-workout**: tap "📖 Form Guide" on the training screen anytime — swipe it away and keep lifting, the timer never stops
 
 ### 📈 Progressive overload engine
-- The Baoji (lean-physique) plan works out of the box, plus PPL / bro-split / functional / home-dumbbell templates — or let the AI design one
-- Automatic load adjustments: hit the rep ceiling on every working set with reps in reserve → add weight; miss the floor → back off 5%
-- Every set logs its target at completion — history shows **target vs actual**
-- Automatic 1RM estimation; volume, set-count and intensity trends (weekly / monthly)
+- The Baoji (lean-physique) plan works out of the box (the big four lifts, 3×/week), plus PPL / bro-split / functional / home-dumbbell templates — or let the AI design one
+- **Every target says why**: each target weight/rep count carries the engine's reason — "all 3 sets hit 8 last time → +2.5kg this round" — never a black-box number
+- Load changes are judged for you: hit the rep ceiling on every working set with reps in reserve → add weight; miss the floor → back off 5% — just accept, no math
+- Bodyweight moves (push-ups, pull-ups) skip the weight column — log reps directly; once reps hit the ceiling the engine suggests adding a set instead of endless reps
+- **Supersets**: pair 2–3 neighboring exercises and alternate (A1→B1→A2→B2…) — one lift's rest fills another's work; the AI wires them up automatically when your plan mentions supersets, the plan editor toggles them in one tap, and transition rest vs full round rest are timed separately
+- Every set logs its target at completion — history shows **target vs actual**, so you can see which set fell short and by how much
+- Automatic 1RM estimation; volume, set-count and intensity trends (weekly / monthly) without spreadsheet math
 
 ### 🤖 AI features (your key, your data)
-- Paste an existing plan and the AI converts it into a structured one
+- Paste an existing plan and the AI converts it into a structured one — no hand-entering dozens of exercises
 - Or describe it in plain words ("4 days a week, back/chest/legs, hypertrophy") and get a complete plan
-- **Conversational planning**: chat with the AI coach, refine as you go, then preview and save — every exercise still confirmed by you before it lands
-- **AI coach**: attaches your last 8 weeks of real training data and self-ratings for one-tap reviews or Q&A; clear failure messages, never fakes AI with local rules
-- OpenAI-compatible — local Ollama works too; one-tap connection test in settings
+- **Conversational planning**: chat your needs and refine as you go ("can't make Wednesday, move it") — each round returns a full plan, preview and save when happy, with every exercise still confirmed by you before it lands
+- **AI coach**: attaches your last 8 weeks of real training data and self-ratings for one-tap phase reviews or Q&A anytime; a built-in coach persona with safety guardrails, and failures say why so you can retry
+- OpenAI-compatible — local Ollama works too; one-tap "test connection" in settings
 
 ### 🔗 Let an AI on your computer read your logs (LAN MCP)
 - The phone serves a **read-only** endpoint on your own Wi-Fi; an AI on your computer (Claude Desktop / Cursor) reads it through MCP
@@ -86,21 +92,22 @@ A lean physique comes from low body fat, training 3× a week, and progressive ov
 - Step-by-step guide (phone + computer, with troubleshooting): [docs/MCP_GUIDE.md](docs/MCP_GUIDE.md)
 
 ### 📊 Analytics
-- Training calendar; weekly/monthly trends across volume · sets · average intensity; upper/lower split
-- Top-lift 1RM curves (auto-picked by volume, daily best, date axis)
+- Training calendar; weekly/monthly trends across volume · sets · average intensity; upper/lower split — whether you showed up this month is visible at a glance
+- Top-lift 1RM curves (auto-picked by volume, daily best, date axis) — progress you can point at
 - Table-based history: per-exercise "set / weight / reps / RIR" tables with the targets of the day
-- Post-workout impression (rough / okay / great) feeding history and the AI pack
-- Front/back muscle volume heatmaps and recovery estimates
-- Weight / waist / body-fat tracking with sanity-checked input
+- Post-workout impression (rough / okay / great) feeding history and the AI pack — how you felt, next to how you performed
+- Front/back muscle volume heatmaps and recovery estimates — check recovery before deciding to hit chest again
+- **Neglected-muscle callouts**: the data page lists the muscle groups this stretch of training missed (shoulders absent for three weeks, visible at once); the plan editor previews in real time which muscles a plan hits, so gaps never sneak in
+- Weight / waist / body-fat tracking with sanity-checked input; if today's weight isn't logged, the app asks when you start a workout — skippable and switchable off in settings, so the trend line never gaps
 - Full CSV / JSON export; one-tap "AI analysis pack" for any AI
 
 ### ⏰ Staying consistent
-- Pre-workout reminder: a local notification if you have not trained by your chosen time on a training day
-- Auto-shift missed days: if a training day passes without a workout, the plan shifts one day later per missed day the next time you open the app, with a note; toggleable in settings
-- Four-layer rest audio cues with a headphones-only mode
+- Pre-workout reminder: a local notification if you have not trained by your chosen time on a training day — a fallback even without the calendar sync
+- Missed days auto-shift: skip a scheduled day and the plan slides one day later per missed day the next time you open the app, with a note — your rhythm stays intact; toggleable in settings
+- Four-layer rest audio cues (start / midpoint / last 3 seconds) with a headphones-only mode — sounds in your ears, not across the gym
 
 ### 📅 Feishu/Lark calendar sync
-Training days land on your calendar (with reminders), summaries backfill after the session, offline writes queue up. See [docs/feishu-calendar.md](docs/feishu-calendar.md).
+Training days land on the calendar you already live in (with reminders), summaries backfill after the session, and offline writes queue up to flush later. See [docs/feishu-calendar.md](docs/feishu-calendar.md).
 
 ### 🌐 Languages
 - Chinese / English built in — switch anytime in **Settings → Language** (follows the system by default)

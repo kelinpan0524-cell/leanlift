@@ -90,11 +90,15 @@ void main() {
       ];
       expect(sessionCols, contains('impression'));
 
-      // 现行 DAO（insertSet 自 v12 起写 is_extra）要能在本夹具上跑通：
-      // 夹具里只有 sets 被降级重建过、只缺 v12 的 is_extra；v8→v11 涉及的
-      // 其他表在夹具里本就是 createSchema 的现行结构，重跑会撞重复列。
-      // 完整升级链的回归由 db_migration_test 覆盖。
+      // 现行 DAO（insertSet 自 v12 起写 is_extra、v14 起写 duration_sec）
+      // 要能在本夹具上跑通：夹具里只有 sets 被降级重建过、缺 v12 的
+      // is_extra 与 v14 的 duration_sec；plan_exercises / session_exercises
+      // 在夹具里本就是 createSchema 的现行结构（已含 logging/load_type），
+      // 整个 upgradeV13to14 重跑会撞重复列，故 sets 单独补列
+      // （SQL 与 upgradeV13to14 一致）。完整升级链的回归由
+      // db_migration_test 覆盖。
       await Db.instance.upgradeV11to12(db);
+      await db.execute('ALTER TABLE sets ADD COLUMN duration_sec INTEGER');
 
       // 老组行读回：目标快照为 null（消费端据此不展示目标对比）
       final wrapper = Db.forTesting(db);

@@ -308,6 +308,24 @@ class PlanScheduleEntry {
       );
 }
 
+/// 动作记录形态（v14）：'reps'=按次数（默认，现有行为）；'time'=按时间记录
+/// （平板支撑/悬挂/农夫行走，reps_min/reps_max 与链状态中的「次数」字段承载
+/// **秒数**，引擎判定逻辑复用、仅展示单位不同）；'reps_per_side'=单侧动作
+/// （箭步蹲/单臂划船），记总数、显示「每边 N 次」、目标恒为偶数。
+class LoggingMode {
+  static const reps = 'reps';
+  static const time = 'time';
+  static const repsPerSide = 'reps_per_side';
+}
+
+/// 负荷类型（v14）：'weighted'=常规负重（默认）；'bodyweight'=自重动作——
+/// 无重量列、渐进只走次数轴（0kg 档不进位到负重组件），次数触顶后
+/// 建议加组而不是加重量。
+class LoadMode {
+  static const weighted = 'weighted';
+  static const bodyweight = 'bodyweight';
+}
+
 class PlanExercise {
   final int? id;
   final int dayId;
@@ -319,6 +337,12 @@ class PlanExercise {
   final int restSec;
   final String kind; // compound | assistance
   final ProgressionRule rule;
+
+  /// 记录形态（LoggingMode，v14）：缺省按次数，老数据连续。
+  final String logging;
+
+  /// 负荷类型（LoadMode，v14）：缺省常规负重，老数据连续。
+  final String loadType;
 
   /// 超级组标记（v9）：'' = 不配对；同 tag 且在训练日内相邻 = 一个
   /// 超级组，训练时按轮转交替（A1→B1→A2→B2…）。tag 本身只是随机标识，
@@ -336,6 +360,8 @@ class PlanExercise {
     required this.restSec,
     required this.kind,
     required this.rule,
+    this.logging = LoggingMode.reps,
+    this.loadType = LoadMode.weighted,
     this.supersetTag = '',
   });
 
@@ -350,6 +376,8 @@ class PlanExercise {
         'rest_sec': restSec,
         'kind': kind,
         'rule': ruleToJson(rule),
+        'logging': logging,
+        'load_type': loadType,
         'superset_tag': supersetTag,
       };
 
@@ -364,6 +392,9 @@ class PlanExercise {
         restSec: (m['rest_sec'] as num?)?.toInt() ?? 120,
         kind: (m['kind'] as String?) ?? 'assistance',
         rule: ruleFromJson(m['rule']),
+        // 老库存档/备份没有 v14 两列，缺键回落默认（按次数 + 常规负重）
+        logging: (m['logging'] as String?) ?? LoggingMode.reps,
+        loadType: (m['load_type'] as String?) ?? LoadMode.weighted,
         supersetTag: (m['superset_tag'] as String?) ?? '',
       );
 
@@ -378,6 +409,8 @@ class PlanExercise {
     int? restSec,
     String? kind,
     ProgressionRule? rule,
+    String? logging,
+    String? loadType,
     String? supersetTag,
   }) =>
       PlanExercise(
@@ -391,6 +424,8 @@ class PlanExercise {
         restSec: restSec ?? this.restSec,
         kind: kind ?? this.kind,
         rule: rule ?? this.rule,
+        logging: logging ?? this.logging,
+        loadType: loadType ?? this.loadType,
         supersetTag: supersetTag ?? this.supersetTag,
       );
 }
@@ -554,6 +589,12 @@ class SessionExercise {
   /// 复制，训练中的轮转推进按它分组；'' = 不配对。
   final String supersetTag;
 
+  /// 记录形态快照（v14）：开始训练时从 PlanExercise.logging 原样复制。
+  final String logging;
+
+  /// 负荷类型快照（v14）：开始训练时从 PlanExercise.loadType 原样复制。
+  final String loadType;
+
   const SessionExercise({
     this.id,
     required this.sessionId,
@@ -567,6 +608,8 @@ class SessionExercise {
     this.targetRepsMax = 0,
     this.trace = '',
     this.supersetTag = '',
+    this.logging = LoggingMode.reps,
+    this.loadType = LoadMode.weighted,
   });
 
   Map<String, dynamic> toMap() => {
@@ -582,6 +625,8 @@ class SessionExercise {
         'target_reps_max': targetRepsMax,
         'trace': trace,
         'superset_tag': supersetTag,
+        'logging': logging,
+        'load_type': loadType,
       };
 
   factory SessionExercise.fromMap(Map<String, dynamic> m) => SessionExercise(
@@ -597,6 +642,9 @@ class SessionExercise {
         targetRepsMax: (m['target_reps_max'] as num?)?.toInt() ?? 0,
         trace: (m['trace'] as String?) ?? '',
         supersetTag: (m['superset_tag'] as String?) ?? '',
+        // 老记录/老备份没有 v14 两列，缺键回落默认（按次数 + 常规负重）
+        logging: (m['logging'] as String?) ?? LoggingMode.reps,
+        loadType: (m['load_type'] as String?) ?? LoadMode.weighted,
       );
 
   SessionExercise copyWithId(int newId) => SessionExercise(
@@ -612,6 +660,8 @@ class SessionExercise {
         targetRepsMax: targetRepsMax,
         trace: trace,
         supersetTag: supersetTag,
+        logging: logging,
+        loadType: loadType,
       );
 }
 
@@ -644,6 +694,12 @@ class SetEntry {
   /// 容量统计口径。老行/老备份缺列回 false（老数据不回溯标注）。
   final bool isExtra;
 
+  /// 计时动作（v14，logging='time'）实际保持秒数。null = 老记录 /
+  /// 非计时动作（按次数的组照旧只填 reps）。数字判定口径不变——
+  /// 计时组 reps 字段与链状态里的「次数」同样承载秒数，本列存的是
+  /// 当组实际秒数（可能低于目标）。
+  final int? durationSec;
+
   const SetEntry({
     this.id,
     required this.sessionExerciseId,
@@ -656,6 +712,7 @@ class SetEntry {
     this.targetWeightKg,
     this.targetReps,
     this.isExtra = false,
+    this.durationSec,
   });
 
   /// 训练容量 = 重量 × 次数（热身组不计入容量）。
@@ -676,6 +733,7 @@ class SetEntry {
         'target_weight_kg': targetWeightKg,
         'target_reps': targetReps,
         'is_extra': isExtra ? 1 : 0,
+        'duration_sec': durationSec,
       };
 
   factory SetEntry.fromMap(Map<String, dynamic> m) => SetEntry(
@@ -690,6 +748,7 @@ class SetEntry {
         targetWeightKg: (m['target_weight_kg'] as num?)?.toDouble(),
         targetReps: (m['target_reps'] as num?)?.toInt(),
         isExtra: ((m['is_extra'] as num?)?.toInt() ?? 0) == 1,
+        durationSec: (m['duration_sec'] as num?)?.toInt(),
       );
 }
 
