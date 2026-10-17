@@ -669,9 +669,19 @@ void main() {
       expect(find.text('跳过休息，直接开练'), findsOneWidget);
       expect(find.text('训练完成 💪'), findsNothing);
 
-      // 休息页「再来一组」回加练态，记完这一组：面板再次出现（每组再问）
+      // 休息页「再来一组」：只把落点改回加练组，休息倒计时继续
+      // （2026-10-17 加练带休息计时），跳过休息后才进动作面板
       await tester.runAsync(() async {
         await tester.tap(find.textContaining('再来一组'));
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      });
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(container.session.phase, WorkoutPhase.resting,
+          reason: '加练也带休息计时：不立即进动作态');
+      expect(find.textContaining('再来一组'), findsNothing,
+          reason: '入口即消费，按钮不残留');
+      await tester.runAsync(() async {
+        await tester.tap(find.text('跳过休息，直接开练'));
         await Future<void>.delayed(const Duration(milliseconds: 300));
       });
       await tester.pump(const Duration(milliseconds: 400));
