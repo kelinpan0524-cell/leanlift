@@ -3,6 +3,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import '../l10n/lang.dart';
 import '../services/settings.dart';
+import 'local_bridge_page.dart';
 import 'settings_subpages.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
@@ -60,6 +61,23 @@ class SettingsPage extends StatelessWidget {
             valueColor: s.aiConfigured ? AppTheme.primary : AppTheme.warn,
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const AiSettingsPage()),
+            ),
+          ),
+          ListenableBuilder(
+            listenable: app(context).bridge,
+            builder: (context, _) => _SettingsRow(
+              icon: Icons.lan_outlined,
+              title: tx('局域网连接', en: 'LAN Connection'),
+              subtitle: tx('手机当只读数据源，电脑上的 AI 通过 MCP 读取',
+                  en: 'Phone as a read-only source for an AI on your computer'),
+              value: app(context).bridge.running
+                  ? tx('已开启', en: 'On')
+                  : tx('未开启', en: 'Off'),
+              valueColor:
+                  app(context).bridge.running ? AppTheme.primary : AppTheme.textDim,
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const LocalBridgePage()),
+              ),
             ),
           ),
           ListenableBuilder(
