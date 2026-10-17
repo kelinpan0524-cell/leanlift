@@ -6,6 +6,7 @@ import 'volume.dart';
 export '../models/models.dart';
 export 'local_plan.dart';
 export 'logging_modes.dart';
+export 'muscle_insights.dart';
 export 'plates.dart';
 export 'progression_chain.dart';
 export 'recovery.dart';
