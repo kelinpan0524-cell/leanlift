@@ -56,6 +56,7 @@ const _kExerciseEn = <String, String>{
   '弹力带弯举': 'Band Curl',
   '凳上臂屈伸': 'Bench Dip',
   '双杠臂屈伸': 'Dip',
+  '负重双杠臂屈伸': 'Weighted Dip',
   // 腿
   '杠铃深蹲': 'Barbell Squat',
   '腿举（倒蹬机）': 'Leg Press',
@@ -327,6 +328,7 @@ const _kCueEn = <String, String>{
   '弹力带弯举': 'Stand on the band and curl along the barbell path; tension peaks at the top so lower slowly. Common mistakes: leaning back, elbows drifting forward.',
   '凳上臂屈伸': 'Hands on a bench behind you; bend the elbows back to about 90 degrees and press up, legs straight or elevated on another bench for difficulty. Common mistakes: shoulders creeping up, hips set so far forward the shoulders ache.',
   '双杠臂屈伸': 'Body upright between the bars; bend the elbows behind you to about 90 degrees and press - triceps dominant. Common mistakes: leaning too far forward into chest territory, crashing into the bottom.',
+  '负重双杠臂屈伸': 'Hang a plate from a belt or wear a dip belt, support yourself on the bars, lower to about 90 degrees of elbow bend and press up. Pick a load you can control for 5-8 clean reps. Common mistakes: loading too heavy and dipping so deep the shoulders ache, swinging the body for momentum.',
   '杠铃深蹲': 'Bar on the upper traps, brace hard; sit the hips and knees down until the thighs are parallel or below with the knees tracking the toes, then drive up through the heels. Common mistakes: knees caving in, rounding the back, weight shifting onto the toes.',
   '腿举（倒蹬机）': 'Back and hips pinned to the pad, feet shoulder width on the platform; lower to about 90 degrees of knee bend and press without locking out. Common mistakes: the lower back peeling off the pad, knees caving, descending too deep.',
   '保加利亚分腿蹲': 'Rear foot laced on a bench, front foot far enough forward; sink straight down until the front thigh is parallel with the load on the front leg. Common mistakes: sitting back onto the rear leg, the front knee caving, leaning the torso too far forward.',
@@ -489,3 +491,15 @@ String gearname(String zh) => Lang.isEn ? (_kGearEn[zh] ?? zh) : zh;
 
 /// 动作要点显示（按动作名映射英译，映射不到回落中文）。
 String cuen(String name, String zh) => Lang.isEn ? (_kCueEn[name] ?? zh) : zh;
+
+/// 疼痛部位显示（P2-B）：数据键是中文（PainArea.*），英文界面译成英文。
+/// 映射不到的自定义部位原样显示中文（与动作名同一策略）。
+String painname(String zh) => switch (zh) {
+      '肩' => tx('肩', en: 'Shoulder'),
+      '肘' => tx('肘', en: 'Elbow'),
+      '腰' => tx('腰', en: 'Lower back'),
+      '膝' => tx('膝', en: 'Knee'),
+      '踝' => tx('踝', en: 'Ankle'),
+      '其他' => tx('其他', en: 'Other'),
+      _ => zh,
+    };

@@ -4,10 +4,10 @@ import 'package:video_player/video_player.dart';
 import '../engine/engine.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
-import '../models/models.dart';
 import '../presets/exercise_library.dart';
 import '../presets/exercise_media.dart';
 import '../presets/exercise_video.dart';
+import 'widgets/common.dart';
 import 'theme.dart';
 
 /// 动作解析弹层（2026-09-27 Arono 需求：图文并茂、训练中也能看）。
@@ -16,14 +16,20 @@ import 'theme.dart';
 /// + 动作要点（本项目中文原创）。训练中经由用户主动点按入口打开，
 /// 与「直接输入重量」同口径——收起式信息、随时划掉、不打断计时，
 /// 不违反训练中禁弹窗红线。
+///
+/// P2-C：额外承载「器械设置」编辑入口（座椅/靠背等长期备注），
+/// 按动作稳定键跨计划/训练复用；[exerciseKey] 传会话行自带的键，
+/// 空串时按 [name] 现算。
 Future<void> showExerciseDetailSheet(
   BuildContext context, {
   required String name,
   ExerciseMeta? meta,
+  String exerciseKey = '',
 }) {
   final m = meta ?? libraryMetaByName(name);
   return showModalBottomSheet<void>(
     context: context,
+    isScrollControlled: true,
     backgroundColor: AppTheme.card,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -31,7 +37,12 @@ Future<void> showExerciseDetailSheet(
     builder: (ctx) => SafeArea(
       child: ListView(
         shrinkWrap: true,
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+        padding: EdgeInsets.fromLTRB(
+          16,
+          16,
+          16,
+          20 + MediaQuery.of(ctx).viewInsets.bottom,
+        ),
         children: [
           Text(exname(name),
               style:
@@ -52,12 +63,237 @@ Future<void> showExerciseDetailSheet(
               style: const TextStyle(color: AppTheme.textDim, fontSize: 13),
             ),
           ],
+          SetupNoteEditor(name: name, exerciseKey: exerciseKey),
           ...exerciseMediaSection(name, m),
           ...exerciseVideoSection(name),
         ],
       ),
     ),
   );
+}
+
+/// 器械设置只读行（P2-C）：训练起始页/第一组前展示已保存的备注。
+/// 空备注直接返回零尺寸，不占任何纵向空间。
+class SetupNoteView extends StatelessWidget {
+  const SetupNoteView({super.key, required this.note, this.compact = false});
+
+  final String note;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = note.trim();
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: EdgeInsets.only(top: compact ? 3 : 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 1),
+            child: Icon(Icons.tune, size: 14, color: AppTheme.accent),
+          ),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(
+              tx('器械设置：$text', en: 'Setup: $text'),
+              key: const Key('setupNoteText'),
+              maxLines: compact ? 2 : null,
+              overflow: compact ? TextOverflow.ellipsis : null,
+              style: TextStyle(
+                color: AppTheme.accent,
+                fontSize: compact ? 12.5 : 14,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 「器械设置」编辑段（P2-C）：动作详情弹层内联展开，保存即写库。
+/// 键口径与历史/备注查询一致（显式稳定键优先，空键按动作名现算）。
+class SetupNoteEditor extends StatefulWidget {
+  const SetupNoteEditor({
+    super.key,
+    required this.name,
+    this.exerciseKey = '',
+  });
+
+  final String name;
+  final String exerciseKey;
+
+  @override
+  State<SetupNoteEditor> createState() => _SetupNoteEditorState();
+}
+
+class _SetupNoteEditorState extends State<SetupNoteEditor> {
+  final _ctrl = TextEditingController();
+  bool _loadStarted = false;
+  bool _loading = true;
+  bool _editing = false;
+  bool _saving = false;
+  String _note = '';
+
+  String get _key => exerciseIdentityKeyOf(widget.name, widget.exerciseKey);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_loadStarted) return;
+    _loadStarted = true;
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final key = _key;
+    final c = app(context);
+    final note = key.isEmpty ? null : await c.db.exerciseNote(key);
+    if (!mounted) return;
+    setState(() {
+      _note = note?.setupNote ?? '';
+      _loading = false;
+    });
+  }
+
+  void _beginEdit() {
+    _ctrl.text = _note;
+    _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
+    setState(() => _editing = true);
+  }
+
+  void _cancelEdit() {
+    FocusScope.of(context).unfocus();
+    setState(() => _editing = false);
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    final c = app(context);
+    final text = _ctrl.text.trim();
+    setState(() => _saving = true);
+    await c.session.saveSetupNote(_key, text);
+    if (!mounted) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _note = text;
+      _editing = false;
+      _saving = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_key.isEmpty) return const SizedBox.shrink();
+    final hasNote = _note.trim().isNotEmpty;
+    return Container(
+      key: const Key('setupNoteEditor'),
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+      decoration: BoxDecoration(
+        color: AppTheme.cardHi,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.tune, size: 16, color: AppTheme.accent),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  tx('器械设置', en: 'Equipment Setup'),
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              if (!_editing && !_loading)
+                TextButton(
+                  key: const Key('setupNoteEditButton'),
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(44, 32),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    foregroundColor: AppTheme.primary,
+                  ),
+                  onPressed: _beginEdit,
+                  child: Text(
+                    hasNote ? tx('编辑', en: 'Edit') : tx('添加', en: 'Add'),
+                  ),
+                ),
+            ],
+          ),
+          if (_editing) ...[
+            const SizedBox(height: 4),
+            TextField(
+              key: const Key('setupNoteField'),
+              controller: _ctrl,
+              autofocus: true,
+              minLines: 1,
+              maxLines: 3,
+              maxLength: 120,
+              style: const TextStyle(fontSize: 14),
+              decoration: InputDecoration(
+                hintText: tx('例如：座椅 4 档、靠背 2 档、脚垫最前',
+                    en: 'e.g. seat notch 4, backrest 2, feet forward'),
+                hintStyle:
+                    const TextStyle(color: AppTheme.textDim, fontSize: 13),
+                counterText: '',
+                isDense: true,
+              ),
+              onSubmitted: (_) => _save(),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: _saving ? null : _cancelEdit,
+                  child: Text(tx('取消', en: 'Cancel')),
+                ),
+                const SizedBox(width: 4),
+                FilledButton(
+                  key: const Key('setupNoteSaveButton'),
+                  onPressed: _saving ? null : _save,
+                  child: Text(tx('保存', en: 'Save')),
+                ),
+              ],
+            ),
+          ] else if (!_loading && hasNote)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                _note,
+                style: const TextStyle(fontSize: 14, height: 1.4),
+              ),
+            )
+          else if (!_loading)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                tx('记下座椅/靠背等固定设置，下次练这个动作直接看到。',
+                    en: 'Save seat/backrest settings so they show up next time.'),
+                style: const TextStyle(
+                  color: AppTheme.textDim,
+                  fontSize: 12.5,
+                  height: 1.35,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 /// 示范视频段（2026-09-27，wger.de 社区 CC BY-SA 4.0）：

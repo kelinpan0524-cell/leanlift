@@ -188,16 +188,43 @@ List<List<int>> activityLevels(List<List<double>> grid) {
 
 /// 正式组 RIR 直方图：键 = 桶 0..5（5 含 5+），值 = 组数。
 /// 非 working 组一律不计；[since] 给定时只统计 doneAt ≥ 该时刻的组。
+/// 未记录 RIR 的组（rir_recorded=0）不计——rir 只是计划默认填充值，
+/// 混进分布会把「没填」伪装成真实观测。
 Map<int, int> rirDistribution(List<SetEntry> workingSets, {DateTime? since}) {
   final dist = {for (var i = 0; i <= 5; i++) i: 0};
   final sinceMs = since?.millisecondsSinceEpoch;
   for (final s in workingSets) {
     if (s.kind != SetKind.working) continue;
+    if (!s.rirRecorded) continue;
     if (sinceMs != null && s.doneAt < sinceMs) continue;
     final r = s.rir <= 0 ? 0 : (s.rir >= 5 ? 5 : s.rir);
     dist[r] = dist[r]! + 1;
   }
   return dist;
+}
+
+/// 正式组 RIR 记录覆盖：同一窗口内「已记录 / 总正式组」。
+/// 数据页用它显示「已记录 X/Y 组」，让用户知道分布的分母。
+class RirCoverage {
+  final int recorded;
+  final int total;
+
+  const RirCoverage({required this.recorded, required this.total});
+}
+
+/// 统计窗口内的 RIR 记录覆盖率（口径与 [rirDistribution] 一致：
+/// 只看正式组、since 过滤、未记录组计入 total 但不计入 recorded）。
+RirCoverage rirCoverage(List<SetEntry> workingSets, {DateTime? since}) {
+  var recorded = 0;
+  var total = 0;
+  final sinceMs = since?.millisecondsSinceEpoch;
+  for (final s in workingSets) {
+    if (s.kind != SetKind.working) continue;
+    if (sinceMs != null && s.doneAt < sinceMs) continue;
+    total++;
+    if (s.rirRecorded) recorded++;
+  }
+  return RirCoverage(recorded: recorded, total: total);
 }
 
 /// 依据分布给一句话解读（双语）：
@@ -229,6 +256,19 @@ String rirInsightLine(Map<int, int> dist) {
 }
 
 // ---------------- 顶组（当日最大正式组重量） ----------------
+
+/// 相对力量（P2-E）：1RM ÷ 体重，单位「倍体重」。
+/// 体重缺失 / 非正、或 1RM 非正 → null（UI 整行不渲染，不拿默认体重猜）。
+/// 分子分母同为 kg，比值无量纲，kg/lb 显示切换不影响结果。
+double? relativeStrengthRatio({
+  required double oneRmKg,
+  required double? bodyWeightKg,
+}) {
+  if (oneRmKg <= 0) return null;
+  final bw = bodyWeightKg;
+  if (bw == null || bw <= 0) return null;
+  return oneRmKg / bw;
+}
 
 /// 「顶组」口径累计器（与 DailyBest1Rm 同构）：
 /// 动作名 → 训练日（epoch 天）→ 当日最大正式组重量（kg）。

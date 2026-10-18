@@ -142,4 +142,86 @@ void main() {
     expect(exs[2].supersetTag, isNot(exs[0].supersetTag), reason: '两组标记不同');
     expect(exs[4].supersetTag, '', reason: '末位悬挂标记不落库');
   });
+
+  test('v15：duplicatePlan 复制动作保留 exerciseKey', () async {
+    final plan = await db.insertPlan(Plan(
+        name: '原计划', source: 'manual', createdAt: '2026-10-17', isActive: 1));
+    final dayId = await db.insertPlanDay(
+        PlanDay(planId: plan.id!, weekday: 1, title: '推日'));
+    await db.insertPlanExercise(PlanExercise(
+      dayId: dayId,
+      name: '杠铃卧推',
+      orderIdx: 0,
+      sets: 3,
+      repsMin: 5,
+      repsMax: 8,
+      restSec: 120,
+      kind: 'compound',
+      rule: ProgressionRule.fallback,
+      exerciseKey: 'barbell_bench_press',
+    ));
+
+    final newId = await repo.duplicatePlan(plan.id!, '原计划副本');
+    final newDays = await db.planDays(newId);
+    expect(newDays.length, 1);
+    final copied = await db.dayExercises(newDays.single.id!);
+    expect(copied.single.exerciseKey, 'barbell_bench_press',
+        reason: 'v15：副本保留源动作稳定键');
+    // 源计划行不受影响
+    expect((await db.dayExercises(dayId)).single.exerciseKey,
+        'barbell_bench_press');
+  });
+
+  test('refreshRecommendations 用计划行自带的 key 查历史', () async {
+    // 历史挂在旧键 bench_key 上；计划行显示名已改成哑铃飞鸟，但键仍是
+    // bench_key——推荐必须沿这个键找到 3×8 的历史并推进 2.5kg。
+    final s = await db.insertSession(Session(
+      date: '2026-10-18',
+      planDayTitle: '旧训练',
+      startedAt: 1000,
+      endedAt: 2000,
+      status: 'done',
+    ));
+    final seId = await db.insertSessionExercise(SessionExercise(
+      sessionId: s.id!,
+      name: '杠铃卧推',
+      orderIdx: 0,
+      kind: 'compound',
+      rule: const ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
+      exerciseKey: 'bench_key',
+    ));
+    for (var i = 0; i < 3; i++) {
+      await db.insertSet(SetEntry(
+        sessionExerciseId: seId,
+        weightKg: 60,
+        reps: 8,
+        kind: SetKind.working,
+        doneAt: 1100 + i,
+      ));
+    }
+
+    const rule = ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3);
+    await repo.refreshRecommendations([
+      const PlanExercise(
+        dayId: 0,
+        name: '哑铃飞鸟',
+        orderIdx: 0,
+        sets: 3,
+        repsMin: 5,
+        repsMax: 8,
+        restSec: 120,
+        kind: 'compound',
+        rule: rule,
+        exerciseKey: 'bench_key',
+      ),
+    ]);
+    expect(repo.recommendedWeight('哑铃飞鸟'), 62.5,
+        reason: '按稳定键查到旧历史，3×8 达标推进 2.5kg');
+  });
+
+  test('无历史时按动作库启发式给起始重量（P2-A）', () {
+    expect(repo.recommendedWeight('哑铃弯举'), 6, reason: '哑铃单关节');
+    expect(repo.recommendedWeight('俯卧撑'), 0, reason: '自重不猜重量');
+    expect(repo.recommendedWeight('词表外动作'), 20, reason: '词表外保持旧兜底');
+  });
 }

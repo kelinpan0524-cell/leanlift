@@ -128,6 +128,26 @@ class HeartRateService extends ChangeNotifier {
   HrLink get link => _link;
   int? _bpm;
   int? get bpm => _bpm;
+
+  /// 最后一次有效读数的墙钟时间（毫秒）；null = 从未读到过。
+  int? _bpmAt;
+
+  /// 读数新鲜度窗口：BLE 心率约每秒一跳，超过 10 秒没有新读数，
+  /// 说明设备已走远/佩戴异常/广播中断——旧值不能作为休息建议依据
+  /// （chip 仍显示最后读数，但建议判定走 [freshBpm]）。
+  static const int kFreshBpmWindowMs = 10000;
+
+  /// 新鲜读数：[bpm] 在 [kFreshBpmWindowMs] 内有更新才返回，否则 null。
+  int? get freshBpm {
+    final b = _bpm;
+    final at = _bpmAt;
+    if (b == null || at == null) return null;
+    if (DateTime.now().millisecondsSinceEpoch - at > kFreshBpmWindowMs) {
+      return null;
+    }
+    return b;
+  }
+
   String? get savedId => _savedId;
   String? get savedName => _savedName;
   List<ScanResult> get found => List.unmodifiable(_found);
@@ -135,6 +155,19 @@ class HeartRateService extends ChangeNotifier {
   void _setLink(HrLink v) {
     if (_link == v) return;
     _link = v;
+    notifyListeners();
+  }
+
+  /// 测试注入：直接设置连接状态与心率读数（不触发任何 BLE 调用）。
+  /// 只给 widget 测试模拟「已连接 + 某个 bpm」用，正式代码不要调用。
+  /// [atMs] 可指定读数时刻（毫秒 epoch），模拟「旧读数」验新鲜度；缺省 = 现在。
+  @visibleForTesting
+  void debugSetReading({HrLink link = HrLink.connected, int? bpm, int? atMs}) {
+    _link = link;
+    _bpm = bpm;
+    _bpmAt = bpm == null
+        ? null
+        : (atMs ?? DateTime.now().millisecondsSinceEpoch);
     notifyListeners();
   }
 
@@ -289,6 +322,7 @@ class HeartRateService extends ChangeNotifier {
         final hr = parseHeartRate(v);
         if (hr == null) return;
         _bpm = hr;
+        _bpmAt = DateTime.now().millisecondsSinceEpoch;
         if (_recording) {
           _samples.add(
               HrPoint(DateTime.now().millisecondsSinceEpoch, hr));
@@ -322,6 +356,7 @@ class HeartRateService extends ChangeNotifier {
     final d = _device;
     _device = null;
     _bpm = null;
+    _bpmAt = null;
     _setLink(HrLink.idle);
     if (d != null) {
       try {

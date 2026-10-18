@@ -5,6 +5,7 @@ import '../engine/engine.dart';
 import '../engine/superset.dart';
 import '../presets/baoji_plan.dart';
 import '../presets/exercise_library.dart';
+import '../presets/start_weights.dart';
 import '../services/lark_service.dart';
 import 'settings.dart';
 
@@ -122,6 +123,9 @@ class PlanRepository extends ChangeNotifier {
           kind: ex.kind,
           rule: ex.rule,
           supersetTag: ex.supersetTag,
+          // 复制计划时保留动作稳定键（v15）：副本与原计划按同一 key
+          // 关联备注等数据。
+          exerciseKey: ex.exerciseKey,
         ));
       }
     }
@@ -657,42 +661,29 @@ class PlanRepository extends ChangeNotifier {
     });
   }
 
-  /// 某动作的建议重量：历史渐进推荐 → 内置起始重量 → 20kg。
+  /// 某动作的建议重量：历史渐进推荐 → 内置/启发式起始重量 → 20kg。
+  /// 注意：生产开练重量走 SessionController 的 presetStartOf；本方法目前
+  /// 仅测试/兼容保留，两处共用 knownStartWeightOf 查询避免口径漂移。
   double recommendedWeight(String name) {
-    return _recommendCache[name] ?? _presetStart(name) ?? 20;
+    return _recommendCache[name] ?? knownStartWeightOf(name) ?? 20;
   }
 
   final Map<String, double> _recommendCache = {};
 
   /// 训练开始前刷新所有推荐重量（读历史，开销小）。
-  Future<void> refreshRecommendations(Iterable<String> names) async {
-    for (final n in names) {
-      final rule = _ruleFor(n);
-      final history = await _db.historySets(n);
+  /// 传入计划动作而不是名字：改过名但保留旧键的动作也要查到自己那份历史。
+  Future<void> refreshRecommendations(Iterable<PlanExercise> exercises) async {
+    for (final ex in exercises) {
+      final history = await _db.historySets(
+        ex.name,
+        exerciseKey: ex.exerciseKey,
+      );
       final rec = recommendWeight(
           historyWorkingSets:
               history.where((s) => s.kind == SetKind.working).toList(),
-          rule: rule);
-      if (rec != null) _recommendCache[n] = rec;
+          rule: ex.rule);
+      if (rec != null) _recommendCache[ex.name] = rec;
     }
-  }
-
-  ProgressionRule _ruleFor(String name) {
-    for (final list in exercisesByDayId.values) {
-      for (final ex in list) {
-        if (ex.name == name) return ex.rule;
-      }
-    }
-    return ProgressionRule.fallback;
-  }
-
-  double? _presetStart(String name) {
-    for (final list in kBaojiExercisesByWeekday.values) {
-      for (final pe in list) {
-        if (pe.name == name) return pe.startWeightKg;
-      }
-    }
-    return null;
   }
 }
 

@@ -28,6 +28,8 @@ PlanExercise _pe(
   String supersetTag = '',
   int repsMin = 5,
   int repsMax = 8,
+  String kind = 'compound',
+  int restSec = 120,
 }) =>
     PlanExercise(
       dayId: 1,
@@ -36,8 +38,8 @@ PlanExercise _pe(
       sets: sets,
       repsMin: repsMin,
       repsMax: repsMax,
-      restSec: 120,
-      kind: 'compound',
+      restSec: restSec,
+      kind: kind,
       rule: ProgressionRule(
           repsMin: repsMin, repsMax: repsMax, workingSets: sets),
       supersetTag: supersetTag,
@@ -139,6 +141,138 @@ void main() {
       final a = todayRuleFor(sets: 2, repsMin: 12, repsMax: 15, kind: 'assistance');
       expect(a.workingSets, 2);
       expect(a.incrementKg, 1.25);
+    });
+
+    test('todayRuleFor 带 base：chain / rirTarget / desc 原样保留，参数被覆盖', () {
+      const customChain = [
+        ChainRule(axis: 'reps', step: 1, ceiling: 12),
+        ChainRule(axis: 'load', step: 2.5),
+      ];
+      final base = ProgressionRule(
+        repsMin: 8,
+        repsMax: 12,
+        rirTarget: 1,
+        workingSets: 4,
+        desc: '自定义描述',
+        chain: customChain,
+      );
+      final out = todayRuleFor(
+          sets: 2, repsMin: 8, repsMax: 12, kind: 'compound', base: base);
+      expect(out.workingSets, 2, reason: '本次调整的组数要生效');
+      expect(out.rirTarget, 1, reason: '用户自配的余力目标不被压没');
+      expect(out.desc, '自定义描述');
+      expect(out.chain, isNotNull);
+      expect(out.chain!.length, 2, reason: '自定义规则链原样保留');
+      expect(out.chain![0].axis, 'reps');
+      expect(out.chain![1].axis, 'load');
+      expect(out.incrementKg, 2.5, reason: '步长仍按类型推导');
+      expect(base.chain!.length, 2, reason: '入参 rule 不被改写');
+    });
+
+    test('todayRuleFor 不带 base：chain 为 null（新动作走派生默认链）', () {
+      final out =
+          todayRuleFor(sets: 3, repsMin: 6, repsMax: 10, kind: 'compound');
+      expect(out.chain, isNull);
+    });
+  });
+
+  group('shortSessionPlan / shortSessionDroppedNames（20 分钟精简）', () {
+    test('复合优先：辅助在前也排到复合之后，组内保持原顺序', () {
+      final list = [
+        _pe('辅助甲', 0, kind: 'assistance'),
+        _pe('复合甲', 1),
+        _pe('辅助乙', 2, kind: 'assistance'),
+        _pe('复合乙', 3),
+      ];
+      final out = shortSessionPlan(list);
+      expect([for (final e in out) e.name], ['复合甲', '复合乙', '辅助甲'],
+          reason: '复合动作稳定前置，辅助动作按原顺序补位');
+      expect([for (final e in out) e.orderIdx], [0, 1, 2],
+          reason: 'orderIdx 随新顺序归一化（会话恢复/历史明细按它读回）');
+      expect(shortSessionDroppedNames(list), ['辅助乙'],
+          reason: '被截掉的动作按原计划顺序列出');
+    });
+
+    test('上限 3 个：5 个动作只留复合优先的前 3 个', () {
+      final list = [for (var i = 0; i < 5; i++) _pe('动作$i', i)];
+      expect([for (final e in shortSessionPlan(list)) e.name],
+          ['动作0', '动作1', '动作2']);
+      expect(shortSessionDroppedNames(list), ['动作3', '动作4']);
+    });
+
+    test('空计划：返回空清单与空跳过名单', () {
+      expect(shortSessionPlan(const []), isEmpty);
+      expect(shortSessionDroppedNames(const []), isEmpty);
+    });
+
+    test('每个动作 2 组、休 90 秒、规则重建、超级组标记清空、入参不变', () {
+      final list = [
+        _pe('复合甲', 0, sets: 4, restSec: 150, supersetTag: 'ss'),
+        _pe('辅助甲', 1, sets: 3, kind: 'assistance', restSec: 60),
+      ];
+      final out = shortSessionPlan(list);
+      for (final e in out) {
+        expect(e.sets, 2);
+        expect(e.restSec, 90);
+        expect(e.rule.workingSets, 2, reason: '渐进引擎按 rule 判定，必须同步');
+        expect(e.supersetTag, '', reason: '重排后原组对不再相邻，悬空 tag 必须清');
+      }
+      expect(out[0].rule.repsMin, 5, reason: '次数区间原样保留');
+      expect(out[0].rule.repsMax, 8);
+      expect(out[0].rule.incrementKg, 2.5, reason: '复合步长不变');
+      expect(out[1].rule.incrementKg, 1.25, reason: '辅助步长不变');
+      expect(out[0].kind, 'compound', reason: '动作类型原样保留');
+      expect(out[1].kind, 'assistance');
+
+      expect(list[0].sets, 4, reason: '纯函数：不改入参');
+      expect(list[0].restSec, 150);
+      expect(list[0].supersetTag, 'ss');
+      expect(list[1].rule.workingSets, 3, reason: '入参规则也不被改写');
+    });
+
+    test('不足 3 个动作：全部保留，仍压到 2 组', () {
+      final list = [
+        _pe('复合甲', 0, sets: 5),
+        _pe('辅助甲', 1, sets: 3, kind: 'assistance'),
+      ];
+      final out = shortSessionPlan(list);
+      expect([for (final e in out) e.name], ['复合甲', '辅助甲']);
+      expect(out.every((e) => e.sets == 2), isTrue);
+      expect(shortSessionDroppedNames(list), isEmpty);
+    });
+
+    test('组数取 min(原组数, 2)：原 1 组的动作保留 1 组，不放大', () {
+      final list = [
+        _pe('复合甲', 0, sets: 4),
+        _pe('复合乙', 1, sets: 1),
+      ];
+      final out = shortSessionPlan(list);
+      expect(out[0].sets, 2, reason: '原 4 组压到 2');
+      expect(out[1].sets, 1, reason: '原 1 组只压不增，仍 1 组');
+      expect(out[1].rule.workingSets, 1,
+          reason: '渐进引擎按 rule 判定，组数同步取 min');
+    });
+
+    test('自定义 chain / rirTarget 穿透精简清单：规则重建时原样保留', () {
+      const chain = [
+        ChainRule(axis: 'reps', step: 1, ceiling: 15),
+        ChainRule(axis: 'load', step: 5, ceiling: 100),
+      ];
+      final custom = _pe('复合甲', 0, sets: 5)
+          .copyWith(rule: ProgressionRule(
+        repsMin: 5,
+        repsMax: 8,
+        rirTarget: 1,
+        workingSets: 5,
+        chain: chain,
+      ));
+      final out = shortSessionPlan([custom]);
+      expect(out.single.sets, 2);
+      expect(out.single.rule.rirTarget, 1, reason: '余力目标不丢');
+      expect(out.single.rule.chain, isNotNull);
+      expect(out.single.rule.chain!.length, 2, reason: '自定义链不丢');
+      expect(out.single.rule.chain![1].ceiling, 100);
+      expect(out.single.rule.workingSets, 2);
     });
   });
 
@@ -294,6 +428,45 @@ void main() {
       // 计划表原样：tag 仍在（编辑只影响今天）
       final planRows = await db.dayExercises(day.id!);
       expect(planRows.map((e) => e.supersetTag).toList(), ['ss', 'ss', '']);
+    });
+
+    test('20 分钟精简清单开练：会话快照 2 组/休 90 秒，记组照常落库，计划表原样', () async {
+      final day = await makePlanDay('精简日');
+      final a = await addPlanEx(day, '深蹲', 0, sets: 4);
+      final b = await addPlanEx(day, '卧推', 1, sets: 4);
+      final cEx = await addPlanEx(day, '划船', 2, sets: 4);
+      final d = await addPlanEx(day, '弯举', 3, sets: 3);
+
+      final source = [a, b, cEx, d];
+      final short = shortSessionPlan(source);
+      expect([for (final e in short) e.name], ['深蹲', '卧推', '划船'],
+          reason: '4 个动作按上限留 3 个');
+      expect(shortSessionDroppedNames(source), ['弯举']);
+
+      final c = SessionController(db, Settings(prefs), prefs, null);
+      controllers.add(c);
+      await c.startFromDay(day: day, planExercises: short);
+      expect(c.hasActive, isTrue);
+      expect(c.exercises.length, 3);
+      expect([for (final e in c.exercises) e.restSec], [90, 90, 90],
+          reason: '会话快照的休息全是 90 秒');
+      expect([for (final e in c.exercises) e.targetSets], [2, 2, 2],
+          reason: '计划组数压到 2 组并快照进会话');
+      expect([for (final e in c.exercises) e.rule.workingSets], [2, 2, 2],
+          reason: '渐进规则与组数同步');
+
+      // 记录照常保存：完成一组立刻落库
+      await c.completeSet(weight: 60, reps: 5, rir: 2, kind: SetKind.working);
+      final setsMap = await db.setsOfSession(c.session!.id!);
+      final allSets = [for (final list in setsMap.values) ...list];
+      expect(allSets.length, 1, reason: '精简会话的组记录照常保存');
+      expect(allSets.first.reps, 5);
+
+      // 长期计划原样：4 个动作、原组数
+      final planRows = await db.dayExercises(day.id!);
+      expect(planRows.length, 4);
+      expect([for (final e in planRows) e.sets], [4, 4, 4, 3],
+          reason: '精简只进本次会话，不写回长期计划');
     });
   });
 }

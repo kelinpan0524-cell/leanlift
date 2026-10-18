@@ -232,6 +232,36 @@ void main() {
           reason: '完成本组按钮（88dp 主操作）');
     });
 
+    // P2-B 疼痛标记：面板内展开、不弹窗、不拦完成本组；≥2 级给非弹窗建议
+    testWidgets('疼痛标记：点开展开部位/程度，2 级出现非弹窗建议', (tester) async {
+      setSurface(tester, const Size(600, 1000));
+      await startLifting(tester);
+      await pumpWorkout(tester);
+      expectNoLayoutError(tester);
+
+      final marker = find.byKey(const Key('workoutPainMarker'));
+      expect(marker, findsOneWidget, reason: '组记录面板有疼痛入口 chip');
+      await tester.tap(marker);
+      await tester.pump();
+      expect(find.byKey(const Key('workoutPainPanel')), findsOneWidget,
+          reason: '点开后原地展开，不弹窗');
+
+      await tester.tap(find.text('肩'));
+      await tester.pump();
+      await tester.tap(find.text('2 中'));
+      await tester.pump();
+      expect(find.text('疼痛 肩 · 2'), findsOneWidget,
+          reason: '入口 chip 回显已选部位与等级');
+      expect(find.textContaining('建议：下一组减约 10%'), findsOneWidget,
+          reason: '≥2 级给减负荷/换变式的非弹窗建议');
+      // 全程没有底部弹层/对话框（ModalBarrier 是页面路由自带的，不算）
+      expect(find.byType(BottomSheet), findsNothing,
+          reason: '疼痛标记不打断训练');
+      expect(find.byType(AlertDialog), findsNothing,
+          reason: '疼痛标记不弹窗');
+      expectNoLayoutError(tester);
+    });
+
     testWidgets('800×360 横屏：面板可滚动，完成按钮不再被挤出屏幕', (tester) async {
       setSurface(tester, landscape);
       await startLifting(tester);

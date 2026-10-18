@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:baoji_timer/engine/engine.dart';
-import 'package:baoji_timer/models/models.dart';
 import 'package:baoji_timer/services/ai_service.dart';
 import 'package:baoji_timer/services/settings.dart';
 import 'package:http/http.dart' as http;
@@ -855,6 +854,63 @@ void main() {
           '[{"weekday":2,"title":"拉日","exercises":[{"name":"引体向上","sets":3,"reps_min":5,"reps_max":8}]}]');
       expect(specs, isNotNull);
       expect(specs!.first.title, '拉日');
+    });
+  });
+
+  group('周复盘 AI 叙事（P1-E2）', () {
+    WeeklyRecap emptyRecap() => weeklyRecap(
+          now: DateTime(2026, 10, 11, 20),
+          weekStart: DateTime(2026, 10, 5),
+          plannedByDate: const {},
+          sessions: const [],
+          sets: const [],
+        );
+
+    test('数据包含周区间/完成度/本地建议', () {
+      final pack = ai.buildWeeklyRecapDataPack(emptyRecap());
+      expect(pack.contains('2026-10-05'), isTrue);
+      expect(pack.contains('2026-10-11'), isTrue);
+      expect(pack.contains('计划：0 次训练'), isTrue);
+      expect(pack.contains('本地规则建议'), isTrue);
+    });
+
+    test('weeklyRecapNarrative：system 提示 + user 数据包，返回 AI 叙事', () async {
+      SharedPreferences.setMockInitialValues({
+        'set.aiBaseUrl': 'http://127.0.0.1:1',
+        'set.aiApiKey': 'sk-test',
+        'set.aiModel': 'test-model',
+      });
+      final prefs = await SharedPreferences.getInstance();
+      List<dynamic>? sent;
+      final svc = AiService(
+        Settings(prefs),
+        httpClient: MockClient((req) async {
+          sent = jsonDecode(req.body)['messages'] as List;
+          return http.Response.bytes(
+            utf8.encode(jsonEncode({
+              'choices': [
+                {
+                  'message': {
+                    'role': 'assistant',
+                    'content': '这周完成度一般，下周先把背补上。'
+                  }
+                }
+              ]
+            })),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }),
+      );
+
+      final reply = await svc.weeklyRecapNarrative(emptyRecap());
+      expect(reply, '这周完成度一般，下周先把背补上。');
+      expect(sent, hasLength(2));
+      expect(sent![0]['role'], 'system');
+      expect(sent![0]['content'], contains('不许编造'));
+      expect(sent![0]['content'], contains('120-180'));
+      expect(sent![1]['role'], 'user');
+      expect(sent![1]['content'], contains('2026-10-05'));
     });
   });
 }

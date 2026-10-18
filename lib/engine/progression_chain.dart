@@ -154,7 +154,14 @@ class ChainVerdict {
   final ChainState next;
   final String reason;
 
-  const ChainVerdict(this.action, this.next, this.reason);
+  /// hold 的具体原因（P1-C 复核用，非 hold 为空串）：
+  /// 'no_sets' / 'different_tier' / 'insufficient_sets' / 'chain_end' /
+  /// 'target_miss'。调用方据此判断「继续冲」的 hold 是否适合被平台期
+  /// 协议替换——少做/没记录/换档位不能被改写为「加重/减载」。
+  final String holdKind;
+
+  const ChainVerdict(this.action, this.next, this.reason,
+      {this.holdKind = ''});
 }
 
 /// 从「上次该动作的正式组」推导当前链状态：
@@ -168,8 +175,10 @@ class ChainVerdict {
 /// 的人获得逐场 +1 的平滑爬升。
 ChainState chainStateFromHistory(
     List<SetEntry> lastSessionWorkingSets, ProgressionRule rule) {
+  // 加练组（isExtra）是超计划的额外容量，不代表计划本身的完成水平：
+  // 既不能用它最后一组的重量当档位，也不能让它的次数拉低/抬高目标。
   final ws = lastSessionWorkingSets
-      .where((s) => s.kind == SetKind.working)
+      .where((s) => s.kind == SetKind.working && !s.isExtra)
       .toList(growable: false);
   if (ws.isEmpty) {
     return ChainState(weightKg: 0, targetReps: rule.repsMin);
@@ -194,13 +203,18 @@ ChainState chainStateFromHistory(
 /// 综合判定：会话结束对该动作走一次链。
 ///
 /// 口径（与旧 evaluateProgression 对齐的部分）：
-/// - 只看正式组；与当前重量档相差 >5% 的组视为另一档，不参与判定；
-/// - **全场每组达标**（每组 reps >= state.targetReps 且末组余力
-///   >= rir_target - 1）才推进链；
+/// - 只统计「正式组」里的非加练组（isExtra=false）；加练组无论次数高低
+///   都不参与 advance/hold/decrease；
+/// - 与当前重量档相差 >5% 的组视为另一档，不参与判定；
+/// - **计划组全部达标**（每组 reps >= state.targetReps；末组 RIR 只有在
+///   实际记录过时才参与判定，未记录则纯按次数）才推进链；
 /// - 有组低于 reps_min → 减重约 5%（负重量同向：辅助配重变得更"负"
 ///   = 阻力更小，方向语义一致）；
 /// - 其余 → hold（重量与次数目标都不动）。
 ///
+/// [targetSets]（P0-B）：本次计划正式组数。缺省 0 = 保持旧行为（不检查
+/// 组数）；>0 时若当前重量档的正式组数少于计划组数，直接 hold 并说明
+/// 「本次只完成 X/Y 组，不推进」——少做不能用达标判定换推进。
 /// [logging]（v14）：'time' 时链状态里的数字是秒，达标/保持等 reason
 /// 文案把「X 次」表述换成「X 秒」；数字判定逻辑完全不变。
 /// [loadType]（v14）：'bodyweight' 时链切换为自重链（无重量轴，
@@ -209,6 +223,7 @@ ChainVerdict evaluateChain({
   required ProgressionRule rule,
   required ChainState state,
   required List<SetEntry> workingSets,
+  int targetSets = 0,
   String logging = LoggingMode.reps,
   String loadType = LoadMode.weighted,
 }) {
@@ -216,14 +231,15 @@ ChainVerdict evaluateChain({
   final unit = logging == LoggingMode.time ? '秒' : '次';
   final enUnit = logging == LoggingMode.time ? 's' : 'reps';
   final ws = workingSets
-      .where((s) => s.kind == SetKind.working)
+      .where((s) => s.kind == SetKind.working && !s.isExtra)
       .toList(growable: false);
   if (ws.isEmpty) {
     return ChainVerdict(
         'hold',
         state,
         tx('本次无正式组记录，重量保持不变',
-            en: 'No working sets logged this time — weight stays the same'));
+            en: 'No working sets logged this time — weight stays the same'),
+        holdKind: 'no_sets');
   }
   // 注意：state.weightKg == 0（自重动作的合法档位）不在此提前返回——
   // 0 档参与正常判定（±5% 档位过滤天然只收 0kg 组），达标同样可进位到
@@ -242,13 +258,36 @@ ChainVerdict evaluateChain({
         'hold',
         state,
         tx('本次重量与历史档位不同，重量保持不变',
-            en: 'Weight differs from your usual tier — weight stays the same'));
+            en: 'Weight differs from your usual tier — weight stays the same'),
+        holdKind: 'different_tier');
+  }
+  // 少做不推进（P0-B）：计划组数没练够时，即便剩下的组都达标也不能
+  // 晋升；也不能因为组少就误判减重——组数不足本身就是「继续保持」。
+  // 只数当前重量档的非加练正式组，加练组不能补计划组数。
+  if (targetSets > 0 && near.length < targetSets) {
+    return ChainVerdict(
+        'hold',
+        state,
+        tx(
+            '本次只完成 ${near.length}/$targetSets 组，不推进'
+            '（仅统计当前重量档，本次共 ${ws.length} 组正式组）',
+            en: 'Only ${near.length}/$targetSets sets completed this time — no progression'
+                ' (current weight tier only; ${ws.length} working sets logged)'),
+        holdKind: 'insufficient_sets');
   }
 
   final allMetTarget = near.every((s) => s.reps >= state.targetReps);
   final lastSet = near.last;
-  final lastSetRirOk = lastSet.rir >= rule.rirTarget - 1; // 允许差 1 次余力
+  // 余力真实性（P0-C）：只有用户实际点过余力（rirRecorded）时，末组 RIR
+  // 才参与判定；未记录时 rir 只是计划默认填充值，不能拿它卡渐进——
+  // 按次数判定，并在 reason 里说明「余力未记录」，让用户看得懂依据。
+  final rirRecorded = lastSet.rirRecorded;
+  final lastSetRirOk = !rirRecorded || lastSet.rir >= rule.rirTarget - 1; // 允许差 1 次余力
   final anyBelowMin = near.any((s) => s.reps < rule.repsMin);
+  final rirNote = rirRecorded
+      ? ''
+      : tx('（余力未记录，本次按次数判定）',
+          en: ' (RIR not recorded — judged by reps)');
 
   if (allMetTarget && lastSetRirOk) {
     final chain = ProgressionChain.of(rule, loadType: loadType);
@@ -267,15 +306,25 @@ ChainVerdict evaluateChain({
                   : '已到规则链尽头（次数 ${state.targetReps} 次、重量 ${fmtWithUnit(state.weightKg)} 触顶）',
               en: 'Chain topped out (${state.targetReps} $enUnit at ${fmtWithUnit(state.weightKg)})');
       return ChainVerdict('hold', state,
-          tx('$capDesc → 保持当前档', en: '$capDesc → hold this tier'));
+          tx('$capDesc → 保持当前档', en: '$capDesc → hold this tier'),
+          holdKind: 'chain_end');
     }
     if (next.weightKg != state.weightKg) {
       return ChainVerdict(
         'advance',
         next,
         tx(
-            '${near.length} 组全部达到 ${state.targetReps} $unit目标，次数轴触顶 → 下次加重至 ${fmtWithUnit(next.weightKg)}、目标回到 ${next.targetReps} $unit',
-            en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target and the rep axis is topped out → add weight to ${fmtWithUnit(next.weightKg)}, target resets to ${next.targetReps} $enUnit'),
+            '${near.length} 组全部达到 ${state.targetReps} $unit目标，次数轴触顶 → 下次加重至 ${fmtWithUnit(next.weightKg)}、目标回到 ${next.targetReps} $unit$rirNote',
+            en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target and the rep axis is topped out → add weight to ${fmtWithUnit(next.weightKg)}, target resets to ${next.targetReps} $enUnit$rirNote'),
+      );
+    }
+    if (!rirRecorded) {
+      return ChainVerdict(
+        'advance',
+        next,
+        tx(
+            '${near.length} 组全部达到 ${state.targetReps} $unit目标 → 下次目标 ${next.targetReps} $unit（重量不变）$rirNote',
+            en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target → next target ${next.targetReps} $enUnit (same weight)$rirNote'),
       );
     }
     return ChainVerdict(
@@ -301,6 +350,7 @@ ChainVerdict evaluateChain({
   return ChainVerdict(
       'hold',
       state,
-      tx('完成情况未达 ${state.targetReps} $unit目标 → 重量与${logging == LoggingMode.time ? '秒数' : '次数'}目标保持，继续冲',
-          en: "Target of ${state.targetReps} $enUnit not met — hold weight and target, chase more ${logging == LoggingMode.time ? 'seconds' : 'reps'}"));
+      tx('完成情况未达 ${state.targetReps} $unit目标 → 重量与${logging == LoggingMode.time ? '秒数' : '次数'}目标保持，继续冲$rirNote',
+          en: "Target of ${state.targetReps} $enUnit not met — hold weight and target, chase more ${logging == LoggingMode.time ? 'seconds' : 'reps'}$rirNote"),
+      holdKind: 'target_miss');
 }

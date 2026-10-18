@@ -74,6 +74,7 @@ const kExerciseImageIdMap = <String, String>{
   '窄距卧推': 'Close-Grip_Barbell_Bench_Press',
   '凳上臂屈伸': 'Bench_Dips',
   '双杠臂屈伸': 'Dips_-_Triceps_Version',
+  '负重双杠臂屈伸': 'Dips_-_Triceps_Version',
   '牧师凳弯举': 'Preacher_Curl',
   '曲杠弯举（EZ杠）': 'EZ-Bar_Curl',
   '上斜哑铃弯举': 'Incline_Dumbbell_Curl',

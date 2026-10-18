@@ -10,6 +10,7 @@ import '../core/app.dart';
 import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../services/ai_service.dart';
+import '../services/backup_service.dart';
 import '../services/focus_service.dart';
 import '../services/settings.dart';
 import '../services/update_service.dart';
@@ -65,6 +66,10 @@ class TrainingPrefsPage extends StatelessWidget {
               s.restAssistanceSec = v;
               s.save();
             }),
+            const Divider(height: 1, thickness: 1, color: AppTheme.cardHi),
+            // 训练块与减载（P1-C）：默认 5 周一块、第 5 周减载；
+            // 0 = 关闭（长期线性加重）。只影响新开的训练会话。
+            _blockWeeksRow(s),
             // 体重（自重容量折算用）：引体/俯卧撑类动作
             // 按 系数×体重 计入容量趋势；设 0 关闭折算。
             _weightRow(
@@ -249,11 +254,153 @@ class TrainingPrefsPage extends StatelessWidget {
           ],
         ),
       ),
+      const SizedBox(height: 16),
+      // 每周复盘提醒（P1-E2）：只排本地通知；AI 自动写周报默认关，
+      // 且只在配了 AI 时露出开关（没 Key 的开关点了也没用）。
+      SectionCard(
+        title: tx('每周复盘', en: 'Weekly Recap'),
+        child: Column(
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(tx('每周复盘提醒', en: 'Weekly recap reminder')),
+              subtitle: Text(
+                tx('每周固定时刻提醒你花两分钟看复盘（默认周日 20:00）',
+                    en: 'A weekly nudge to spend two minutes on your recap (Sunday 20:00 by default)'),
+                style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+              ),
+              value: s.weeklyRecapReminderOn,
+              activeThumbColor: AppTheme.primary,
+              onChanged: (v) {
+                s.weeklyRecapReminderOn = v;
+                s.save();
+                c.rescheduleWeeklyRecap();
+              },
+            ),
+            if (s.weeklyRecapReminderOn) ...[
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(tx('提醒日', en: 'Reminder day')),
+                trailing: DropdownButton<int>(
+                  value: s.weeklyRecapWeekday,
+                  dropdownColor: AppTheme.card,
+                  underline: const SizedBox.shrink(),
+                  items: [
+                    for (var d = 1; d <= 7; d++)
+                      DropdownMenuItem(
+                        value: d,
+                        child: Text(_weekdayLabel(d)),
+                      ),
+                  ],
+                  onChanged: (v) {
+                    if (v == null) return;
+                    s.weeklyRecapWeekday = v;
+                    s.save();
+                    c.rescheduleWeeklyRecap();
+                  },
+                ),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(tx('提醒时刻', en: 'Reminder time')),
+                trailing: Text(
+                  _fmtMinutesOfDay(s.weeklyRecapMinOfDay),
+                  style: const TextStyle(
+                      fontSize: 17, fontWeight: FontWeight.w600),
+                ),
+                onTap: () async {
+                  final picked = await showTimePicker(
+                    context: context,
+                    initialTime: TimeOfDay(
+                        hour: s.weeklyRecapMinOfDay ~/ 60,
+                        minute: s.weeklyRecapMinOfDay % 60),
+                  );
+                  if (picked == null) return;
+                  s.weeklyRecapMinOfDay = picked.hour * 60 + picked.minute;
+                  s.save();
+                  c.rescheduleWeeklyRecap();
+                },
+              ),
+            ],
+            if (s.aiConfigured)
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(tx('AI 自动写周报', en: 'AI weekly note')),
+                subtitle: Text(
+                  tx('打开周复盘页时用 AI 写一段总结；只在页面打开时前台请求，不会后台联网',
+                      en: 'When you open the weekly recap, AI writes a short note — only in the foreground, never in the background'),
+                  style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+                ),
+                value: s.aiWeeklyRecapOn,
+                activeThumbColor: AppTheme.primary,
+                onChanged: (v) {
+                  s.aiWeeklyRecapOn = v;
+                  s.save();
+                },
+              ),
+          ],
+        ),
+      ),
     ]);
   }
 
+  String _weekdayLabel(int weekday) => switch (weekday) {
+        1 => tx('周一', en: 'Mon'),
+        2 => tx('周二', en: 'Tue'),
+        3 => tx('周三', en: 'Wed'),
+        4 => tx('周四', en: 'Thu'),
+        5 => tx('周五', en: 'Fri'),
+        6 => tx('周六', en: 'Sat'),
+        _ => tx('周日', en: 'Sun'),
+      };
+
   String _fmtMinutesOfDay(int m) =>
       '${(m ~/ 60).toString().padLeft(2, '0')}:${(m % 60).toString().padLeft(2, '0')}';
+
+  /// 训练块长度（P1-C）：每 N 周 1 周减载，0 = 关闭。
+  /// 选项按常用周期给（4/5/6/8 周），存了其他值时原样作为一项显示，
+  /// 不做静默改写。
+  Widget _blockWeeksRow(Settings s) {
+    final options = <int>{0, 4, 5, 6, 8, s.trainingBlockWeeks}.toList()
+      ..sort();
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(tx('训练块长度', en: 'Training block')),
+              Text(
+                tx('每 N 周安排 1 周减载（重量 ×0.9、少 1 组）；0 = 关闭',
+                    en: 'One deload week every N weeks (90% weight, one fewer set); 0 = off'),
+                style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        DropdownButton<int>(
+          value: s.trainingBlockWeeks,
+          dropdownColor: AppTheme.card,
+          underline: const SizedBox.shrink(),
+          items: [
+            for (final n in options)
+              DropdownMenuItem(
+                value: n,
+                child: Text(
+                  n == 0 ? tx('关', en: 'Off') : tx('$n 周', en: '$n wk'),
+                ),
+              ),
+          ],
+          onChanged: (v) {
+            if (v == null) return;
+            s.trainingBlockWeeks = v;
+            s.save();
+          },
+        ),
+      ],
+    );
+  }
 
   Widget _numRow(String label, int value, ValueChanged<int> onChanged) {
     return Row(
@@ -1405,8 +1552,8 @@ class ReleaseNotesPage extends StatelessWidget {
 
 String _lastExportSummary(int lastMs) {
   if (lastMs <= 0) {
-    return tx('还没有导出过 JSON 存档，建议每周一次',
-        en: 'No JSON archive yet — weekly export recommended');
+    return tx('还没有导出过 JSON 存档，建议每 14 天导出一次',
+        en: 'No JSON archive yet — export every 14 days');
   }
   final d = DateTime.fromMillisecondsSinceEpoch(lastMs);
   final day =
@@ -1414,21 +1561,73 @@ String _lastExportSummary(int lastMs) {
   return '${tx('上次导出', en: 'Last export')}: $day';
 }
 
-/// 数据与备份：导出 CSV/JSON、剪贴板恢复、AI 分析包、清空全部。
-class DataBackupPage extends StatelessWidget {  const DataBackupPage({super.key});
+/// 数据与备份：自动快照、导出 CSV/JSON、剪贴板恢复、AI 分析包、清空全部。
+class DataBackupPage extends StatefulWidget {
+  const DataBackupPage({super.key});
+
+  @override
+  State<DataBackupPage> createState() => _DataBackupPageState();
+}
+
+class _DataBackupPageState extends State<DataBackupPage> {
+  Future<List<BackupInfo>>? _backups;
+  AutoBackupService? _backupService;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final service = app(context).autoBackup;
+    if (!identical(_backupService, service)) {
+      _backupService?.removeListener(_onBackupChanged);
+      _backupService = service;
+      service.addListener(_onBackupChanged);
+    }
+    _backups ??= service.listBackups();
+  }
+
+  @override
+  void dispose() {
+    _backupService?.removeListener(_onBackupChanged);
+    super.dispose();
+  }
+
+  /// 后台快照落盘/失败/清空后刷新页面，不用退出重进。
+  void _onBackupChanged() {
+    if (!mounted) return;
+    final service = _backupService;
+    if (service == null) return;
+    setState(() {
+      _backups = service.listBackups();
+    });
+  }
+
+  void _reloadBackups() {
+    setState(() {
+      _backups = app(context).autoBackup.listBackups();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final c = app(context);
     return _subScaffold(tx('数据与备份', en: 'Data & Backup'), [
+      // 非打断式提醒：仅在页面顶部占一行；会话仍 active 时不出现
+      // （系统返回离开训练页不会 quit，但训练仍在进行中）。
+      if (!c.session.hasActive &&
+          Settings.backupNeedsAttention(c.settings.lastExportJsonAt))
+        _backupReminder(c.settings.lastExportJsonAt),
+      SectionCard(
+        title: tx('自动备份', en: 'Auto Backup'),
+        child: _autoBackupSection(c),
+      ),
       SectionCard(
         title: tx('导出与恢复', en: 'Export & Restore'),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              tx('手机本地存储是唯一数据源，建议每周导出存档。存档含训练记录、计划、身体数据与动作标注；换手机或误清数据时可用 JSON 存档一键恢复。',
-                  en: 'Phone-local storage is the only data source. Export an archive weekly. It includes workout records, plans, body data, and exercise notes; if you switch phones or lose data, a JSON archive restores everything in one tap.'),
+              tx('手机本地存储是唯一数据源，建议每 14 天导出存档。存档含训练记录、计划、身体数据与动作标注；换手机或误清数据时可用 JSON 存档一键恢复。',
+                  en: 'Phone-local storage is the only data source. Export an archive every 14 days. It includes workout records, plans, body data, and exercise notes; if you switch phones or lose data, a JSON archive restores everything in one tap.'),
               style: const TextStyle(color: AppTheme.textDim, fontSize: 13),
             ),
             const SizedBox(height: 8),
@@ -1495,17 +1694,79 @@ class DataBackupPage extends StatelessWidget {  const DataBackupPage({super.key}
                 final ok = await confirmDialog(
                   context,
                   tx('清空全部数据？', en: 'Delete All Data?'),
-                  tx('所有训练记录、计划和身体数据将被删除且无法恢复。强烈建议先导出备份。',
-                      en: 'All workout records, plans, and body data will be permanently deleted. Export a backup first — strongly recommended.'),
+                  tx(
+                    '所有训练记录、计划、身体数据以及本机的自动备份文件都会删除且无法恢复。强烈建议先导出一份到手机外。',
+                    en: 'All workout records, plans, body data, and the auto backup files on this phone will be permanently deleted. Export a copy off-device first — strongly recommended.',
+                  ),
                   okLabel: tx('全部删除', en: 'Delete All'),
                 );
-                if (ok) {
-                  if (c.session.hasActive) await c.session.quit();
-                  await c.db.wipeAll();
-                  await c.planRepo.reload();
+                if (!ok) return;
+                final hadActive = c.session.hasActive;
+                try {
+                  if (hadActive) await c.session.quit();
+                  // quit 会预约一份快照：取消并把已触发的等待任务作废。
+                  c.autoBackup.cancelScheduled();
+                } catch (_) {
                   if (context.mounted) {
-                    toast(context, tx('已清空', en: 'Cleared'));
+                    toast(context,
+                        tx('清空失败：无法结束进行中的训练，请重试',
+                            en: 'Clear failed: could not end the in-progress workout; please retry'));
                   }
+                  return;
+                }
+                try {
+                  // 先删备份再删库：备份删除失败时宁可中止，也不留下完整数据副本。
+                  await c.autoBackup.deleteAll();
+                } catch (_) {
+                  if (context.mounted) {
+                    toast(
+                      context,
+                      hadActive
+                          ? tx('清空失败：进行中的训练已结束，部分自动备份未能删除，训练数据未清空，请重试',
+                              en: 'Clear failed: the in-progress workout was ended, some auto backups could not be deleted, and workout data was not cleared. Please retry')
+                          : tx('清空失败：部分自动备份未能删除，训练数据未清空，请重试',
+                              en: 'Clear failed: some auto backups could not be deleted; workout data was not cleared. Please retry'),
+                    );
+                  }
+                  return;
+                }
+                try {
+                  await c.db.wipeAll();
+                } catch (_) {
+                  if (context.mounted) {
+                    toast(
+                      context,
+                      hadActive
+                          ? tx('进行中的训练已结束、自动备份已删除，但训练数据清空失败，请重试',
+                              en: 'The in-progress workout was ended and auto backups were deleted, but clearing workout data failed. Please retry')
+                          : tx('自动备份已删除，但训练数据清空失败，请重试',
+                              en: 'Auto backups were deleted, but clearing workout data failed. Please retry'),
+                    );
+                  }
+                  return;
+                }
+                var refreshFailed = false;
+                try {
+                  c.settings.lastExportJsonAt = 0;
+                  await c.settings.save();
+                } catch (_) {
+                  refreshFailed = true;
+                }
+                try {
+                  await c.planRepo.reload();
+                } catch (_) {
+                  refreshFailed = true;
+                }
+                if (context.mounted) {
+                  toast(
+                    context,
+                    refreshFailed
+                        ? tx('已清空（含自动备份）；部分设置刷新失败，建议重开应用',
+                            en: 'Cleared (including auto backups); some settings failed to refresh — please reopen the app')
+                        : tx('已清空（含自动备份）',
+                            en: 'Cleared (including auto backups)'),
+                  );
+                  _reloadBackups();
                 }
               },
               child: Text(tx('清空全部数据', en: 'Delete All Data')),
@@ -1514,6 +1775,193 @@ class DataBackupPage extends StatelessWidget {  const DataBackupPage({super.key}
         ),
       ),
     ]);
+  }
+
+  /// 自动快照卡片：最近时间 + 从最近备份恢复（先预览再确认）。
+  Widget _autoBackupSection(AppContainer c) {
+    return FutureBuilder<List<BackupInfo>>(
+      future: _backups,
+      builder: (context, snap) {
+        final all = snap.data ?? const <BackupInfo>[];
+        final latest = all.isEmpty ? null : all.first;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(tx('启用自动备份', en: 'Enable auto backup')),
+              subtitle: Text(
+                tx('关闭后不再写新快照；已有备份仍可查看和恢复。',
+                    en: 'When off, no new snapshots are written; existing backups can still be viewed and restored.'),
+                style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+              ),
+              value: c.settings.autoBackupEnabled,
+              onChanged: (v) async {
+                c.settings.autoBackupEnabled = v;
+                if (!v) {
+                  c.autoBackup.cancelScheduled();
+                  c.autoBackup.clearError();
+                }
+                await c.settings.save();
+                if (mounted) setState(() {});
+              },
+            ),
+            Text(
+              tx(
+                '每次训练结束自动备份到手机本地；启动时距上次超过 24 小时也会补一份。只保留最近 7 个有备份日期的最新一份，以及最近 4 周每周的最新一份。',
+                en: 'A full snapshot is saved on this phone after every workout, and on launch when the last snapshot is over 24 hours old. Keeps the latest snapshot for each of the 7 most recent backup dates, plus the latest for each of the 4 most recent weeks.',
+              ),
+              style: const TextStyle(color: AppTheme.textDim, fontSize: 13),
+            ),
+            if (c.settings.autoBackupEnabled &&
+                !c.session.hasActive &&
+                c.autoBackup.lastError != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                tx('上次自动备份失败（可能是存储空间不足），下次会话结束会重试。',
+                    en: 'The last auto backup failed (possibly low storage); it will retry when the next session ends.'),
+                style: const TextStyle(color: AppTheme.warn, fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 8),
+            Text(
+              latest == null
+                  ? tx('还没有自动备份（完成一次训练后自动生成）',
+                      en: 'No auto backups yet (created after your first workout)')
+                  : '${tx('最近自动备份', en: 'Latest auto backup')}: '
+                      '${_fmtBackupTime(latest.createdAt)}'
+                      '${all.length > 1 ? tx(' · 共 ${all.length} 份', en: ' · ${all.length} total') : ''}',
+              style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: latest == null ||
+                      snap.connectionState != ConnectionState.done
+                  ? null
+                  : () => _restoreLatest(c, latest),
+              icon: const Icon(Icons.restore, size: 18),
+              label: Text(tx('从最近自动备份恢复',
+                  en: 'Restore from latest auto backup')),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _backupReminder(int lastExportMs) {
+    final never = lastExportMs <= 0;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.warn.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.warn.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline, size: 18, color: AppTheme.warn),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              tx(
+                never
+                    ? '还没有手动导出过备份。自动备份只在本机（卸载应用会一起消失），建议导出一份到手机外。'
+                    : '已经超过 14 天没有手动导出存档。自动备份只在本机（卸载应用会一起消失），建议导出一份到手机外。',
+                en: never
+                    ? 'You have not exported a manual backup yet. Auto backups stay on this phone (uninstalling the app removes them), so export a copy off-device.'
+                    : 'It has been over 14 days since your last manual export. Auto backups stay on this phone (uninstalling the app removes them), so export a copy off-device.',
+              ),
+              style: const TextStyle(color: AppTheme.warn, fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _restoreLatest(AppContainer c, BackupInfo latest) async {
+    final BackupPreview preview;
+    try {
+      preview = await c.autoBackup.preview(latest);
+    } catch (_) {
+      if (mounted) {
+        toast(
+          context,
+          tx('读取自动备份失败：文件可能不完整或已损坏',
+              en: 'Could not read the auto backup: the file may be incomplete or corrupted'),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    final when = _fmtBackupTime(latest.createdAt);
+    final hadActive = c.session.hasActive;
+    final activeNote = hadActive
+        ? tx('当前进行中的训练会先结束。\n\n',
+            en: 'The workout currently in progress will be ended first.\n\n')
+        : '';
+    final ok = await confirmDialog(
+      context,
+      tx('从最近自动备份恢复？', en: 'Restore from latest auto backup?'),
+      tx(
+        '备份时间：$when\n'
+        '包含 ${preview.sessions} 次训练、${preview.plans} 个计划、${preview.bodyMetrics} 条身体数据。\n\n'
+        '$activeNote恢复会先清空手机上的现有数据，再导入这份备份。此操作无法撤销。',
+        en: 'Backup time: $when\n'
+            'Contains ${preview.sessions} workouts, ${preview.plans} plans, ${preview.bodyMetrics} body entries.\n\n'
+            '${hadActive ? 'The workout currently in progress will be ended first.\n\n' : ''}'
+            'Restoring erases the current data on this phone first, then imports this backup. This cannot be undone.',
+      ),
+      okLabel: tx('恢复', en: 'Restore'),
+    );
+    if (!ok || !mounted) return;
+    try {
+      // 恢复会清空会话表：先结束进行中的训练；quit 预约的快照一并取消。
+      if (hadActive) await c.session.quit();
+      c.autoBackup.cancelScheduled();
+      await c.autoBackup.restore(latest);
+      // 备份里的减载/停练标记已写回偏好：内存排除表跟着重灌，
+      // 否则本进程内统计回溯仍用恢复前的旧标记。
+      c.session.reloadDeloadMarkers();
+    } catch (_) {
+      if (mounted) {
+        toast(
+          context,
+          hadActive
+              ? tx('恢复失败：进行中的训练已结束，其余数据未改动',
+                  en: 'Restore failed: the in-progress workout was ended; other data was not changed')
+              : tx('恢复失败：自动备份可能不完整，数据未改动',
+                  en: 'Restore failed: the auto backup may be incomplete; no data was changed'),
+        );
+      }
+      return;
+    }
+    var reloadFailed = false;
+    try {
+      await c.planRepo.reload();
+    } catch (_) {
+      // 数据已恢复，只是计划缓存刷新失败；提示用户重开应用刷一下。
+      reloadFailed = true;
+    }
+    if (mounted) {
+      toast(
+        context,
+        reloadFailed
+            ? tx('已从自动备份恢复 ${preview.sessions} 次训练记录 ✓（计划刷新失败，请重开应用）',
+                en: 'Restored ${preview.sessions} workouts from auto backup ✓ (plan refresh failed; please reopen the app)')
+            : tx('已从自动备份恢复 ${preview.sessions} 次训练记录 ✓',
+                en: 'Restored ${preview.sessions} workouts from auto backup ✓'),
+      );
+      _reloadBackups();
+    }
+  }
+
+  static String _fmtBackupTime(DateTime d) {
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
   }
 
   /// 从 JSON 存档恢复：先清空再导入（恢复 = 回到备份时点）。
@@ -1559,6 +2007,8 @@ class DataBackupPage extends StatelessWidget {  const DataBackupPage({super.key}
       // 恢复前先结束进行中的训练（恢复会清空会话表）
       if (c.session.hasActive) await c.session.quit();
       final n = await c.export.restoreFromJson(data);
+      // 备份里的减载/停练标记已写回偏好：内存排除表跟着重灌。
+      c.session.reloadDeloadMarkers();
       await c.planRepo.reload();
       if (context.mounted) {
         toast(context,

@@ -19,7 +19,8 @@ SetEntry _set(int rir,
         {String kind = SetKind.working,
         int doneAt = 0,
         double weight = 60,
-        int reps = 8}) =>
+        int reps = 8,
+        bool recorded = true}) =>
     SetEntry(
       sessionExerciseId: 1,
       weightKg: weight,
@@ -27,6 +28,7 @@ SetEntry _set(int rir,
       rir: rir,
       kind: kind,
       doneAt: doneAt,
+      rirRecorded: recorded,
     );
 
 void main() {
@@ -259,6 +261,36 @@ void main() {
       expect(all[2], 2);
       expect(all[3], 1);
     });
+
+    test('未记录 RIR 的正式组不计入分布（P0-C）', () {
+      final dist = rirDistribution([
+        _set(2), // 已记录
+        _set(0, recorded: false), // 计划默认 0，不算观测
+        _set(4, recorded: false),
+      ]);
+      expect(dist[2], 1);
+      expect(dist[0], 0, reason: '未记录组不落桶');
+      expect(dist[4], 0, reason: '未记录组不落桶');
+      expect(dist.values.fold(0, (a, b) => a + b), 1);
+    });
+  });
+
+  group('rirCoverage', () {
+    test('统计窗口内已记录/总正式组，非正式组不计', () {
+      final since = DateTime(2026, 10, 1);
+      final cov = rirCoverage([
+        _set(2, doneAt: DateTime(2026, 9, 20).millisecondsSinceEpoch),
+        _set(2, doneAt: DateTime(2026, 10, 2).millisecondsSinceEpoch),
+        _set(0,
+            doneAt: DateTime(2026, 10, 3).millisecondsSinceEpoch,
+            recorded: false),
+        _set(2,
+            kind: SetKind.warmup,
+            doneAt: DateTime(2026, 10, 4).millisecondsSinceEpoch),
+      ], since: since);
+      expect(cov.total, 2);
+      expect(cov.recorded, 1);
+    });
   });
 
   group('rirInsightLine', () {
@@ -277,6 +309,30 @@ void main() {
     test('空数据不给空串', () {
       final line = rirInsightLine({for (var i = 0; i <= 5; i++) i: 0});
       expect(line, isNotEmpty);
+    });
+  });
+
+  group('relativeStrengthRatio（相对力量，P2-E）', () {
+    test('1RM ÷ 体重（倍体重）', () {
+      expect(
+        relativeStrengthRatio(oneRmKg: 100, bodyWeightKg: 70),
+        closeTo(1.428571, 1e-5),
+      );
+      expect(
+        relativeStrengthRatio(oneRmKg: 140, bodyWeightKg: 70),
+        closeTo(2.0, 1e-9),
+      );
+    });
+
+    test('体重缺失或非正 → null（不拿默认体重猜）', () {
+      expect(relativeStrengthRatio(oneRmKg: 100, bodyWeightKg: null), isNull);
+      expect(relativeStrengthRatio(oneRmKg: 100, bodyWeightKg: 0), isNull);
+      expect(relativeStrengthRatio(oneRmKg: 100, bodyWeightKg: -70), isNull);
+    });
+
+    test('1RM 非正（自重/未记录）→ null', () {
+      expect(relativeStrengthRatio(oneRmKg: 0, bodyWeightKg: 70), isNull);
+      expect(relativeStrengthRatio(oneRmKg: -5, bodyWeightKg: 70), isNull);
     });
   });
 

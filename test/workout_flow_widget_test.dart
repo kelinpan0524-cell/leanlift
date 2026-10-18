@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:baoji_timer/core/app.dart';
 import 'package:baoji_timer/engine/engine.dart';
+import 'package:baoji_timer/engine/weight_unit.dart';
 import 'package:baoji_timer/services/session_controller.dart';
 import 'package:baoji_timer/ui/workout_page.dart';
 import 'package:baoji_timer/ui/widgets/common.dart';
@@ -43,6 +44,53 @@ void main() {
   });
 
   late AppContainer container;
+
+  test('起始页副标题按会话快照组数：快照 4 / 规则 3 → 显示 4 组', () {
+    final ex = SessionExercise(
+      sessionId: 1,
+      name: '深蹲',
+      orderIdx: 0,
+      kind: 'compound',
+      rule: const ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
+      targetSets: 4,
+    );
+    expect(startCardSub(ex), contains('4 组'));
+    expect(startCardSub(ex), isNot(contains('3 组')));
+  });
+
+  test('热身文案跟随记录形态：计时说秒、单侧说每边（自重与负重都生效）', () {
+    final timed = warmupHintTextFor(
+      name: '平板支撑',
+      targetWeightKg: 0,
+      loadType: LoadMode.bodyweight,
+      logging: LoggingMode.time,
+    );
+    expect(timed, contains('秒'));
+    final perSide = warmupHintTextFor(
+      name: '箭步蹲',
+      targetWeightKg: 0,
+      loadType: LoadMode.bodyweight,
+      logging: LoggingMode.repsPerSide,
+    );
+    expect(perSide, contains('每边'));
+
+    // 负重阶梯同样要换口径：计时动作不能写成「×5 次」。
+    final weightedTimed = warmupHintTextFor(
+      name: '哑铃农夫行走',
+      targetWeightKg: 10,
+      loadType: LoadMode.weighted,
+      logging: LoggingMode.time,
+    );
+    expect(weightedTimed, contains('秒'));
+    expect(weightedTimed, isNot(contains('次')));
+    final weightedPerSide = warmupHintTextFor(
+      name: '哑铃箭步蹲',
+      targetWeightKg: 10,
+      loadType: LoadMode.weighted,
+      logging: LoggingMode.repsPerSide,
+    );
+    expect(weightedPerSide, contains('每边'));
+  });
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
@@ -167,6 +215,318 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.byKey(const Key('workoutCompleteSet')), findsOneWidget,
           reason: '开始后进入第一记录页');
+    });
+
+    testWidgets('起始页给首个动作展示热身建议（只展示，不自动落库）', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('推日');
+        final a = await addEx(day, '杠铃卧推', 0, workingSets: 2);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      final hint =
+          tester.widget<Text>(find.byKey(const Key('startWarmupHint')));
+      expect(hint.data, contains('空杆'), reason: '杠铃先做空杆');
+      expect(hint.data, contains('80%'), reason: '大重量给 80% 单次档');
+      // 只展示：开练前不自动生成热身组。
+      expect(container.session.setsByEx.values.expand((e) => e), isEmpty);
+    });
+
+    testWidgets('起始页 ≤40kg 杠铃走简化版，也显示空杆步', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('手臂日');
+        final a = await addEx(day, '杠铃弯举', 0, workingSets: 2);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      final hint =
+          tester.widget<Text>(find.byKey(const Key('startWarmupHint')));
+      expect(hint.data, contains('简化'), reason: '20kg 走简化版');
+      expect(hint.data, contains('空杆'), reason: '20kg 也要有空杆热身');
+      expect(hint.data, isNot(contains('80%')), reason: '简化版不追 80% 单次');
+    });
+
+    testWidgets('起始页计时自重动作的热身文案用秒', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('核心日');
+        final a = await addEx(
+          day,
+          '平板支撑',
+          0,
+          workingSets: 2,
+          logging: LoggingMode.time,
+          loadType: LoadMode.bodyweight,
+        );
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      final hint =
+          tester.widget<Text>(find.byKey(const Key('startWarmupHint')));
+      expect(hint.data, contains('秒'), reason: '计时动作不能用「次」');
+    });
+
+    testWidgets('起始页 lb 模式的空杆与片重文案', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      WeightUnits.setResolved(WeightUnit.lb);
+      addTearDown(() => WeightUnits.setResolved(WeightUnit.kg));
+      await tester.runAsync(() async {
+        final day = await makeDay('推日');
+        final a = await addEx(day, '杠铃卧推', 0, workingSets: 2);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      final hint =
+          tester.widget<Text>(find.byKey(const Key('startWarmupHint')));
+      expect(hint.data, contains('45lb'), reason: '空杆与挂片提示同源');
+      expect(hint.data, isNot(contains('44lb')), reason: '不出现 44/45lb 打架');
+    });
+
+    testWidgets('起始页 lb 20kg 杠铃仍有热身行（44lb 目标对 45lb 空杆）',
+        (tester) async {
+      setSurface(tester, const Size(360, 800));
+      WeightUnits.setResolved(WeightUnit.lb);
+      addTearDown(() => WeightUnits.setResolved(WeightUnit.kg));
+      await tester.runAsync(() async {
+        final day = await makeDay('手臂日');
+        final a = await addEx(day, '杠铃弯举', 0, workingSets: 2);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      final hint =
+          tester.widget<Text>(find.byKey(const Key('startWarmupHint')));
+      expect(hint.data, contains('45lb'), reason: '空杆与挂片提示同源');
+    });
+
+    testWidgets('起始页 EZ 杠用 10kg 空杆', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('手臂日');
+        final a = await addEx(day, '曲杠弯举（EZ杠）', 0, workingSets: 2);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      final hint =
+          tester.widget<Text>(find.byKey(const Key('startWarmupHint')));
+      expect(hint.data, contains('空杆 10kg'), reason: 'EZ 杠不是 20kg 奥杆');
+    });
+
+    testWidgets('480×320 横屏：完整热身阶梯不被截断', (tester) async {
+      setSurface(tester, const Size(480, 320));
+      await tester.runAsync(() async {
+        final day = await makeDay('推日');
+        final a = await addEx(day, '杠铃卧推', 0, workingSets: 2);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+        container.session.setWeightDraft(100); // 长阶梯：空杆 + 40/60/80
+      });
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      final hint =
+          tester.widget<Text>(find.byKey(const Key('startWarmupHint')));
+      expect(hint.maxLines, isNull, reason: '不允许单行省略号截断');
+      expect(hint.data, contains('空杆'));
+      expect(hint.data, contains('40%'));
+      expect(hint.data, contains('60%'));
+      expect(hint.data, contains('80%'));
+    });
+
+    testWidgets('800×360 横屏：热身行仍显示，开始按钮在屏内', (tester) async {
+      setSurface(tester, const Size(800, 360));
+      await tester.runAsync(() async {
+        final day = await makeDay('推日');
+        final a = await addEx(day, '杠铃卧推', 0, workingSets: 2);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      expect(find.byKey(const Key('startWarmupHint')), findsOneWidget,
+          reason: '横屏也要显示热身建议');
+      final btn = tester.getRect(find.text('开始训练'));
+      expect(btn.bottom, lessThanOrEqualTo(360), reason: '开始按钮不能被挤出屏');
+    });
+
+    testWidgets('减载周：起始页/训练页都有非弹窗横幅，组数 -1', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('推日');
+        final ex = await addEx(day, '卧推', 0, workingSets: 3);
+        // 28 天前一场 done（60kg×8×3）→ 5 周一块的第 5 周；
+        // 另补 1 天前一场正常训练，避免触发 P1-D 停练回归（块起点仍取
+        // MIN=28 天前的首场，减载周不变）。
+        for (final daysAgo in [28, 1]) {
+          final when = DateTime.now().subtract(Duration(days: daysAgo));
+          final done = await container.db.insertSession(Session(
+            date: fmtDate(when),
+            planDayId: day.id,
+            planDayTitle: day.title,
+            startedAt: 1,
+            status: 'done',
+          ));
+          final se =
+              await container.db.insertSessionExercise(SessionExercise(
+            sessionId: done.id!,
+            name: '卧推',
+            orderIdx: 0,
+            kind: 'compound',
+            restSec: 120,
+            rule: ex.rule,
+            targetSets: 3,
+            targetRepsMin: 5,
+            targetRepsMax: 8,
+          ));
+          for (var i = 0; i < 3; i++) {
+            await container.db.insertSet(SetEntry(
+              sessionExerciseId: se,
+              weightKg: 60,
+              reps: 8,
+              kind: SetKind.working,
+              doneAt: when.millisecondsSinceEpoch + i,
+            ));
+          }
+        }
+        await container.session.startFromDay(day: day, planExercises: [ex]);
+      });
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      // 起始页：横幅说明本周减载；组数快照已 -1（3 → 2）
+      expect(find.textContaining('本周减载'), findsOneWidget);
+      expect(find.textContaining('1 个动作 · 2 个正式组'), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing,
+          reason: '横幅不是弹窗，不打断训练');
+      expectNoLayoutError(tester);
+
+      await tester.tap(find.text('开始训练'));
+      await tester.pump(); // 先落一帧启动 AnimatedSwitcher，再走完 280ms 动画
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 50));
+      // 训练页：横幅仍在（三要素之外的顶部条下方），本组目标按 2 组走
+      expect(find.textContaining('本周减载'), findsOneWidget);
+      // 当前动作名（三要素之一）仍可见，不被顶部标记遮挡
+      expect(find.text('卧推'), findsOneWidget);
+      // 顶部条与动作面板都显示「第 1/2 组」（减载后 3 → 2）
+      expect(find.textContaining('第 1/2 组'), findsWidgets);
+      expect(find.byType(AlertDialog), findsNothing);
+      expectNoLayoutError(tester);
+
+      // 休息页也保留减载横幅（非弹窗，不占三要素）
+      // 该测试的 2 组计划在 360×800 下按钮刚好在视口下沿，先滚到可点位置。
+      await tester.ensureVisible(find.byKey(const Key('workoutCompleteSet')));
+      await tester.pump();
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      });
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 950)));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('组间休息'), findsOneWidget, reason: '确实进了休息页');
+      expect(find.textContaining('本周减载'), findsOneWidget,
+          reason: '休息页横幅');
+      expect(find.byType(AlertDialog), findsNothing);
+      expectNoLayoutError(tester);
+    });
+
+    testWidgets('停练回归：起始页非弹窗横幅「停练 20 天 / 85%」，组数 -1',
+        (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('推日');
+        final ex = await addEx(day, '卧推', 0, workingSets: 3);
+        // 20 天前一场 done（60kg×6×3）：≥14 天 → 停练回归；20 天落在
+        // 5 周一块的第 3 周，不同时触发减载。
+        final when = DateTime.now().subtract(const Duration(days: 20));
+        final done = await container.db.insertSession(Session(
+          date: fmtDate(when),
+          planDayId: day.id,
+          planDayTitle: day.title,
+          startedAt: 1,
+          status: 'done',
+        ));
+        final se = await container.db.insertSessionExercise(SessionExercise(
+          sessionId: done.id!,
+          name: '卧推',
+          orderIdx: 0,
+          kind: 'compound',
+          restSec: 120,
+          rule: ex.rule,
+          targetSets: 3,
+          targetRepsMin: 5,
+          targetRepsMax: 8,
+        ));
+        for (var i = 0; i < 3; i++) {
+          await container.db.insertSet(SetEntry(
+            sessionExerciseId: se,
+            weightKg: 60,
+            reps: 6,
+            kind: SetKind.working,
+            doneAt: when.millisecondsSinceEpoch + i,
+          ));
+        }
+        await container.session.startFromDay(day: day, planExercises: [ex]);
+      });
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      // 起始页：非弹窗横幅说明停练天数与 85% 处方；组数 3 → 2
+      expect(find.textContaining('停练 20 天'), findsOneWidget);
+      expect(find.textContaining('85%'), findsWidgets);
+      expect(find.textContaining('1 个动作 · 2 个正式组'), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing,
+          reason: '横幅不是弹窗，不打断训练');
+      expectNoLayoutError(tester);
+
+      await tester.tap(find.text('开始训练'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 50));
+      // 记录页顶部条保留停练天数标记（非弹窗、不占三要素）；
+      // 目标行下方同时显示「为什么是 85%」的同口径说明（2 处文案）。
+      expect(find.text('停练 20 天'), findsOneWidget, reason: '顶部条标记');
+      expect(find.textContaining('停练 20 天'), findsWidgets);
+      expect(find.textContaining('85%'), findsWidgets);
+      expect(find.textContaining('第 1/2 组'), findsWidgets);
+      expect(find.text('卧推'), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing);
+      expectNoLayoutError(tester);
+
+      // 休息页也保留停练横幅（非弹窗，不占三要素）
+      await tester.ensureVisible(find.byKey(const Key('workoutCompleteSet')));
+      await tester.pump();
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      });
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 950)));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('组间休息'), findsOneWidget, reason: '确实进了休息页');
+      expect(find.textContaining('停练 20 天'), findsOneWidget,
+          reason: '休息页横幅');
+      expect(find.byType(AlertDialog), findsNothing);
+      expectNoLayoutError(tester);
     });
 
     testWidgets('已有记录时（恢复/返回）不经过起始页，直接落到当前记录页', (tester) async {
@@ -479,6 +839,99 @@ void main() {
     });
   });
 
+  group('带入上次成绩只预填（2026-10-18：不把预填 RIR 标成已记录）', () {
+    /// 上次成绩行：60kg×8 R2（已记录）。
+    Future<void> seedLastPerformance() async {
+      final s0 = await container.db.insertSession(Session(
+          // 相对日期：固定日期会随时间漂进停练回归语境（2026-10-24 教训）
+          date: fmtDate(DateTime.now().subtract(const Duration(days: 2))),
+          planDayTitle: '旧训练',
+          startedAt: 1,
+          endedAt: 2,
+          status: 'done'));
+      final se0 = await container.db.insertSessionExercise(SessionExercise(
+          sessionId: s0.id!,
+          name: '卧推',
+          orderIdx: 0,
+          kind: 'compound',
+          rule: const ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3)));
+      await container.db.insertSet(SetEntry(
+          sessionExerciseId: se0,
+          weightKg: 60,
+          reps: 8,
+          rir: 2,
+          kind: SetKind.working,
+          doneAt: 1000,
+          rirRecorded: true));
+    }
+
+    testWidgets('点「上次」整套带入后直接完成：数值预填但 rir_recorded=0',
+        (tester) async {
+      setSurface(tester, const Size(360, 1200));
+      await tester.runAsync(() async {
+        await seedLastPerformance();
+        final day = await makeDay('推日');
+        final a = await addEx(day, '卧推', 0);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await pumpWorkout(tester);
+
+      // 上次成绩行可见：60kg×8 R2，点按整套带入
+      expect(find.textContaining('点按整套带入'), findsWidgets);
+      await tester.ensureVisible(find.textContaining('点按整套带入').first);
+      await tester.pump();
+      await tester.tap(find.textContaining('点按整套带入').first);
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // 带入后直接「完成本组」（不点余力行）：
+      await tester.ensureVisible(find.byKey(const Key('workoutCompleteSet')));
+      await tester.runAsync(() async {
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      });
+      await tester.pump(const Duration(milliseconds: 100));
+      final sets = container.session.setsByEx.values.expand((l) => l).toList();
+      expect(sets, isNotEmpty, reason: '带入后无需余力提醒即可记录');
+      expect(sets.last.weightKg, 60, reason: '重量按上次预填');
+      expect(sets.last.reps, 8, reason: '次数按上次预填');
+      expect(sets.last.rir, 2, reason: '余力展示值按上次预填');
+      expect(sets.last.rirRecorded, isFalse,
+          reason: '预填不是本场点选的观测：落库标「未记录」');
+    });
+
+    testWidgets('带入后亲手点余力行再完成：rir_recorded=1（点选路径不受影响）',
+        (tester) async {
+      setSurface(tester, const Size(360, 1200));
+      await tester.runAsync(() async {
+        await seedLastPerformance();
+        final day = await makeDay('推日');
+        final a = await addEx(day, '卧推', 0);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await pumpWorkout(tester);
+
+      await tester.ensureVisible(find.textContaining('点按整套带入').first);
+      await tester.pump();
+      await tester.tap(find.textContaining('点按整套带入').first);
+      await tester.pump(const Duration(milliseconds: 50));
+      // 亲手把余力改成 1：此后该值才算真实观测
+      await tester.ensureVisible(find.text('1').last);
+      await tester.pump();
+      await tester.tap(find.text('1').last);
+      await tester.pump(const Duration(milliseconds: 50));
+
+      await tester.ensureVisible(find.byKey(const Key('workoutCompleteSet')));
+      await tester.runAsync(() async {
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      });
+      await tester.pump(const Duration(milliseconds: 100));
+      final sets = container.session.setsByEx.values.expand((l) => l).toList();
+      expect(sets.last.rir, 1);
+      expect(sets.last.rirRecorded, isTrue, reason: '亲手点过余力 = 真实记录');
+    });
+  });
+
   group('余力没填写提醒（2026-09-26 Arono：忘了填要提示，不悄悄按默认记）', () {
     testWidgets('第一按只提示不落库；选了余力再按正常记录', (tester) async {
       setSurface(tester, const Size(360, 1200));
@@ -513,6 +966,7 @@ void main() {
       final sets = container.session.setsByEx.values.expand((l) => l).toList();
       expect(sets, isNotEmpty, reason: '第二按落库');
       expect(sets.last.rir, 1, reason: '余力取所选值');
+      expect(sets.last.rirRecorded, isTrue, reason: '点过余力 = 真实记录');
     });
 
     testWidgets('不选余力连按两次：第二按按计划默认落库（不拦人）', (tester) async {
@@ -529,6 +983,7 @@ void main() {
       final sets = container.session.setsByEx.values.expand((l) => l).toList();
       expect(sets, isNotEmpty, reason: '第二按放行');
       expect(sets.last.rir, 2, reason: '未填时按计划默认 RIR 2 记');
+      expect(sets.last.rirRecorded, isFalse, reason: '没点过余力 = 仅默认填充，标记未记录');
     });
   });
 
@@ -772,8 +1227,9 @@ void main() {
       setSurface(tester, const Size(360, 800));
       await tester.runAsync(() async {
         // 历史：上次 0kg×8
-        final s0 = await container.db.insertSession(const Session(
-            date: '2026-10-10',
+        final s0 = await container.db.insertSession(Session(
+            // 相对日期：固定日期会随时间漂进停练回归语境
+            date: fmtDate(DateTime.now().subtract(const Duration(days: 2))),
             planDayTitle: '旧训练',
             startedAt: 1,
             endedAt: 2,
@@ -804,6 +1260,285 @@ void main() {
       // 信息区「上次：8 次」+ 面板上次对比行「上次：8 次 R2（点按整套带入）」
       // 两处都按次数口径，不再出现 0kg×8 假重量
       expect(find.textContaining('上次：8 次'), findsNWidgets(2));
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('负重变体改名保留旧键（H3 收尾）：有重量步进，保存不强制 0kg',
+        (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('背日');
+        // 名字带「负重」且 stored bodyweight——改名保留旧键的典型形态，
+        // 规则①要求训练页按负重 UI 处理，不能落进自重 UI 强制 0kg
+        final a = await addEx(day, '引体向上（负重版）', 0,
+            loadType: LoadMode.bodyweight);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+        container.session.setWeightDraft(5);
+      });
+      await pumpWorkout(tester);
+
+      expect(find.text('自重'), findsNothing,
+          reason: '名字含「负重」→ 不再显示自重大字标识');
+      expect(find.byKey(const ValueKey('weightDraftNum')), findsOneWidget,
+          reason: '给重量大数字，可记外加载重');
+      await tester.runAsync(() async {
+        await container.session.completeSet(
+            weight: container.session.weightDraft,
+            reps: 6,
+            rir: 2,
+            kind: SetKind.working);
+      });
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.runAsync(() async {
+        final sets = await container.db
+            .setsOfExercise(container.session.exercises.first.id!);
+        expect(sets.last.weightKg, 5.0,
+            reason: '保存走 weightDraft，不再被强制 0kg');
+      });
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    /// 造「自重动作 + 一个后续动作」的两动作会话（P2-E）：练满前者后落到
+    /// 后者的休息页，正好观察刚完成动作的变式建议（单动作练满会进收尾确认）。
+    /// 不传 loadType = 与内置薄肌计划/模板安装一致，走默认 weighted。
+    Future<void> startBodyweightThenOther(WidgetTester tester,
+        {bool withPriorLayoff = false, bool withDeload = false}) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        if (withPriorLayoff) {
+          // 20 天前一场**有正式组**的 done 训练（lastDoneSessionDate 只认
+          // 有 working 组的会话，2026-10-18 起：空场不算"练过"）。
+          final layoffSession = await container.db.insertSession(Session(
+              date:
+                  fmtDate(DateTime.now().subtract(const Duration(days: 20))),
+              planDayTitle: '旧训练',
+              startedAt: 1,
+              endedAt: 2,
+              status: 'done'));
+          final layoffSe = await container.db.insertSessionExercise(
+              SessionExercise(
+                  sessionId: layoffSession.id!,
+                  name: '引体向上',
+                  orderIdx: 0,
+                  kind: 'compound',
+                  rule: const ProgressionRule(
+                      repsMin: 5, repsMax: 8, workingSets: 3)));
+          await container.db.insertSet(SetEntry(
+              sessionExerciseId: layoffSe,
+              weightKg: 0,
+              reps: 8,
+              rir: 2,
+              kind: SetKind.working,
+              doneAt: 100));
+        }
+        final day = await makeDay('背日');
+        if (withDeload) {
+          // 2 周一个训练块：同计划 7 天前那场是块起点，今天 = 第 2 周减载
+          container.settings.trainingBlockWeeks = 2;
+          await container.db.insertSession(Session(
+              date:
+                  fmtDate(DateTime.now().subtract(const Duration(days: 7))),
+              planDayId: day.id,
+              planDayTitle: '背日',
+              startedAt: 1,
+              endedAt: 2,
+              status: 'done'));
+        }
+        final a = await addEx(day, '引体向上', 0);
+        final b = await addEx(day, '坐姿划船', 1);
+        await container.session.startFromDay(day: day, planExercises: [a, b]);
+      });
+      await pumpWorkout(tester);
+    }
+
+    Future<void> completeBodyweightSet(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await container.session
+            .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      });
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+
+    testWidgets('默认计划（weighted）的自重动作：练满计划组且次数到顶才建议下一档',
+        (tester) async {
+      await startBodyweightThenOther(tester);
+
+      await completeBodyweightSet(tester);
+      expect(find.text('组间休息'), findsOneWidget, reason: '完成一组进休息页');
+      expect(find.textContaining('试试负重引体向上'), findsNothing,
+          reason: '计划 3 组只做 1 组：不提前建议换动作');
+
+      await tester.runAsync(() async {
+        container.session.skipRest();
+        await container.session
+            .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        container.session.skipRest();
+        await container.session
+            .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.textContaining('试试负重引体向上'), findsOneWidget,
+          reason: '计划组全部练满、顶格且余力达标 → 给下一档建议');
+      expect(find.byType(AlertDialog), findsNothing, reason: '训练中禁止弹窗');
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('停练回归场次不叠加「试试下一档」升级建议', (tester) async {
+      await startBodyweightThenOther(tester, withPriorLayoff: true);
+      // 停练回归的计划组数少 1（3 → 2），练满 2 组即落到下一动作休息页
+      await completeBodyweightSet(tester);
+      await tester.runAsync(() async {
+        container.session.skipRest();
+        await container.session
+            .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(container.session.inLayoff, isTrue, reason: '20 天没练 → 回归场');
+      expect(find.textContaining('试试负重引体向上'), findsNothing,
+          reason: '恢复处方优先，不叠加升级建议');
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('减载周不叠加「试试下一档」升级建议', (tester) async {
+      await startBodyweightThenOther(tester, withDeload: true);
+      // 减载周计划组数少 1（3 → 2），练满 2 组即落到下一动作休息页
+      await completeBodyweightSet(tester);
+      await tester.runAsync(() async {
+        container.session.skipRest();
+        await container.session
+            .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(container.session.inDeloadWeek, isTrue, reason: '块第 2/2 周');
+      expect(find.textContaining('试试负重引体向上'), findsNothing,
+          reason: '减载周的处方是恢复，不叠加升级建议');
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('总结页：自重顶格给加组与下一档建议（默认 weighted 也生效）',
+        (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('背日');
+        final a = await addEx(day, '引体向上', 0, workingSets: 1);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      // 不先挂训练页：confirmAutoFinish 未接线，记满最后一组按原语义
+      // 自动结束（挂了页面会弹「现在结束吗」，测试里没人点会一直等）。
+      await tester.runAsync(() async {
+        await container.session
+            .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      });
+      expect(container.session.hasActive, isFalse, reason: '控制器记满自动结束');
+      await tester.pumpWidget(host(container, const WorkoutPage()));
+      await tester.pump();
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 400)));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('训练完成 💪'), findsOneWidget, reason: '收尾进总结页');
+      expect(find.textContaining('次数到顶，下次建议加练一组'), findsOneWidget,
+          reason: '总结页加组建议');
+      expect(find.textContaining('也可以试试负重引体向上'), findsOneWidget,
+          reason: '总结页下一档建议（默认 weighted 的自重动作也生效）');
+      // 同屏 verdict 必须与 P2-E 同一口径：老计划 weighted 的 0kg 引体
+      // 不能再写「下次加重至 2.5kg」和「试试负重引体」互相矛盾。
+      expect(find.textContaining('自重档位'), findsOneWidget,
+          reason: 'verdict 走自重口径');
+      expect(find.textContaining('加重至 2.5kg'), findsNothing,
+          reason: '不得同时建议负重加重');
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  // 杠铃片速配（2026-10-18）：记录页「每边挂几片」的杆重口径与起始页热身
+  // 同源（warmupBarKgFor）：EZ 杠 10kg/25lb，标准奥杆 20kg/45lb 不变。
+  group('杠铃片速配（杆重与起始页热身同口径）', () {
+    /// 起一个单动作会话并进到第一记录页（起始页已过）。
+    Future<void> pumpRecording(WidgetTester tester, String name) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('手臂日');
+        final a = await addEx(day, name, 0, workingSets: 2);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+      });
+      await pumpWorkout(tester);
+    }
+
+    /// 改重量草稿触发速配闪现（didUpdateWidget：重量变了才闪）。
+    Future<void> flashTo(WidgetTester tester, double kg) async {
+      container.session.setWeightDraft(kg);
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    testWidgets('EZ 杠：30kg 按 10kg 空杆配片，每边 10', (tester) async {
+      await pumpRecording(tester, '曲杠弯举（EZ杠）');
+      await flashTo(tester, 30);
+
+      expect(find.text('每边 10'), findsOneWidget,
+          reason: '30 − EZ 空杆 10 = 每边 10，不再按 20kg 奥杆算成每边 5');
+      expect(find.textContaining('20kg'), findsNothing,
+          reason: 'EZ 杠提示里不出现奥杆口径的 20kg');
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('EZ 杠：打回 10kg 提示「空杆 10kg」，4 秒后自动收起',
+        (tester) async {
+      await pumpRecording(tester, '曲杠弯举（EZ杠）');
+      await flashTo(tester, 30);
+      await flashTo(tester, 10);
+
+      expect(find.text('空杆 10kg，不用挂片'), findsOneWidget,
+          reason: 'EZ 空杆文案也是 10kg 口径');
+
+      // 收起 = 透明（Text 留在树里，数据不清空）
+      await tester.pump(const Duration(seconds: 4, milliseconds: 500));
+      final strip = tester.widget<AnimatedOpacity>(find.ancestor(
+          of: find.text('空杆 10kg，不用挂片'),
+          matching: find.byType(AnimatedOpacity)));
+      expect(strip.opacity, 0, reason: '约 4 秒自动收起');
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('标准奥杆不变：60kg 每边 20、20kg 仍报「空杆 20kg」',
+        (tester) async {
+      await pumpRecording(tester, '杠铃卧推');
+      await flashTo(tester, 60);
+      expect(find.text('每边 20'), findsOneWidget, reason: '标准奥杆 20kg 口径不变');
+
+      await flashTo(tester, 20);
+      expect(find.text('空杆 20kg，不用挂片'), findsOneWidget,
+          reason: '标准杆空杆文案不变');
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('EZ 杠 lb 模式：空杆提示 25lb（不是奥杆 45lb）', (tester) async {
+      WeightUnits.setResolved(WeightUnit.lb);
+      addTearDown(() => WeightUnits.setResolved(WeightUnit.kg));
+      await pumpRecording(tester, '曲杠弯举（EZ杠）');
+      await flashTo(tester, 10);
+
+      expect(find.text('空杆 25lb，不用挂片'), findsOneWidget,
+          reason: 'lb 模式 EZ 空杆 25lb，与起始页热身同口径');
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('标准奥杆 lb 模式不变：仍报「空杆 45lb」不漂成 44',
+        (tester) async {
+      WeightUnits.setResolved(WeightUnit.lb);
+      addTearDown(() => WeightUnits.setResolved(WeightUnit.kg));
+      await pumpRecording(tester, '杠铃卧推');
+      await flashTo(tester, 20);
+
+      expect(find.text('空杆 45lb，不用挂片'), findsOneWidget,
+          reason: '标准奥杆 45lb 口径不变（不走 20kg→44lb 换算）');
+      expect(find.textContaining('44lb'), findsNothing,
+          reason: '不出现 44/45lb 打架');
       await tester.pumpWidget(const SizedBox());
     });
   });

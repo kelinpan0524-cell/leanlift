@@ -12,6 +12,7 @@ SessionExercise _ex(
   String name,
   int order, {
   int workingSets = 3,
+  int targetSets = 0,
 }) =>
     SessionExercise(
       sessionId: 1,
@@ -20,6 +21,7 @@ SessionExercise _ex(
       orderIdx: order,
       kind: 'compound',
       rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: workingSets),
+      targetSets: targetSets,
     );
 
 SetEntry _set(int seId, {String kind = SetKind.working}) => SetEntry(
@@ -76,6 +78,24 @@ void main() {
       f.setsByEx[11]!.addAll([_set(11, kind: SetKind.warmup), _set(11, kind: SetKind.warmup)]);
       expect(f.donePlannedSets, 0);
       expect(f.ratioCompleted, 0);
+    });
+
+    test('快照 4 组 / 规则 3 组：进度、当前页与跳页清单都按 4 组', () {
+      final a = _ex(11, '动作甲', 0, workingSets: 3, targetSets: 4);
+      final f = WorkoutFlow(exercises: [a], setsByEx: {11: <SetEntry>[]});
+      expect(f.totalPlannedSets, 4);
+      f.setsByEx[11]!.addAll([_set(11), _set(11), _set(11)]);
+      expect(f.donePlannedSets, 3);
+      expect(f.ratioCompleted, closeTo(3 / 4, 1e-9));
+      expect(f.exerciseDone(0), isFalse, reason: '第 4 组是计划内，动作未练满');
+      final p = f.currentPage(resting: false, curExIdx: 0);
+      expect(p.extra, isFalse, reason: '第 4 组不是加练');
+      expect(p.setNumber, 4);
+      expect(p.plannedSets, 4);
+      expect(p.setLabel(), '第 4/4 组');
+      final refs = f.setRefs();
+      expect(refs, hasLength(4), reason: '跳页面板要列出第 4 个计划组');
+      expect(refs.last.extra, isFalse);
     });
   });
 

@@ -11,9 +11,11 @@ import '../l10n/lang.dart';
 import '../l10n/names.dart';
 import '../presets/exercise_library.dart';
 import '../services/ai_service.dart';
+import '../services/settings.dart';
 import 'muscle_body_view.dart';
 import 'recovery_card.dart';
 import 'theme.dart';
+import 'weekly_recap_page.dart';
 import 'widgets/common.dart';
 
 /// 体重/负荷 kg → 当前显示单位数值（lb 模式换算并 snap 0.5lb 网格，2026-10-17）。
@@ -65,6 +67,41 @@ FlDotData _statDots(Color c) => FlDotData(
       ),
     );
 
+/// 数据页顶部的非打断式备份提醒（P0-A）：只占一行，无按钮、不弹窗。
+class _BackupReminderBar extends StatelessWidget {
+  const _BackupReminderBar({required this.neverExported});
+
+  final bool neverExported;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: AppTheme.warn.withValues(alpha: 0.10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          const Icon(Icons.backup_outlined, size: 16, color: AppTheme.warn),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              tx(
+                neverExported
+                    ? '还没有手动导出过备份。自动备份仍在本机，建议去「设置 → 数据与备份」导出一份到手机外。'
+                    : '已经超过 14 天没有手动导出备份。自动备份仍在本机，建议去「设置 → 数据与备份」导出一份到手机外。',
+                en: neverExported
+                    ? 'You have not exported a manual backup yet. Auto backups are still on this phone; export a copy off-device in Settings → Data & Backup.'
+                    : 'It has been over 14 days since your last manual export. Auto backups are still on this phone; export a copy off-device in Settings → Data & Backup.',
+              ),
+              style: const TextStyle(color: AppTheme.warn, fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 数据页：概览 / 肌肉 / 身体 三个 Tab + AI 分析包入口。
 class StatsPage extends StatefulWidget {
   const StatsPage({super.key});
@@ -76,6 +113,12 @@ class StatsPage extends StatefulWidget {
 class _StatsPageState extends State<StatsPage> {
   @override
   Widget build(BuildContext context) {
+    final c = app(context);
+    final lastExportJsonAt = c.settings.lastExportJsonAt;
+    // 会话仍 active 时（例如系统返回离开训练页）也不提醒：
+    // 训练中绝不出现任何备份提示。
+    final showBackupReminder =
+        !c.session.hasActive && Settings.backupNeedsAttention(lastExportJsonAt);
     return DefaultTabController(
       length: 3,
       child: Scaffold(
@@ -83,6 +126,14 @@ class _StatsPageState extends State<StatsPage> {
         appBar: AppBar(
           title: Text(tx('数据', en: 'Stats')),
           actions: [
+            // 本地周复盘（P1-E1）：不依赖 AI/网络，数据页固定入口。
+            IconButton(
+              tooltip: tx('周复盘', en: 'Weekly Recap'),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const WeeklyRecapPage()),
+              ),
+              icon: const Icon(Icons.assessment_outlined, size: 20),
+            ),
             TextButton.icon(
               onPressed: () => _exportAiPack(),
               icon: const Icon(Icons.share_outlined, size: 18),
@@ -100,8 +151,18 @@ class _StatsPageState extends State<StatsPage> {
             ],
           ),
         ),
-        body: const TabBarView(
-          children: [_OverviewTab(), _MuscleTab(), _BodyTab()],
+        body: Column(
+          children: [
+            // 非打断式备份提醒（P0-A）：数据页顶部占一行，不弹窗、不遮挡；
+            // 训练页不渲染它，所以训练中绝不会出现。
+            if (showBackupReminder)
+              _BackupReminderBar(neverExported: lastExportJsonAt <= 0),
+            const Expanded(
+              child: TabBarView(
+                children: [_OverviewTab(), _MuscleTab(), _BodyTab()],
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1000,6 +1061,9 @@ class _OverviewTabState extends State<_OverviewTab> {
     final tops = d.topLifts;
     final lift = _selectedLift;
     final idx = lift == null ? -1 : tops.indexOf(lift);
+    // 相对力量（P2-E）：1RM 口径下、有体重数据时显示「几倍体重」；
+    // 顶组口径不是 1RM 估值，不显示。
+    final relativeLine = _rmMetric == 'rm' ? _relativeStrengthLine(d) : null;
     Widget arrow(IconData icon, int step) => Container(
           width: 36,
           height: 36,
@@ -1074,6 +1138,18 @@ class _OverviewTabState extends State<_OverviewTab> {
                     : 'Daily best 1RM (${unitLabel()}) · top 4 picked automatically'),
             style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
           ),
+          if (relativeLine != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                relativeLine,
+                style: const TextStyle(
+                  color: AppTheme.primary,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
           const SizedBox(height: 12),
           SizedBox(
             height: 200,
@@ -1094,6 +1170,37 @@ class _OverviewTabState extends State<_OverviewTab> {
         86400000;
   }
 
+  /// 相对力量一行（P2-E）：「相对力量 1.42× 体重 · 1RM 100kg / 体重 70kg」。
+  /// 取当前动作在窗口内最近一天的 1RM；无 1RM / 无体重数据 → null。
+  /// 体重只认身体记录里最新一条——设置里的 bodyWeightKg 有默认 70kg，
+  /// 拿来兜底会把「没记过体重」伪装成真实数据。
+  String? _relativeStrengthLine(_OverviewData d) {
+    final lift = _selectedLift;
+    if (lift == null) return null;
+    final byDate = d.rmByDate[lift];
+    if (byDate == null) return null;
+    final cutoff = _rmWindowCutoffDay();
+    int? lastKey;
+    for (final k in byDate.keys) {
+      if (k < cutoff) continue;
+      if (lastKey == null || k > lastKey) lastKey = k;
+    }
+    if (lastKey == null) return null;
+    final oneRmKg = byDate[lastKey]!;
+    final loggedWeight = d.latestWeightKg;
+    final double? bodyWeightKg =
+        (loggedWeight != null && loggedWeight > 0) ? loggedWeight : null;
+    final ratio = relativeStrengthRatio(
+      oneRmKg: oneRmKg,
+      bodyWeightKg: bodyWeightKg,
+    );
+    if (ratio == null || bodyWeightKg == null) return null;
+    return tx(
+      '相对力量 ${ratio.toStringAsFixed(2)}× 体重 · 1RM ${fmtWithUnit(oneRmKg)} / 体重 ${fmtWithUnit(bodyWeightKg)}',
+      en: 'Relative strength ${ratio.toStringAsFixed(2)}× bodyweight · 1RM ${fmtWithUnit(oneRmKg)} / bodyweight ${fmtWithUnit(bodyWeightKg)}',
+    );
+  }
+
   /// 余力（RIR）分布卡：正式组直方图（桶 0/1/2/3/4/5+）+ 动态解读一句。
   Widget _buildRirCard(_OverviewData d) {
     final since = switch (_rirWindow) {
@@ -1103,6 +1210,17 @@ class _OverviewTabState extends State<_OverviewTab> {
       _ => null,
     };
     final dist = rirDistribution(d.allWorkingSets, since: since);
+    // 余力真实性（P0-C）：未记录 RIR 的组不进分布；这行告诉用户分布
+    // 的分母有多大，避免把「没填」误读成「都记了」。
+    final cov = rirCoverage(d.allWorkingSets, since: since);
+    final coverageLine = cov.total == 0
+        ? ''
+        : cov.recorded < cov.total
+            ? tx(
+                '已记录 ${cov.recorded}/${cov.total} 组 · 未记录组不计入分布',
+                en: '${cov.recorded}/${cov.total} sets recorded · unrecorded excluded')
+            : tx('已记录 ${cov.recorded}/${cov.total} 组',
+                en: '${cov.recorded}/${cov.total} sets recorded');
     return SectionCard(
       title: tx('余力分布', en: 'RIR Distribution'),
       icon: Icons.speed,
@@ -1121,7 +1239,14 @@ class _OverviewTabState extends State<_OverviewTab> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _RirBars(dist: dist),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
+          if (coverageLine.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(coverageLine,
+                  style:
+                      const TextStyle(color: AppTheme.textDim, fontSize: 12)),
+            ),
           Text(rirInsightLine(dist),
               style: const TextStyle(color: AppTheme.textDim, fontSize: 13)),
         ],
@@ -1157,6 +1282,20 @@ class _OverviewTabState extends State<_OverviewTab> {
     final weekT = <int, TrendAcc>{};
     final monthT = <int, TrendAcc>{};
     final setsByName = <String, List<SetEntry>>{};
+    // 身份键 → 展示标签：同义名/改名共用一个键，统计时合并、展示用
+    // 规范名；两个身份恰好共用展示名时加键后缀区分，不能并桶。
+    final labelByIdentity = <String, String>{};
+    final usedLabels = <String>{};
+    String labelOf(String rawName, String rawKey) {
+      final identity = exerciseIdentityKeyOf(rawName, rawKey);
+      if (identity.isEmpty) return canonicalExerciseNameOf(rawName);
+      return labelByIdentity.putIfAbsent(
+        identity,
+        () => uniqueExerciseLabel(
+            canonicalExerciseNameOf(rawName), identity, usedLabels),
+      );
+    }
+
     // 每日最佳 1RM（wger 口径）：动作 → 训练日(epoch天) → 当天最高估值
     final dailyBest = DailyBest1Rm();
     // 顶组口径：动作 → 训练日 → 当天最大正式组重量
@@ -1180,8 +1319,13 @@ class _OverviewTabState extends State<_OverviewTab> {
         rir: (r['rir'] as num?)?.toInt() ?? 2,
         kind: kind,
         doneAt: (r['done_at'] as num?)?.toInt() ?? 0,
+        // 余力真实性（P0-C）：分布只认真正记录过的组；老行缺键回默认
+        // 已记录（与 DB 列默认值 1 一致）。
+        rirRecorded: ((r['rir_recorded'] as num?)?.toInt() ?? 1) == 1,
       );
-      final name = (r['name'] as String?) ?? '';
+      // 纵向按稳定身份键归并：同一动作的历史只算一份（同义名不再拆散）。
+      final name = labelOf(
+          (r['name'] as String?) ?? '', (r['exercise_key'] as String?) ?? '');
       final date = (r['date'] as String?) ?? '';
       // 趋势/主力动作维持近一年口径（全历史会让周桶无限拉长）
       final inYear = date.compareTo(from) >= 0;
@@ -1316,6 +1460,15 @@ class _OverviewData {
 
 // ---------------- 肌肉 ----------------
 
+/// 肌肉 tab 一次加载的结果：
+/// [share] = 当前统计周期（本周/本月）的容量占比；
+/// [weeklySets] = 固定「本周」的各肌群正式组数（剂量目标只按周比较）。
+class _MuscleTabData {
+  final Map<String, double> share;
+  final Map<String, double> weeklySets;
+  const _MuscleTabData(this.share, this.weeklySets);
+}
+
 class _MuscleTab extends StatefulWidget {
   const _MuscleTab();
 
@@ -1324,7 +1477,7 @@ class _MuscleTab extends StatefulWidget {
 }
 
 class _MuscleTabState extends State<_MuscleTab> {
-  Future<Map<String, double>>? _future;
+  Future<_MuscleTabData>? _future;
   bool _front = true;
 
   /// 统计窗口（wger 统计维度借鉴）：本周 / 本月
@@ -1345,13 +1498,14 @@ class _MuscleTabState extends State<_MuscleTab> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Map<String, double>>(
+    return FutureBuilder<_MuscleTabData>(
       future: _future,
       builder: (context, snap) {
         if (!snap.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
-        final share = snap.data!;
+        final share = snap.data!.share;
+        final weeklySets = snap.data!.weeklySets;
         final total = share.values.fold(0.0, (a, b) => a + b);
         // 色带归一基准：列表内最大占比（重肌群→琥珀端、轻肌群→灰端）。
         // 2026-09-26 Arono：容量颜色按程度分档，不再清一色绿
@@ -1365,6 +1519,45 @@ class _MuscleTabState extends State<_MuscleTab> {
             // 肌群恢复度（点名条目四）：只进数据页，不进训练中三要素
             // （2026-09-25 从计划页挪到数据页，计划页只管"练什么"）
             const MuscleRecoveryCard(),
+            const SizedBox(height: 12),
+            // 每周组数目标（P1-B，2026-10-18）：从占比升级为剂量——
+            // 告诉用户这周每个肌群练了多少组、相对目标区间够不够。
+            // 排序沿用 kMuscleRegions；「其他」没有目标区间，不在这张卡里。
+            SectionCard(
+              title: tx('每周组数目标', en: 'Weekly Set Targets'),
+              icon: Icons.track_changes,
+              iconColor: AppTheme.primary,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    tx('主肌群 1 组、次肌群 0.5 组折算；只计正式组，不含热身组与力竭组。',
+                        en: 'Main muscle counts 1 set, secondary 0.5; working sets only — warm-up and failure sets are not counted.'),
+                    style: const TextStyle(
+                        color: AppTheme.textDim, fontSize: 12),
+                  ),
+                  const SizedBox(height: 8),
+                  for (final r in kMuscleRegions)
+                    if (kWeeklySetTargets.containsKey(r))
+                      _doseRow(r, weeklySets[r] ?? 0),
+                  // 词表外动作的组数也要露出来：否则整周只练了未归类
+                  // 动作时六行都是 0，用户看不到实际练了多少组。
+                  if ((weeklySets['其他'] ?? 0) > 0)
+                    _otherDoseRow(weeklySets['其他']!),
+                  if (weeklySets.values.every((v) => v <= 0))
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        tx('本周还没有正式组记录——先练起来，剂量才有数。',
+                            en: 'No working sets logged this week yet — train first to build a dose.'),
+                        style: const TextStyle(
+                            color: AppTheme.textDim, fontSize: 12),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
             SectionCard(
               title: tx('肌群容量占比', en: 'Muscle Volume Share'),
               icon: Icons.bar_chart,
@@ -1383,6 +1576,16 @@ class _MuscleTabState extends State<_MuscleTab> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // 口径说明与概览趋势卡同口径（正式组容量，自重折算）；
+                  // 2026-10-18：与剂量卡一起明确「不含力竭组」，概览与
+                  // 肌群占比不再各说各话。
+                  Text(
+                    tx('正式组容量占比 · 自重按系数折算，不含热身组与力竭组。',
+                        en: 'Working-set volume share · bodyweight folded by factor; warm-up and failure sets are not counted.'),
+                    style: const TextStyle(
+                        color: AppTheme.textDim, fontSize: 12),
+                  ),
+                  const SizedBox(height: 8),
                   _StatDropdown<bool>(
                     value: _front,
                     entries: [
@@ -1558,10 +1761,87 @@ class _MuscleTabState extends State<_MuscleTab> {
     );
   }
 
-  Future<Map<String, double>> _load(AppContainer c) async {
+  /// 单行剂量：「本周 X 组 / 目标 10-20」+ 状态（不足/达标/过量）。
+  /// 名称列 76 = 同页「肌群容量占比」列的既有约定（最长英文名
+  /// Shoulders @14px 的自然宽度）；FittedBox 兜住大字号缩放，
+  /// 不能再用 64px + ellipsis 把英文名截断。
+  Widget _doseRow(String region, double sets) {
+    final target = kWeeklySetTargets[region]!;
+    final status = weeklySetStatusOf(region, sets)!;
+    return Padding(
+      key: ValueKey('weekly-dose-$region'),
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 76,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(mname(region),
+                  maxLines: 1, style: const TextStyle(fontSize: 14)),
+            ),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tx('本周 ${fmtSetDose(sets)} 组 / 目标 ${target.min}-${target.max}',
+                      en: 'This week ${fmtSetDose(sets)} sets / target ${target.min}-${target.max}'),
+                  style: const TextStyle(fontSize: 13),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  weeklySetStatusText(status),
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: weeklySetStatusColor(status)),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 「其他」行：词表外动作只显示原始组数，没有目标区间/状态。
+  Widget _otherDoseRow(double sets) {
+    return Padding(
+      key: const ValueKey('weekly-dose-其他'),
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 76,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(mname('其他'),
+                  maxLines: 1, style: const TextStyle(fontSize: 14)),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              tx('本周 ${fmtSetDose(sets)} 组（未归类动作，无目标）',
+                  en: 'This week ${fmtSetDose(sets)} sets (unclassified, no target)'),
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<_MuscleTabData> _load(AppContainer c) async {
     final now = DateTime.now();
+    final weekFrom = mondayOf(now);
     final from = _period == 'week'
-        ? mondayOf(now)
+        ? weekFrom
         : DateTime(now.year, now.month, 1);
     final sessions = await c.db.sessionsBetween(fmtDate(from), fmtDate(now));
     final metaMap = {for (final m in kExerciseLibrary) m.name: m};
@@ -1571,21 +1851,61 @@ class _MuscleTabState extends State<_MuscleTab> {
     for (final m in await c.db.allExerciseMeta()) {
       if (!known.contains(m.name)) metaMap[m.name] = m;
     }
-    final byName = <String, List<SetEntry>>{};
-    for (final s in sessions) {
-      final ses = await c.db.sessionExercises(s.id!);
-      final map = await c.db.setsOfSession(s.id!);
-      for (final se in ses) {
-        byName.putIfAbsent(se.name, () => []).addAll(map[se.id!] ?? []);
+
+    /// 会话 → (动作标签, 正式组列表)。
+    /// 肌群占比按稳定身份键合并：同义名不再被拆成两个动作分别归类；
+    /// 展示名冲突时用带键后缀的标签区分，两个身份不会被并桶。
+    Future<List<MapEntry<String, List<SetEntry>>>> aggregate(
+        List<Session> list) async {
+      final byName = <String, List<SetEntry>>{};
+      final usedLabels = <String>{};
+      final labelByIdentity = <String, String>{};
+      for (final s in list) {
+        final ses = await c.db.sessionExercises(s.id!);
+        final map = await c.db.setsOfSession(s.id!);
+        final grouped = groupExerciseListsByIdentity<SetEntry>([
+          for (final se in ses)
+            (
+              name: se.name,
+              exerciseKey: se.exerciseKey,
+              items: map[se.id!] ?? const <SetEntry>[],
+            ),
+        ]);
+        for (final group in grouped) {
+          if (group.items.isEmpty) continue;
+          final label = labelByIdentity.putIfAbsent(
+              group.key,
+              () => uniqueExerciseLabel(
+                  group.displayName, group.key, usedLabels));
+          byName.putIfAbsent(label, () => <SetEntry>[]).addAll(group.items);
+          final meta = metaMap[group.displayName];
+          if (meta != null) metaMap[label] = meta;
+        }
       }
+      return [
+        for (final e in byName.entries)
+          MapEntry(
+              e.key,
+              e.value
+                  // 只认正式组（working）：与概览趋势/热力图的容量统计
+                  // 同口径（docs/progression-rules.md §6 统计纪律——热身组
+                  // 与力竭组都不计容量与剂量），概览与肌群占比不再各说各话。
+                  .where((x) => x.kind == SetKind.working)
+                  .toList(growable: false)),
+      ];
     }
-    return muscleLoadShare(
-      byName.entries
-          .map((e) => MapEntry(
-              e.key, e.value.where((x) => x.kind == SetKind.working).toList()))
-          .toList(),
-      metaMap,
-      bodyWeightKg: c.settings.bodyWeightKg,
+
+    final periodEntries = await aggregate(sessions);
+    // 组数目标是「每周」口径：本月视图下也固定按本周统计，
+    // 否则本月 20 组会被拿去和每周 10-20 的目标比，必然判过量。
+    final weekEntries = _period == 'week'
+        ? periodEntries
+        : await aggregate(
+            await c.db.sessionsBetween(fmtDate(weekFrom), fmtDate(now)));
+    return _MuscleTabData(
+      muscleLoadShare(periodEntries, metaMap,
+          bodyWeightKg: c.settings.bodyWeightKg),
+      weeklyWorkingSetsByMuscle(weekEntries, metaMap),
     );
   }
 }

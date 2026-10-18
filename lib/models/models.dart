@@ -142,6 +142,14 @@ class Plan {
   final String name;
   final String source; // preset | ai | manual
   final String createdAt; // yyyy-MM-dd
+
+  /// 该计划的**最早启用日**（yyyy-MM-dd）。
+  /// '' = 老数据/从未记录；周复盘按 createdAt 与 activatedAt 的较晚者
+  /// 截止，避免老计划周中重新启用时把启用前的日子算成缺勤。
+  /// 语义（2026-10-18）：只在「未启用 → 启用」且没有更早的启用日时写入
+  /// ——重复点已启用计划不刷新；切到别的计划再切回也不推后（写法见
+  /// Db.setActivePlan）。计划起点一旦确立就稳定，切换器来回切不挪起点。
+  final String activatedAt;
   final int isActive; // 0/1
 
   /// 排程模式：weekly=按星期（固定周几）；cycle=循环「练 N 休 M」。
@@ -167,6 +175,7 @@ class Plan {
     required this.name,
     required this.source,
     required this.createdAt,
+    this.activatedAt = '',
     this.isActive = 1,
     this.pattern = 'weekly',
     this.patternStart = '',
@@ -193,6 +202,7 @@ class Plan {
         'name': name,
         'source': source,
         'created_at': createdAt,
+        'activated_at': activatedAt,
         'is_active': isActive,
         'pattern': pattern,
         'pattern_start': patternStart,
@@ -207,6 +217,8 @@ class Plan {
         name: (m['name'] as String?) ?? '',
         source: (m['source'] as String?) ?? 'manual',
         createdAt: (m['created_at'] as String?) ?? '',
+        // 老库存档/备份没有激活时间列，缺键回落空串（页面再回退 createdAt）
+        activatedAt: (m['activated_at'] as String?) ?? '',
         isActive: (m['is_active'] as int?) ?? 0,
         pattern: (m['pattern'] as String?) ?? 'weekly',
         patternStart: (m['pattern_start'] as String?) ?? '',
@@ -220,6 +232,7 @@ class Plan {
   Plan copyWith({
     int? id,
     String? name,
+    String? activatedAt,
     int? isActive,
     String? pattern,
     String? patternStart,
@@ -233,6 +246,7 @@ class Plan {
         name: name ?? this.name,
         source: source,
         createdAt: createdAt,
+        activatedAt: activatedAt ?? this.activatedAt,
         isActive: isActive ?? this.isActive,
         pattern: pattern ?? this.pattern,
         patternStart: patternStart ?? this.patternStart,
@@ -349,6 +363,11 @@ class PlanExercise {
   /// 不承载顺序或含义；连续性由 normalizeSupersetTags 维护。
   final String supersetTag;
 
+  /// 动作稳定键（v15 引入，v16 起按别名归一）：跨同义名/改名识别同一动作。
+  /// '' = 未分配（落库时按 [name] 经 exerciseKeyOf 现算）；v14→v15 先回填
+  /// [name]，v15→v16 再归一为稳定键。
+  final String exerciseKey;
+
   const PlanExercise({
     this.id,
     required this.dayId,
@@ -363,6 +382,7 @@ class PlanExercise {
     this.logging = LoggingMode.reps,
     this.loadType = LoadMode.weighted,
     this.supersetTag = '',
+    this.exerciseKey = '',
   });
 
   Map<String, dynamic> toMap() => {
@@ -379,6 +399,7 @@ class PlanExercise {
         'logging': logging,
         'load_type': loadType,
         'superset_tag': supersetTag,
+        'exercise_key': exerciseKey,
       };
 
   factory PlanExercise.fromMap(Map<String, dynamic> m) => PlanExercise(
@@ -396,6 +417,7 @@ class PlanExercise {
         logging: (m['logging'] as String?) ?? LoggingMode.reps,
         loadType: (m['load_type'] as String?) ?? LoadMode.weighted,
         supersetTag: (m['superset_tag'] as String?) ?? '',
+        exerciseKey: (m['exercise_key'] as String?) ?? '',
       );
 
   PlanExercise copyWith({
@@ -412,6 +434,7 @@ class PlanExercise {
     String? logging,
     String? loadType,
     String? supersetTag,
+    String? exerciseKey,
   }) =>
       PlanExercise(
         id: id ?? this.id,
@@ -427,6 +450,7 @@ class PlanExercise {
         logging: logging ?? this.logging,
         loadType: loadType ?? this.loadType,
         supersetTag: supersetTag ?? this.supersetTag,
+        exerciseKey: exerciseKey ?? this.exerciseKey,
       );
 }
 
@@ -595,6 +619,11 @@ class SessionExercise {
   /// 负荷类型快照（v14）：开始训练时从 PlanExercise.loadType 原样复制。
   final String loadType;
 
+  /// 动作稳定键快照（v15 引入，v16 起按别名归一）：开始训练时从
+  /// PlanExercise.exerciseKey 复制；计划行为空时落库按名字现算。
+  /// '' = 老记录/未分配；训练中临时替换/追加的动作按新动作名取键。
+  final String exerciseKey;
+
   const SessionExercise({
     this.id,
     required this.sessionId,
@@ -610,6 +639,7 @@ class SessionExercise {
     this.supersetTag = '',
     this.logging = LoggingMode.reps,
     this.loadType = LoadMode.weighted,
+    this.exerciseKey = '',
   });
 
   Map<String, dynamic> toMap() => {
@@ -627,6 +657,7 @@ class SessionExercise {
         'superset_tag': supersetTag,
         'logging': logging,
         'load_type': loadType,
+        'exercise_key': exerciseKey,
       };
 
   factory SessionExercise.fromMap(Map<String, dynamic> m) => SessionExercise(
@@ -645,6 +676,7 @@ class SessionExercise {
         // 老记录/老备份没有 v14 两列，缺键回落默认（按次数 + 常规负重）
         logging: (m['logging'] as String?) ?? LoggingMode.reps,
         loadType: (m['load_type'] as String?) ?? LoadMode.weighted,
+        exerciseKey: (m['exercise_key'] as String?) ?? '',
       );
 
   SessionExercise copyWithId(int newId) => SessionExercise(
@@ -662,6 +694,7 @@ class SessionExercise {
         supersetTag: supersetTag,
         logging: logging,
         loadType: loadType,
+        exerciseKey: exerciseKey,
       );
 }
 
@@ -669,6 +702,27 @@ class SetKind {
   static const warmup = 'warmup';
   static const working = 'working';
   static const failure = 'failure';
+}
+
+/// 疼痛部位数据键（P2-B，v15 起 sets.pain_area）。
+/// 存中文是历史约定（与动作名/肌群名一致，见 [ExerciseNote] 等），
+/// 显示层再本地化；新增部位只改这里 + l10n/names.dart 的译表。
+class PainArea {
+  static const shoulder = '肩';
+  static const elbow = '肘';
+  static const lowerBack = '腰';
+  static const knee = '膝';
+  static const ankle = '踝';
+  static const other = '其他';
+
+  static const all = <String>[
+    shoulder,
+    elbow,
+    lowerBack,
+    knee,
+    ankle,
+    other,
+  ];
 }
 
 /// 一组记录
@@ -700,6 +754,16 @@ class SetEntry {
   /// 当组实际秒数（可能低于目标）。
   final int? durationSec;
 
+  /// RIR 是否实际记录过（v15，预留）：1 = 已记录（默认，含全部老行）；
+  /// 0 = 该组未填写 RIR（rir 只是默认值）。不改变现有 RIR 语义。
+  final bool rirRecorded;
+
+  /// 疼痛等级（v15，预留）：0 = 未填/无痛；正值留给后续疼痛自评。
+  final int painLevel;
+
+  /// 疼痛部位（v15，预留）：'' = 未填；中文数据键，显示层可本地化。
+  final String painArea;
+
   const SetEntry({
     this.id,
     required this.sessionExerciseId,
@@ -713,7 +777,13 @@ class SetEntry {
     this.targetReps,
     this.isExtra = false,
     this.durationSec,
+    this.rirRecorded = true,
+    this.painLevel = 0,
+    this.painArea = '',
   });
+
+  /// 这组是否标记了疼痛（P2-B）：0 = 未填/无痛。
+  bool get hasPain => painLevel > 0;
 
   /// 训练容量 = 重量 × 次数（热身组不计入容量）。
   /// 负重量（辅助器械配重）与自重（0）一样按 0 容量计——
@@ -734,6 +804,9 @@ class SetEntry {
         'target_reps': targetReps,
         'is_extra': isExtra ? 1 : 0,
         'duration_sec': durationSec,
+        'rir_recorded': rirRecorded ? 1 : 0,
+        'pain_level': painLevel,
+        'pain_area': painArea,
       };
 
   factory SetEntry.fromMap(Map<String, dynamic> m) => SetEntry(
@@ -749,7 +822,37 @@ class SetEntry {
         targetReps: (m['target_reps'] as num?)?.toInt(),
         isExtra: ((m['is_extra'] as num?)?.toInt() ?? 0) == 1,
         durationSec: (m['duration_sec'] as num?)?.toInt(),
+        // 老记录/老备份没有 v15 三列：默认 RIR 已记录、无疼痛描述
+        rirRecorded: ((m['rir_recorded'] as num?)?.toInt() ?? 1) == 1,
+        painLevel: (m['pain_level'] as num?)?.toInt() ?? 0,
+        painArea: (m['pain_area'] as String?) ?? '',
       );
+}
+
+/// 动作级长期备注（v15，exercise_notes 表）：按 [exerciseKey] 一门一条，
+/// 跨计划/训练复用（如固定的起始姿势提醒）。[updatedAt] = epoch ms。
+class ExerciseNote {
+  final String exerciseKey;
+  final String setupNote;
+  final int updatedAt;
+
+  const ExerciseNote({
+    required this.exerciseKey,
+    this.setupNote = '',
+    this.updatedAt = 0,
+  });
+
+  Map<String, dynamic> toMap() => {
+    'exercise_key': exerciseKey,
+    'setup_note': setupNote,
+    'updated_at': updatedAt,
+  };
+
+  factory ExerciseNote.fromMap(Map<String, dynamic> m) => ExerciseNote(
+    exerciseKey: (m['exercise_key'] as String?) ?? '',
+    setupNote: (m['setup_note'] as String?) ?? '',
+    updatedAt: (m['updated_at'] as num?)?.toInt() ?? 0,
+  );
 }
 
 class BodyMetric {

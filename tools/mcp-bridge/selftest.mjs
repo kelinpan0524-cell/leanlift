@@ -93,6 +93,17 @@ await checkAsync('get_exercise_history 必须带 name', async () => {
   await assert.rejects(() => callTool('get_exercise_history', {}, b), /name/);
 });
 
+await checkAsync('get_exercise_history 透传稳定键 key', async () => {
+  const b = fakeBackend({ '/v1/exercise': '{"prKg":100}' });
+  await callTool(
+    'get_exercise_history',
+    { name: '哑铃飞鸟', key: '杠铃卧推', limit: 5 },
+    b,
+  );
+  assert.equal(b.seen[0].params.key, '杠铃卧推');
+  assert.equal(b.seen[0].params.name, '哑铃飞鸟');
+});
+
 await checkAsync('未知工具名报错', async () => {
   const b = fakeBackend();
   await assert.rejects(() => callTool('nope', {}, b), /未知工具/);

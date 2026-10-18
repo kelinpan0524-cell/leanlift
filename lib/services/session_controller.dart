@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -11,7 +12,8 @@ import '../engine/superset.dart';
 import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
-import '../presets/baoji_plan.dart';
+import '../presets/exercise_library.dart' show defaultLoadTypeFor;
+import '../presets/start_weights.dart';
 import 'focus_service.dart';
 import 'rest_cue.dart';
 import 'settings.dart';
@@ -23,7 +25,9 @@ enum WorkoutPhase { idle, lifting, resting }
 /// 休息用墙钟时间（restEndAt = epoch ms），锁屏/杀进程都不影响正确性；
 /// 恢复逻辑：prefs 里存 sessionId + restEndAt，启动时若会话仍 active 则还原。
 class SessionController extends ChangeNotifier {
-  SessionController(this._db, this._settings, this._prefs, this._focus);
+  SessionController(this._db, this._settings, this._prefs, this._focus) {
+    _loadDeloadSessionIds();
+  }
 
   final Db _db;
   final Settings _settings;
@@ -36,8 +40,18 @@ class SessionController extends ChangeNotifier {
   Session? session;
   List<SessionExercise> exercises = [];
   Map<int, List<SetEntry>> setsByEx = {};
-  Map<String, List<SetEntry>> lastWorkout = {}; // 动作名 → 上次正式组
+  Map<String, List<SetEntry>> lastWorkout = {}; // 动作名 → 上次正式组（真实上一场）
+  // 动作名 → 上次正式组（排除本机标记的减载场）：只给下次处方/平台期回溯用，
+  // 不能拿来当「上次成绩」展示——用户刚做的减载组才是真正的上一场。
+  final Map<String, List<SetEntry>> _progressionLastWorkout = {};
+  final Map<String, int> _lastTargetSets = {}; // 动作名 → 上次训练的计划组数快照
+  // 动作名 → 上次训练最后一组的记录形态 (logging, loadType)：
+  // 渐进判定按上一场当时的形态解释，不跟随用户后来改的当前形态。
+  final Map<String, (String, String)> _lastModes = {};
   Map<String, List<SetEntry>> historyBefore = {}; // 动作名 → 本次之前的全部历史
+  // 动作稳定键 → 器械设置备注（P2-C）。开练/恢复时一次性预载，起始页与
+  // 第一组前同步读取；详情弹层保存后立即更新，训练页无需再等异步查询。
+  final Map<String, String> setupNotes = {};
 
   WorkoutPhase phase = WorkoutPhase.idle;
   int curExIdx = 0;
@@ -45,8 +59,347 @@ class SessionController extends ChangeNotifier {
   int restEndAt = 0;
   int restTotalMs = 0;
   double weightDraft = 0;
+  // 切到自重前的草稿重量：切回来时优先恢复它，避免在减载周把上一场
+  // 减载后的 54kg 再乘 0.9（双重减载），也避免丢掉平台期协议给的重量。
+  double? _draftBeforeBodyweight;
+  // 本次会话每个动作的「当时处方重量」快照（sessionExerciseId → kg）：
+  // 第一组落库前定档，后续组沿用，避免平台期/减载在本场内改变目标值，
+  // 出现同一场 target_weight_kg 54/62.5 打架。
+  final Map<int, double> _sessionTargetWeight = {};
   int workingSetsDone = 0; // 当前动作正式组完成数
   final Set<String> prHit = {};
+
+  // ---------- 训练块与减载（P1-C） ----------
+  // 块起点 = 当前计划第一次 done 训练；块内第 N 周为减载周。
+  // 只在新会话启动/恢复时计算，训练中不随日期翻周变化（处方稳定）。
+  int? _blockWeek;
+  int _blockWeeks = 0;
+  bool _deloadWeek = false;
+
+  /// 块内周次（1 起）；0 = 未启用/未知。
+  int get trainingBlockWeek => _blockWeek ?? 0;
+
+  /// 本周是否减载周（训练页/起始页横幅据此显示）。
+  bool get inDeloadWeek => _deloadWeek;
+
+  // ---------- 停练回归降档（P1-D） ----------
+  // 距上次 done 训练 ≥14 天：本场按 85% 重量、组数 -1。与减载周
+  // 同一天命中时只取更低的 0.85 系数，不叠加。开练时定档并随会话
+  // 快照持久化，恢复/训练中不随日期变化。
+  int _layoffDays = 0;
+  bool _layoffActive = false;
+
+  /// 本场是否处于停练回归（≥14 天没练）。
+  bool get inLayoff => _layoffActive;
+
+  /// 距上次 done 训练的天数（仅在本场停练回归生效时有意义，否则 0）。
+  int get layoffDays => _layoffActive ? _layoffDays : 0;
+
+  /// 本场会话启动时的块长（周）；0 = 关闭。训练中改设置不改变本场
+  /// 横幅分母/处方，下周新会话才按新块长走。
+  int get trainingBlockWeeks =>
+      _blockWeeks > 0 ? _blockWeeks : _settings.trainingBlockWeeks;
+
+  /// 减载周/停练回归会话标记（本地偏好记录）：这些会话的组不参与下次
+  /// 处方/平台期回溯——主动降负荷（90%/85%）不能把线性加重的档位带低。
+  ///
+  /// 每条标记带 `id|date|startedAt` 指纹：备份恢复到另一台设备后，
+  /// 同号会话可能是另一场真实训练；校验指纹对不上就丢弃，避免把
+  /// 最多 300 场真实训练静默排除出渐进回溯。
+  static const _kDeloadSessionsKey = 'block.deloadSessionIds';
+  final Map<int, (String, int)> _deloadMarkers = {};
+  final Set<int> _deloadSessionIds = {};
+
+  /// 被标记为减载周 / 停练回归的会话 id（只读）。
+  /// 这些场的组不参与下次处方/平台期回溯；周复盘等只读分析也要排除，
+  /// 否则主动降负荷会被误判成停滞。
+  Set<int> get deloadSessionIds => Set.unmodifiable(_deloadSessionIds);
+
+  void _loadDeloadSessionIds() {
+    final raw = _prefs.getString(_kDeloadSessionsKey);
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return;
+      for (final v in list) {
+        // 只认带指纹的新格式；老格式（纯 int）没有日期/开始时间，
+        // 无法在备份恢复后校验同号会话，直接放弃（宁可少排除，
+        // 不能误排除真实训练）。
+        if (v is! String) continue;
+        final p = v.split('|');
+        if (p.length != 3) continue;
+        final id = int.tryParse(p[0]);
+        final startedAt = int.tryParse(p[2]);
+        if (id == null || startedAt == null || p[1].isEmpty) continue;
+        _deloadMarkers[id] = (p[1], startedAt);
+      }
+      _rebuildDeloadIds();
+    } catch (_) {
+      // 本地偏好损坏不影响训练：忽略即可，下一场减载会重新写入。
+    }
+  }
+
+  /// 备份恢复后重读本机减载/停练标记：restoreAll 已把备份里的
+  /// `block.deloadSessionIds` 写回 SharedPreferences，内存排除表要跟着
+  /// 重灌（控制器是 App 级单例，构造时读过一次不会自己刷新）。恢复来的
+  /// 指纹对不上库内会话的，由下一次 [_ensureDeloadMarkersValid] 剔除。
+  void reloadDeloadMarkers() {
+    _deloadMarkers.clear();
+    _rebuildDeloadIds();
+    _loadDeloadSessionIds();
+  }
+
+  void _rebuildDeloadIds() {
+    _deloadSessionIds
+      ..clear()
+      ..addAll(_deloadMarkers.keys);
+  }
+
+  Future<void> _persistDeloadMarkers() async {
+    try {
+      await _prefs.setString(
+        _kDeloadSessionsKey,
+        jsonEncode([
+          for (final e in _deloadMarkers.entries)
+            '${e.key}|${e.value.$1}|${e.value.$2}',
+        ]),
+      );
+    } catch (_) {
+      // 本地偏好写失败不能挡住收工：内存里已排除，本次进程内仍然正确。
+    }
+  }
+
+  /// 校验减载标记确实指向本机库里的同一场 done 训练（id+date+startedAt）。
+  /// 备份恢复/换机后同号会话对不上就剔除，避免误排除。
+  Future<void> _ensureDeloadMarkersValid() async {
+    if (_deloadMarkers.isEmpty) return;
+    var changed = false;
+    for (final id in _deloadMarkers.keys.toList()) {
+      final marker = _deloadMarkers[id]!;
+      final s = await _db.sessionById(id);
+      final ok =
+          s != null &&
+          s.status == 'done' &&
+          s.date == marker.$1 &&
+          s.startedAt == marker.$2;
+      if (!ok) {
+        _deloadMarkers.remove(id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      _rebuildDeloadIds();
+      await _persistDeloadMarkers();
+    }
+  }
+
+  Future<void> _markDeloadSession(Session s) async {
+    final id = s.id;
+    if (id == null) return;
+    _deloadMarkers[id] = (s.date, s.startedAt);
+    _rebuildDeloadIds();
+    // 只保留最近 300 场减载；更早的减载会话早已不在历史窗口内。
+    while (_deloadMarkers.length > 300) {
+      _deloadMarkers.remove(_deloadMarkers.keys.first);
+    }
+    await _persistDeloadMarkers();
+  }
+
+  /// 本场会话的块周/减载快照（按会话 id 存本地偏好）。
+  /// target_sets 是启动时快照，恢复时不能拿「当前设置」重算块周——
+  /// 否则训练中改块长/杀进程后恢复，会把减载场翻成非减载（90% 组混进
+  /// 下次处方回溯）或反之。会话结束即删除。
+  String _sessionBlockKey(int id) => 'block.session.$id';
+
+  Future<void> _persistSessionBlockState(Session s) async {
+    final id = s.id;
+    if (id == null) return;
+    try {
+      await _prefs.setString(
+        _sessionBlockKey(id),
+        jsonEncode({
+          'date': s.date,
+          'startedAt': s.startedAt,
+          'week': _blockWeek ?? 0,
+          'weeks': _blockWeeks,
+          'deload': _deloadWeek,
+          // P1-D：停练回归同样按本场快照，恢复后不随日期漂移。
+          'layoff': _layoffActive,
+          'layoffDays': _layoffDays,
+        }),
+      );
+    } catch (_) {
+      // 写失败时恢复会回落重算；不挡住开练。
+    }
+  }
+
+  /// 读本场块周快照；必须与库里同 id 会话的 date/startedAt 一致。
+  /// 备份恢复到另一台设备后同号会话可能是另一场训练，指纹对不上就不套用。
+  bool _readSessionBlockState(
+    int id, {
+    required String date,
+    required int startedAt,
+  }) {
+    final raw = _prefs.getString(_sessionBlockKey(id));
+    if (raw == null || raw.isEmpty) return false;
+    try {
+      final m = jsonDecode(raw);
+      if (m is! Map) return false;
+      if (m['date'] != date || (m['startedAt'] as num?)?.toInt() != startedAt) {
+        return false;
+      }
+      final week = (m['week'] as num?)?.toInt() ?? 0;
+      final weeks = (m['weeks'] as num?)?.toInt() ?? 0;
+      _blockWeek = week > 0 ? week : null;
+      _blockWeeks = weeks;
+      _deloadWeek = m['deload'] == true;
+      final layoffDays = (m['layoffDays'] as num?)?.toInt() ?? 0;
+      // 快照损坏（layoff=true 但天数 <14）时不硬套 85%，按正常处方走。
+      _layoffActive = m['layoff'] == true && layoffDays >= kLayoffDaysThreshold;
+      _layoffDays = _layoffActive ? layoffDays : 0;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _clearSessionBlockState(int id) async {
+    try {
+      await _prefs.remove(_sessionBlockKey(id));
+    } catch (_) {
+      // 清理失败只留下一个本地键，不影响数据。
+    }
+  }
+
+  /// 读可信块起点：只认 `{"date":"yyyy-MM-dd","plan":…,"session":…}` 新格式
+  ///（由「已存在 done 训练」时写入，并带来源会话指纹）。旧版纯日期/缺来源
+  /// 会话指纹/脏值一律视为没有缓存——避免把「第一次开练后放弃」的日期当成
+  /// 块起点，也无法确认锚点指向的会话还在。
+  ///
+  /// 返回 (锚点日期, 来源会话指纹 'id|date|startedAt')；指纹的**存在性校验**
+  /// （该会话还在库里且 date/startedAt 相符）由调用方异步查库完成。
+  (DateTime, String)? _readTrustedAnchor(String key, String planFingerprint) {
+    final raw = _prefs.getString(key);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final m = jsonDecode(raw);
+      if (m is! Map) return null;
+      // 跨设备恢复备份后同号计划可能是另一个计划：指纹对不上一律不套用。
+      if (m['plan'] != planFingerprint) return null;
+      final d = m['date'];
+      final sid = m['session'];
+      if (d is! String || sid is! String || sid.isEmpty) return null;
+      final parsed = DateTime.tryParse(d);
+      return parsed == null ? null : (parsed, sid);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _writeTrustedAnchor(
+    String key,
+    DateTime date,
+    String planFingerprint, {
+    required ({int id, String date, int startedAt})? sourceSession,
+  }) async {
+    try {
+      await _prefs.setString(
+        key,
+        jsonEncode({
+          'date': fmtDate(date),
+          'plan': planFingerprint,
+          // 来源会话指纹（2026-10-18）：删除这场 done 会话后锚点失效重算，
+          // 不再把已删会话的日期当成块起点。与减载标记同一指纹口径。
+          'session': sourceSession == null
+              ? ''
+              : '${sourceSession.id}|${sourceSession.date}|${sourceSession.startedAt}',
+        }),
+      );
+    } catch (_) {
+      // 锚点写失败不影响本次计算；下次启动再试。
+    }
+  }
+
+  /// 计算本次会话所在的块周（启动时调用；恢复走 [ _readSessionBlockState ]）。
+  /// [planId] 为 null/0（临时训练）或块长 0 → 关闭减载。
+  ///
+  /// 块起点**只由当前计划第一次 done 训练确认**：没有 done 记录时按本次
+  /// 日期算第 1 周，但不落盘——否则「开练后放弃」的日期会被当成块起点，
+  /// 28 天后真正首练直接落进第 5 周减载。
+  /// `block.anchor.<planId>` 只缓存已确认的 done 日期（带**来源会话指纹**
+  /// id|date|startedAt），用于 plan_days 被删/重建后 `firstDoneSessionDateOfPlan`
+  /// 看不到老会话时保住块周；两个失效条件任一命中就丢弃重算：
+  /// - 计划指纹对不上（恢复备份的同号计划）；
+  /// - 来源会话已不存在或 date/startedAt 变了（用户删掉了那场训练，
+  ///   2026-10-18：唯一 done 会话被删后锚点不能继续把块周钉在旧日期上）。
+  /// 一旦库里重新有 done 首场，以库为准（可前移/后移）。
+  Future<void> _refreshBlockState({
+    required int? planId,
+    required DateTime date,
+  }) async {
+    _blockWeek = null;
+    _deloadWeek = false;
+    _blockWeeks = _settings.trainingBlockWeeks;
+    final weeks = _blockWeeks;
+    if (weeks <= 0 || planId == null || planId <= 0) return;
+    final key = 'block.anchor.$planId';
+    final plan = await _db.planById(planId);
+    // 用创建日期做计划指纹（改名不失效；同号不同计划通常创建日不同）。
+    final planFingerprint = plan?.createdAt ?? '';
+    final first = await _db.firstDoneSessionOfPlan(planId);
+    (DateTime, String)? trusted;
+    if (first != null) {
+      final parsed = DateTime.tryParse(first.date);
+      if (parsed != null) {
+        await _writeTrustedAnchor(
+          key,
+          parsed,
+          planFingerprint,
+          sourceSession: first,
+        );
+      }
+    } else {
+      // 模板日被删/重建后看不到 done 会话：用之前确认过的锚点（同名/
+      // 同创建日的计划才认，防恢复备份的同号计划串用），并校验来源会话
+      // 指纹——指向的 done 会话被删除后锚点失效，回退「今天 = 第 1 周」。
+      final cached = _readTrustedAnchor(key, planFingerprint);
+      if (cached != null) {
+        final parts = cached.$2.split('|');
+        final sid = parts.isEmpty ? null : int.tryParse(parts[0]);
+        final s = sid == null ? null : await _db.sessionById(sid);
+        final ok = s != null &&
+            s.status == 'done' &&
+            s.date == (parts.length > 1 ? parts[1] : '') &&
+            s.startedAt ==
+                (parts.length > 2 ? int.tryParse(parts[2]) ?? -1 : -1);
+        if (ok) {
+          trusted = cached;
+        }
+      }
+    }
+    var anchor = first != null ? DateTime.tryParse(first.date) : trusted?.$1;
+    anchor ??= date; // 真正的第一场（还没有 done）：临时按今天算第 1 周，不落盘
+    final week = trainingBlockWeekOf(
+      blockStart: anchor,
+      date: date,
+      blockWeeks: weeks,
+    );
+    _blockWeek = week;
+    _deloadWeek = week == weeks;
+  }
+
+  /// 计算本场是否停练回归（P1-D）：只看**全库最近一场 done 训练**的
+  /// 日期，≥14 天触发。临时训练也计入——只要还在练就不算停练。
+  /// 与块周一样只在开练时算一次，训练中/恢复都走会话快照。
+  Future<void> _refreshLayoffState({required DateTime date}) async {
+    _layoffDays = 0;
+    _layoffActive = false;
+    final lastDate = await _db.lastDoneSessionDate();
+    final days = layoffDaysSince(lastDate, date);
+    if (days < kLayoffDaysThreshold) return;
+    _layoffDays = days;
+    _layoffActive = true;
+  }
 
   /// 休息中可加练的"刚完成的动作"名（null = 无加练入口）。
   /// 每次进入休息都会置位（组间休息也能"再来一组"），
@@ -79,6 +432,7 @@ class SessionController extends ChangeNotifier {
   Timer? _tick;
   Timer? _hbTimer; // 心跳：进度持久化 + 空闲检测（会话进行中每 2 秒）
   final ValueNotifier<int> restRemainingMs = ValueNotifier(0);
+  bool _disposed = false; // dispose 后阻止延迟回调再碰状态（预载 .then 等）
   final ValueNotifier<String> focusBanner = ValueNotifier('');
   bool _restNotified = false;
   int _lastCardSec = -1; // 训练卡每秒去重（只在秒变化时推送）
@@ -160,7 +514,7 @@ class SessionController extends ChangeNotifier {
     // 组号语义与页面流同口径（workout_flow.currentPage）：计划内第 N/M 组，
     // 加练组不封顶——绝对组号「第 N 组（加练）」（2026-10-08 口径统一：
     // 与跳页面板/总结页一个写法），不再出现夹回「第 3/3 组」的旧 bug。
-    final planned = rule?.workingSets ?? 1;
+    final planned = currentEx == null ? 1 : plannedSetsOf(currentEx!);
     final doneRaw = workingSetsDone;
     final setPart = doneRaw >= planned
         ? tx('第 ${doneRaw + 1} 组（加练）', en: 'Set ${doneRaw + 1} (extra)')
@@ -233,6 +587,7 @@ class SessionController extends ChangeNotifier {
   void _clearProgress() {
     _lastPersist = null;
     _idleNotified = false;
+    setupNotes.clear();
     _prefs.setInt('sess.sid', 0);
     _prefs.setInt('sess.since', 0);
     _prefs.setInt('sess.phase', 0);
@@ -245,6 +600,38 @@ class SessionController extends ChangeNotifier {
       exercises.isEmpty ? null : exercises[curExIdx];
   List<SetEntry> get currentSets =>
       currentEx == null ? [] : (setsByEx[currentEx!.id] ?? []);
+
+  /// 该动作的器械设置备注（空串 = 没有，UI 据此不占空间）。
+  /// 键口径与历史查询一致：会话行自带的稳定键优先，空键按动作名现算。
+  String setupNoteOf(SessionExercise ex) {
+    final key = exerciseIdentityKeyOf(ex.name, ex.exerciseKey);
+    return key.isEmpty ? '' : (setupNotes[key] ?? '');
+  }
+
+  /// 保存器械设置（P2-C）：空串删除；写库后同步内存并通知训练页刷新。
+  /// 详情弹层是唯一编辑入口，打开它属于用户主动点按，不打断计时。
+  Future<void> saveSetupNote(String exerciseKey, String setupNote) async {
+    final key = exerciseKey.trim();
+    if (key.isEmpty) return;
+    final text = setupNote.trim();
+    await _db.saveExerciseNote(key, text);
+    if (text.isEmpty) {
+      setupNotes.remove(key);
+    } else {
+      setupNotes[key] = text;
+    }
+    notifyListeners();
+  }
+
+  /// 起始页要一次看到全部动作的设置备注，逐行异步查询会在开练前闪空。
+  Future<void> _loadSetupNotes() async {
+    final keys = <String>{
+      for (final ex in exercises) exerciseIdentityKeyOf(ex.name, ex.exerciseKey),
+    }..remove('');
+    setupNotes
+      ..clear()
+      ..addAll(await _db.exerciseNotesByKeys(keys));
+  }
 
   // ---------- 启动 / 恢复 ----------
 
@@ -311,6 +698,11 @@ class SessionController extends ChangeNotifier {
     } catch (_) {
       session = null;
       exercises = [];
+      _blockWeek = null;
+      _blockWeeks = 0;
+      _deloadWeek = false;
+      _layoffActive = false;
+      _layoffDays = 0;
       phase = WorkoutPhase.idle;
     }
   }
@@ -331,13 +723,45 @@ class SessionController extends ChangeNotifier {
       });
       return false;
     }
+    await _loadSetupNotes();
     setsByEx = await _db.setsOfSession(sessionId);
+    // 恢复会话：目标重量快照沿用已落库的第一组，后续组不因本场成绩漂移。
+    _sessionTargetWeight.clear();
+    for (final ex in exercises) {
+      final list = setsByEx[ex.id] ?? const <SetEntry>[];
+      for (final s in list) {
+        if (s.targetWeightKg != null) {
+          _sessionTargetWeight[ex.id!] = s.targetWeightKg!;
+          break;
+        }
+      }
+    }
+    await _ensureDeloadMarkersValid();
+    // 训练块/减载（P1-C）：优先读本场启动时落下的块周快照；没有快照
+    // （老版本开练/本地偏好丢失）才按会话日期重算。不能直接重算——
+    // 训练中改块长后恢复，会把减载场翻成非减载（90% 组混进回溯）。
+    if (!_readSessionBlockState(
+      sessionId,
+      date: session!.date,
+      startedAt: session!.startedAt,
+    )) {
+      final planDayId = session!.planDayId;
+      final planDay = planDayId == null
+          ? null
+          : await _db.planDayById(planDayId);
+      await _refreshBlockState(
+        planId: planDay?.planId,
+        date: DateTime.tryParse(session!.date) ?? DateTime.now(),
+      );
+      // 老会话/偏好丢失：把重算结果补落快照，下次恢复不再随设置漂移。
+      await _persistSessionBlockState(session!);
+    }
     // 恢复落点（v9 超级组）：按计划轮转序列走位到第一个未消费的槽位
     // ——不配对时序列退化为线性，与旧「第一个正式组未做完」完全一致；
     // 全部做完回落最后一个动作（加练口径）。
     curExIdx = resumeExerciseIdx(
       tags: _supersetTags,
-      plannedSets: exercises.map((e) => e.rule.workingSets).toList(),
+      plannedSets: exercises.map(plannedSetsOf).toList(),
       doneWorking: _doneWorkingOfAll(),
     );
     curSetIdx = (setsByEx[currentEx!.id] ?? []).length;
@@ -345,30 +769,208 @@ class SessionController extends ChangeNotifier {
         .where((e) => e.kind == SetKind.working)
         .length;
     await _loadContextForCurrent();
-    // 恢复会话同样重灌目标解释（文案数据源是会话前历史，与首次启动同口径）
-    await _preloadTargetWhys();
-    weightDraft = _recommendFor(currentEx!.name);
+    // 恢复落点重量：本场已落库的处方（组行 target_weight_kg，上面已回灌
+    // 进 _sessionTargetWeight）优先。减载/平台期减载场的 54kg 组会把
+    // 60kg 的平台期回溯打断（plateauFor 把本场组接在历史后面算连续
+    // 同重量），此时重算 _recommendFor 会把建议从 54kg 弹回 60kg——
+    // 处方在第一组前已定档，恢复必须沿用；只有一组未做（无本场处方）
+    // 才用 _recommendFor 兜底重算（减载周快照仍会给出 90% 重量）。
+    final cur = currentEx!;
+    weightDraft = _sessionTargetWeight[cur.id!] ?? _recommendFor(cur.name);
     _setPhase(WorkoutPhase.lifting, silent: true);
     return true;
   }
 
-  double _recommendFor(String name) {
-    // 上次该动作那次训练的正式组 → 走规则链判定（调研条目 15）：
-    // 达标推进「第一条还有空间的规则」（次数轴爬升 / 重量轴加重归下限），
-    // 未达下限减重 5%，其余保持。
-    // 「有历史」只看 last.isNotEmpty：0kg 是自重动作的合法历史档位
-    // （hold 保持 0、顶格进位负重 2.5kg，与旧引擎一致），
-    // 不能把重量 0 当作「无历史」回退到预设起始重量。
-    final last = lastWorkout[name] ?? const <SetEntry>[];
-    if (last.isNotEmpty) {
-      final rule = currentEx?.rule ?? ProgressionRule.fallback;
-      final state = chainStateFromHistory(last, rule);
-      final v = evaluateChain(rule: rule, state: state, workingSets: last);
-      // 负重量（辅助配重）同样渐进：-30 → -27.5 = 辅助减少 2.5kg，是进步。
-      // 不再做 next>0 检查——那会让辅助器械动作永远卡在原配重。
-      return round05(v.next.weightKg);
+  /// 本动作的下一步处方：重量 + 一句「为什么是这个数字」。
+  /// 两者共用同一份计算，避免出现「weightDraft=54kg、目标解释却写
+  /// 下次目标 +1 次」或「上一场少做、解释却写减载 10%」的分裂。
+  ///
+  /// [ex] 缺省取当前动作（`targetWhyOf` 传入被查询的动作行）。
+  ({double weight, String why}) _prescriptionFor(
+    String name, {
+    SessionExercise? ex,
+    bool includeCurrentSets = true,
+  }) {
+    final target = ex ?? currentEx;
+    final rule = target?.rule ?? ProgressionRule.fallback;
+    final logging = target?.logging ?? LoggingMode.reps;
+    // 有效负荷类型（P2-E 复核）：老计划把自重动作存成默认 weighted 时，
+    // 按上一场 + 本场已记录的正式组推断，避免 verdict/目标解释继续走
+    // 负重链、和训练页的「试试下一档/加练一组」互相矛盾。
+    final loadType = target == null
+        ? LoadMode.weighted
+        : _effectiveLoadTypeOf(target, includeCurrentSets: includeCurrentSets);
+    final planned = target == null ? 0 : plannedSetsOf(target);
+    // 减载场排除：用 _progressionLastWorkout（真实「上次成绩」仍走
+    // lastWorkout，不受影响）。加练组不参与下次处方（P0-B）。
+    List<SetEntry> progressionSets() =>
+        (_progressionLastWorkout[name] ?? const <SetEntry>[])
+            .where((s) => !s.isExtra)
+            .toList(growable: false);
+
+    // 停练回归 / 减载周共用「按系数下调」入口：两者不叠加，
+    // 同时命中时取更低的一档（0.85 < 0.9），组数也只减 1 次。
+    final recoveryFactor = recoveryWeightFactor(
+      layoff: _layoffActive,
+      deload: _deloadWeek,
+    );
+    if (recoveryFactor != null) {
+      // 基准取链状态的重量（上次最后正式组的实际重量），不是链推荐的
+      // 「下一次」重量：上次刚顶格时链会建议 +2.5kg，按 62.5×0.9 只比
+      // 60 低 6%，不算减载；按 60×0.9 = 54 才是「比平常轻一成」。
+      // 停练回归同理：先回到停练前的重量档，避免「上次刚加重 → 停练
+      // 回来还按更高档打折」。
+      final last = progressionSets();
+      final base = last.isEmpty
+          ? _presetStartFor(name)
+          : chainStateFromHistory(last, rule).weightKg;
+      final String why;
+      if (_layoffActive) {
+        final dual = _deloadWeek
+            ? tx(
+                '（本周同时是减载周，取更低的 85% 一档，不重复打折）',
+                en: ' (deload week too — the lower 85% factor applies once, no double discount)',
+              )
+            : '';
+        if (loadType == LoadMode.bodyweight || base == 0) {
+          why = tx(
+            '停练 $_layoffDays 天，今天按 85% 找感觉：自重动作只少做 1 组，下次间隔正常后回到原计划。$dual',
+            en: 'Back after $_layoffDays days off — today at 85% to find your groove: bodyweight lifts drop one set only; back to the plan once you train again within 14 days.$dual',
+          );
+        } else if (base < 0) {
+          why = tx(
+            '停练 $_layoffDays 天，今天按 85% 找感觉：辅助配重增加约 15%、少做 1 组，下次间隔正常后回到原档。$dual',
+            en: 'Back after $_layoffDays days off — today at 85% to find your groove: ~15% more machine assist and one fewer set; back to normal once you train again within 14 days.$dual',
+          );
+        } else {
+          why = tx(
+            '停练 $_layoffDays 天，今天按 85% 找感觉：负重按约 85% 重量、少做 1 组，下次间隔正常后回到原档。$dual',
+            en: 'Back after $_layoffDays days off — today at 85% to find your groove: ~85% weight and one fewer set; back to normal once you train again within 14 days.$dual',
+          );
+        }
+      } else if (loadType == LoadMode.bodyweight || base == 0) {
+        why = tx(
+          '减载周：本周少做 1 组，给身体恢复；下周回到原计划。',
+          en: 'Deload week: one fewer set this week to recover; back to the plan next week.',
+        );
+      } else if (base < 0) {
+        // 辅助配重：更负 = 辅助更多 = 更省力，文案不能说「90% 重量」。
+        why = tx(
+          '减载周：本周辅助配重增加约 10%、少做 1 组，给身体恢复；下周回到原档继续。',
+          en: 'Deload week: ~10% more machine assist and one fewer set this week to recover; back to normal next week.',
+        );
+      } else {
+        why = tx(
+          '减载周：本周建议约 90% 重量、少做 1 组，给身体恢复；下周回到原档继续。',
+          en: 'Deload week: ~90% weight and one fewer set this week to recover; back to normal next week.',
+        );
+      }
+      // 自重动作不因降档凭空出现重量：只减组，重量保持 0。
+      final recoveryWeight = loadType == LoadMode.bodyweight
+          ? 0.0
+          : reducedWeightKg(base, recoveryFactor);
+      return (weight: recoveryWeight, why: why);
     }
-    return _presetStartFor(name);
+
+    final last = progressionSets();
+    if (last.isEmpty) {
+      final state = chainStateFromHistory(const <SetEntry>[], rule);
+      return (
+        // 自重动作首次训练同样不该猜 20kg：重量恒 0，渐进走次数轴。
+        weight: loadType == LoadMode.bodyweight ? 0.0 : _presetStartFor(name),
+        why: chainTargetWhy(
+          rule: rule,
+          state: state,
+          loadType: loadType,
+          logging: logging,
+          plannedSets: planned,
+        ),
+      );
+    }
+
+    final state = chainStateFromHistory(last, rule);
+    // 上次的计划组数一起判定（P0-B 复核）：少做不能只让总结页 hold、
+    // 下次开练却继续按达标推进重量。老记录没有 target_sets 快照时
+    // DB 层回退该场次 rule 的 workingSets，不拿当前规则去猜上一场。
+    final lastTarget = _lastTargetSets[name] ?? 0;
+    // 按上一场当时的记录形态判定（用户可能后来改成计时/自重，
+    // 不能拿新形态去解释旧组的次数/链语义）。
+    final modes = _lastModes[name];
+    final v = evaluateChain(
+      rule: rule,
+      state: state,
+      workingSets: last,
+      targetSets: lastTarget,
+      logging: modes?.$1 ?? logging,
+      loadType: loadType,
+    );
+    // 平台期协议（P1-C）：未顶格且没有「成功加重」时，协议建议的减载
+    // 重量优先于链的 hold/继续冲。少做/没记录/换档位的 hold 不触发
+    // （P0-B 的保护优先）。
+    // 「为什么是这个数字」用纯历史算处方解释：否则用户照着减载 54kg
+    // 做完几组后，本场 54kg 会打断 60kg 平台期，解释突然变成「下次目标
+    // +1 次」。本场顶格/加重的刷新由 targetWhyOf 单独判断。
+    final protocol = plateauProtocolOf(
+      includeCurrentSets
+          ? plateauFor(name)
+          : plateauOf(
+              historyBefore[name] ?? const <SetEntry>[],
+              repsMax: rule.repsMax,
+            ),
+      rule: rule,
+      logging: logging,
+      loadType: loadType,
+    );
+    final chainAddedWeight =
+        v.action == 'advance' && v.next.weightKg != state.weightKg;
+    final canApplyReduce =
+        protocol.action == 'reduce' &&
+        protocol.suggestedWeightKg != 0 &&
+        !chainAddedWeight &&
+        (v.action == 'decrease' ||
+            v.action == 'advance' ||
+            v.holdKind == 'target_miss');
+    if (canApplyReduce) {
+      return (
+        weight: round05(protocol.suggestedWeightKg),
+        why: protocol.reason,
+      );
+    }
+    // 负重量（辅助配重）同样渐进：-30 → -27.5 = 辅助减少 2.5kg，是进步。
+    // 不再做 next>0 检查——那会让辅助器械动作永远卡在原配重。
+    return (
+      weight: round05(v.next.weightKg),
+      why: chainTargetWhy(
+        rule: rule,
+        state: state,
+        loadType: loadType,
+        logging: logging,
+        plannedSets: planned,
+      ),
+    );
+  }
+
+  double _recommendFor(String name) => _prescriptionFor(name).weight;
+
+  /// 有效负荷类型（P2-E 复核 / H3 统一）：判定全部收口到引擎的共用函数
+  /// [effectiveLoadTypeFor]（显式负重变体名 > 显式存储 bodyweight > 0kg+
+  /// 自重阶梯/动作库纯自重推断），本方法只负责拼「上一场 + 本场已记录」的
+  /// 正式组集合——verdict/目标解释/处方三处调用同一入口，与训练页的
+  /// 「试试下一档/加练一组」结论一致，不再各判各的。
+  String _effectiveLoadTypeOf(
+    SessionExercise ex, {
+    bool includeCurrentSets = true,
+  }) {
+    final sets = <SetEntry>[
+      ...(_progressionLastWorkout[ex.name] ?? const <SetEntry>[]),
+      if (includeCurrentSets) ...(setsByEx[ex.id] ?? const <SetEntry>[]),
+    ];
+    return effectiveLoadTypeFor(
+      exerciseName: ex.name,
+      loadType: ex.loadType,
+      workingSets: sets,
+      exerciseKey: ex.exerciseKey,
+    );
   }
 
   double _presetStartFor(String name) => presetStartOf(name);
@@ -384,67 +986,125 @@ class SessionController extends ChangeNotifier {
 
   // ---------- 目标可解释化（v14「为什么是这个数字」） ----------
 
-  /// 会话启动时逐动作算好的目标解释文案（sessionExerciseId → 文案）。
-  /// 数据源是"本次之前"的历史链状态，训练期间不变，缓存整个会话安全；
-  /// 训练中临时追加/替换的动作没有预载（targetWhyOf 返回空串，UI 收起）。
-  final Map<int, String> _targetWhy = {};
-
   /// 动作 [exerciseIndex] 本组目标的一句话解释（「为什么是这个数字」）。
-  /// 未预载/下标越界返回空串（UI 层空串不显示，不占三要素空间）。
+  /// 即时计算，不预载：非当前动作的 historyBefore 还没加载、预载会算错；
+  /// 本场顶格/加重后也要刷新，不能冻结在开练时。
+  /// 下标越界/非当前动作返回空串（UI 只查当前动作；空串不占三要素）。
   String targetWhyOf(int exerciseIndex) {
     if (exerciseIndex < 0 || exerciseIndex >= exercises.length) return '';
+    if (exerciseIndex != curExIdx) return '';
     final ex = exercises[exerciseIndex];
-    return _targetWhy[ex.id] ?? '';
-  }
-
-  /// 从该动作的历史正式组推链状态，算「为什么是这个数字」文案。
-  Future<void> _preloadTargetWhys() async {
-    final map = <int, String>{};
-    for (final ex in exercises) {
-      final last = await _db.lastWorkingSets(ex.name);
-      map[ex.id!] = chainTargetWhy(
+    final base = _prescriptionFor(ex.name, ex: ex, includeCurrentSets: false);
+    // 减载周/停练回归的处方就是恢复：不在本场把「顶了降档重量」
+    // 改写成加重建议。
+    if (_deloadWeek || _layoffActive) return base.why;
+    // 本场已记录的组如果已经「成功加重/自重顶格」，用本场状态重算
+    // 下一步解释；否则保留处方解释（比如减载 54kg 仍说减载 10%）。
+    final current = (setsByEx[ex.id] ?? const <SetEntry>[])
+        .where((s) => s.kind == SetKind.working && !s.isExtra)
+        .toList(growable: false);
+    if (current.isEmpty) return base.why;
+    // 有效负荷类型：与本场 verdict/变式建议同一口径（旧 weighted 的
+    // 0kg 自重动作按 bodyweight 解释，见 _effectiveLoadTypeOf）。
+    final effective = _effectiveLoadTypeOf(ex);
+    final currentState = chainStateFromHistory(current, ex.rule);
+    final v = evaluateChain(
+      rule: ex.rule,
+      state: currentState,
+      workingSets: current,
+      targetSets: plannedSetsOf(ex),
+      logging: ex.logging,
+      loadType: effective,
+    );
+    final advancedWeight =
+        v.action == 'advance' && v.next.weightKg != currentState.weightKg;
+    final bodyweightTop =
+        v.holdKind == 'chain_end' && effective == LoadMode.bodyweight;
+    if (advancedWeight || bodyweightTop) {
+      return chainTargetWhy(
         rule: ex.rule,
-        state: chainStateFromHistory(last, ex.rule),
-        loadType: ex.loadType,
+        state: currentState,
+        loadType: effective,
         logging: ex.logging,
+        plannedSets: plannedSetsOf(ex),
       );
     }
-    _targetWhy
-      ..clear()
-      ..addAll(map);
+    return base.why;
   }
 
   /// 平台期提醒缓存（2026-09-26 Arono：同重量停留过久 → 训练中途
-  /// 主动提示可加重）。数据源 historyBefore 是"本会话开始前"的历史，
-  /// 训练期间不变，按动作名缓存安全；新会话重建控制器/重新装载时
-  /// 随 historyBefore 重灌自然失效。
+  /// 主动提示可加重）。数据源 = 本场前的 historyBefore + **本场已记录
+  /// 的正式组**；按「历史条数/本场条数/末组时间重量次数」签名缓存，
+  /// 每记一组自然失效，顶格/换重量后不会继续报旧停滞。
   final _plateauCache = <String, PlateauInfo?>{};
 
   PlateauInfo? plateauFor(String name) {
-    if (_plateauCache.containsKey(name)) return _plateauCache[name];
-    var repsMax = ProgressionRule.fallback.repsMax;
+    SessionExercise? found;
     for (final ex in exercises) {
       if (ex.name == name) {
-        repsMax = ex.rule.repsMax;
+        found = ex;
         break;
       }
     }
-    final info =
-        plateauOf(historyBefore[name] ?? const [], repsMax: repsMax);
-    _plateauCache[name] = info;
+    final repsMax = found?.rule.repsMax ?? ProgressionRule.fallback.repsMax;
+    // 平台期必须把本场已记录的正式组接在历史后面一起算：训练中把次数
+    // 做到上限/换了新重量后，旧的 historyBefore 会继续报「停滞」，
+    // 休息页/总结页就会误劝减载。签名缓存只在组变化时重算。
+    final current = found == null
+        ? const <SetEntry>[]
+        : (setsByEx[found.id] ?? const <SetEntry>[])
+              .where((s) => s.kind == SetKind.working)
+              .toList(growable: false);
+    final history = historyBefore[name] ?? const <SetEntry>[];
+    final last = current.isEmpty ? null : current.last;
+    final sig =
+        '$name|${history.length}|${current.length}|'
+        '${last?.doneAt ?? 0}|${last?.weightKg ?? 0}|${last?.reps ?? 0}';
+    if (_plateauCache.containsKey(sig)) return _plateauCache[sig];
+    final info = plateauOf([...history, ...current], repsMax: repsMax);
+    _plateauCache[sig] = info;
     return info;
   }
 
   Future<void> _loadContextForCurrent() async {
-    if (currentEx == null) return;
-    final name = currentEx!.name;
-    lastWorkout[name] = await _db.lastWorkingSets(name);
-    final seId = currentEx!.id;
-    // PR 判定只看正式组历史（热身大重量不应抬高 PR 门槛）
+    final ex = currentEx;
+    if (ex == null) return;
+    // 换动作/开练后，上一个动作的「自重前草稿」不再适用。
+    _draftBeforeBodyweight = null;
+    final name = ex.name;
+    // 纵向历史按会话动作行自带的稳定键查（别名/改名共享同一份历史）；
+    // 空键（老记录/未分配）由 DB 按名字现算，行为与升级前一致。
+    // 「上次成绩」用真实上一场（含减载/停练回归场）；下次处方用排除
+    // 减载/停练回归的上一场。
+    lastWorkout[name] = await _db.lastWorkingSets(
+      name,
+      exerciseKey: ex.exerciseKey,
+    );
+    _progressionLastWorkout[name] = await _db.lastWorkingSets(
+      name,
+      exerciseKey: ex.exerciseKey,
+      excludeSessionIds: _deloadSessionIds,
+    );
+    _lastTargetSets[name] = await _db.lastTargetSets(
+      name,
+      exerciseKey: ex.exerciseKey,
+      excludeSessionIds: _deloadSessionIds,
+    );
+    final modes = await _db.lastExerciseModes(
+      name,
+      exerciseKey: ex.exerciseKey,
+      excludeSessionIds: _deloadSessionIds,
+    );
+    if (modes != null) _lastModes[name] = modes;
+    final seId = ex.id;
+    // PR 判定只看正式组历史（热身大重量不应抬高 PR 门槛）；
+    // 减载/停练回归会话的组不参与平台期/PR 回溯（主动降负荷不是停滞）。
     historyBefore[name] = await _db.historySets(
       name,
+      exerciseKey: ex.exerciseKey,
       beforeSessionExerciseId: seId,
       kindFilter: SetKind.working,
+      excludeSessionIds: _deloadSessionIds,
     );
   }
 
@@ -457,6 +1117,15 @@ class SessionController extends ChangeNotifier {
     if (hasActive) return;
     // 双击竞态兜底：内存态置 active 之前再查一次库，只放行一个并发调用
     if (await _db.activeSession() != null) return;
+    // 减载标记先按库校验（备份恢复后同号会话可能不是同一场）。
+    await _ensureDeloadMarkersValid();
+    // 停练回归（P1-D）：开练时定档，写进 target_sets / 处方。
+    // 同一次开练只取一个「今天」，避免跨午夜时天数与会话日期不一致。
+    final startedDate = DateTime.now();
+    await _refreshLayoffState(date: startedDate);
+    // 块周/减载在会话启动时定档：本周是减载周就按 90% 重量、组数 -1
+    // 开处方（写进 target_sets 快照，页面流/进度/判定同一口径）。
+    await _refreshBlockState(planId: day.planId, date: startedDate);
     prHit.clear();
     // 平台期缓存随新会话失效：控制器是 App 级单例，同进程第二次训练
     // 时 historyBefore 会重灌，旧缓存（尤其 null 值）会静默挡住提醒
@@ -476,7 +1145,13 @@ class SessionController extends ChangeNotifier {
           rule: pe.rule,
           // 条目 14：模板目标参数全套快照进训练记录——模板日后修改
           // 不影响老记录的完成度对比（v6 前老记录 target=0 走回退语义）。
-          targetSets: pe.sets,
+          // P1-C：减载周少做一组（最少 1 组），快照进本场，页面流与
+          // 完成度判定都按减载后的组数走。sets=0 的老行按规则组数
+          // 兜底后再减，不凭空造 1 组。
+          // P1-D：停练回归同样少做一组；与减载同一天命中时只减一次。
+          targetSets: (_deloadWeek || _layoffActive)
+              ? layoffWorkingSets(pe.sets > 0 ? pe.sets : pe.rule.workingSets)
+              : pe.sets,
           targetRepsMin: pe.repsMin,
           targetRepsMax: pe.repsMax,
           // 超级组标记同样快照（v9）：训练中的轮转推进按它分组，
@@ -486,11 +1161,14 @@ class SessionController extends ChangeNotifier {
           // 模板日后改形态不影响进行中会话与历史回放。
           logging: pe.logging,
           loadType: pe.loadType,
+          // 动作稳定键快照（v16）：计划行有键就沿用（改名不断历史），
+          // 空键（临时/导入计划）由落库层按动作名现算。
+          exerciseKey: pe.exerciseKey,
         ),
     ];
     final (s, withIds) = await _db.insertSessionWithExercises(
       Session(
-        date: fmtDate(DateTime.now()),
+        date: fmtDate(startedDate),
         planDayId: day.id,
         planDayTitle: day.title,
         startedAt: now,
@@ -500,7 +1178,11 @@ class SessionController extends ChangeNotifier {
     );
     session = s;
     exercises = withIds;
+    await _loadSetupNotes();
+    // 本场块周/减载快照：恢复/改块长都不改写本场处方（target_sets 已快照）。
+    await _persistSessionBlockState(s);
     setsByEx = {};
+    _sessionTargetWeight.clear();
     curExIdx = 0;
     curSetIdx = 0;
     workingSetsDone = 0;
@@ -508,8 +1190,6 @@ class SessionController extends ChangeNotifier {
     activeMs = 0;
     _phaseSince = DateTime.now(); // 时长统计从这里起表
     await _loadContextForCurrent();
-    // 目标解释文案（v14）随会话启动逐动作预载（历史链状态训练期间不变）
-    await _preloadTargetWhys();
     weightDraft = _recommendFor(currentEx!.name);
     _setPhase(WorkoutPhase.lifting);
     await _enterFocus();
@@ -540,6 +1220,11 @@ class SessionController extends ChangeNotifier {
   /// 且约定 reps 字段同样承载秒数（链判定原样复用次数语义）。
   /// 单侧动作（logging='reps_per_side'）的 reps 是两侧总数，落库前
   /// 就近取偶，保证总数可两侧均分。
+  /// [rirRecorded]（P0-C）：用户是否真的点选过余力。false 时 [rir] 只是
+  /// 计划默认填充值，落 rir_recorded=0——统计与渐进判定都不会把它当观测。
+  /// [painLevel] / [painArea]（P2-B）：本组疼痛自评，0/'' = 未填。
+  /// 等级就地夹到 0-3；等级 0 时部位一并清空，避免「无痛却带部位」的脏数据。
+  /// 疼痛只做记录与提示，不参与渐进/PR/容量任何判定（安全底线不改变训练逻辑）。
   Future<bool> completeSet({
     required double weight,
     required int reps,
@@ -547,16 +1232,21 @@ class SessionController extends ChangeNotifier {
     required String kind,
     String note = '',
     int? durationSec,
+    bool rirRecorded = true,
+    int painLevel = 0,
+    String painArea = '',
   }) async {
     final ex = currentEx;
     if (ex == null) return false;
+    final level = painLevel.clamp(0, 3).toInt();
+    final area = level == 0 ? '' : painArea;
     reps = normalizeTarget(reps, ex.logging);
     // 加练标注（v12，2026-10-08）：落库前先判定——只对正式组标注
     // （kind==working 才参与判据：加练态下 kind chips 仍可选，计划满后
     // 再记热身/力竭组不该被误标「加练」）；必须在 workingSetsDone++ 与
     // insertSet 之前算，口径与 WorkoutFlow 只数正式组一致。仅展示标注，
     // 不改渐进/PR/容量统计。
-    final planned = ex.rule.workingSets;
+    final planned = plannedSetsOf(ex);
     final doneBefore = (setsByEx[ex.id] ?? const <SetEntry>[])
         .where((s) => s.kind == SetKind.working)
         .length;
@@ -565,8 +1255,17 @@ class SessionController extends ChangeNotifier {
     // 推荐重量与链目标次数一并写进组行——用户手调过的重量与它对比，
     // 历史页就能回看「计划 vs 实际」。lastWorkout/historyBefore 在
     // 同一动作的组间不变（done 过滤），快照值组间稳定。
+    // 目标次数快照用渐进上一场（排除减载），与「当时处方」同源；
+    // 真实上一场只负责 UI 的「上次成绩」行。
     final chainTarget = chainStateFromHistory(
-        lastWorkout[ex.name] ?? const [], ex.rule);
+      _progressionLastWorkout[ex.name] ?? const [],
+      ex.rule,
+    );
+    // 本场第一组前定档，后续组沿用（平台期/减载在本场内不改变目标值）。
+    final targetWeight = _sessionTargetWeight.putIfAbsent(
+      ex.id!,
+      () => _recommendFor(ex.name),
+    );
     final entry = SetEntry(
       sessionExerciseId: ex.id!,
       weightKg: weight,
@@ -575,10 +1274,13 @@ class SessionController extends ChangeNotifier {
       kind: kind,
       doneAt: DateTime.now().millisecondsSinceEpoch,
       note: note,
-      targetWeightKg: _recommendFor(ex.name),
+      targetWeightKg: targetWeight,
       targetReps: chainTarget.targetReps,
       isExtra: isExtra,
       durationSec: durationSec,
+      rirRecorded: rirRecorded,
+      painLevel: level,
+      painArea: area,
     );
     final id = await _db.insertSet(entry);
     setsByEx
@@ -605,7 +1307,7 @@ class SessionController extends ChangeNotifier {
     // 动作（A1→B1→A2→B2…）。
     final nextIdx = nextExerciseIdxAfterSet(
       tags: _supersetTags,
-      plannedSets: exercises.map((e) => e.rule.workingSets).toList(),
+      plannedSets: exercises.map(plannedSetsOf).toList(),
       doneWorking: _doneWorkingOfAll(),
       justIdx: curExIdx,
     );
@@ -697,7 +1399,7 @@ class SessionController extends ChangeNotifier {
     final done = (setsByEx[target.id] ?? const <SetEntry>[])
         .where((e) => e.kind == SetKind.working)
         .length;
-    if (done >= target.rule.workingSets) return false; // 已练满：不可跳入
+    if (done >= plannedSetsOf(target)) return false; // 已练满：不可跳入
     if (phase == WorkoutPhase.resting) _finishRest(cancelAlarm: true);
     await _applyExerciseSwitch(exIdx);
     _setPhase(WorkoutPhase.lifting);
@@ -736,7 +1438,7 @@ class SessionController extends ChangeNotifier {
     // _applyExerciseSwitch 同口径：该动作本会话已有实际组就接最后一组
     // 的实际值（超级组 A2 接 A1），否则推荐值。
     _loadContextForCurrent().then((_) {
-      if (!hasActive) return;
+      if (_disposed || !hasActive) return;
       final next = currentEx;
       if (next == null || next.id != justFinished.id) {
         final list = setsByEx[next?.id] ?? const <SetEntry>[];
@@ -745,6 +1447,11 @@ class SessionController extends ChangeNotifier {
             : _recommendFor(next?.name ?? '');
         notifyListeners();
       }
+    }).catchError((Object e) {
+      // 预载是尽力而为的缓存，失败静默：会话刚收工或库正被备份恢复
+      // 重写时，后台查询可能扑空（库已关/表刚清）。不捕获的话未处理
+      // 异常会逃出异步链——真机上是隐患，测试里则被记到已结束的用例
+      // 头上造成偶发失败。
     });
   }
 
@@ -999,15 +1706,18 @@ class SessionController extends ChangeNotifier {
   /// 已是自重→回到上次用的重量（无历史则用推荐值），不用记步进点回去。
   void toggleBodyweightDraft() {
     if (weightDraft != 0) {
+      _draftBeforeBodyweight = weightDraft;
       setWeightDraft(0);
       return;
     }
-    final name = currentEx?.name ?? '';
-    final last = lastWorkout[name];
-    final w = (last != null && last.isNotEmpty)
-        ? last.last.weightKg
-        : _recommendFor(name);
-    setWeightDraft(w);
+    final saved = _draftBeforeBodyweight;
+    if (saved != null && saved != 0) {
+      setWeightDraft(saved);
+      return;
+    }
+    // 没有可恢复的草稿（例如一开始就是自重）：按当前处方回填，
+    // 减载周/平台期协议都给同一个数字，不会对减载场再次打折。
+    setWeightDraft(_prescriptionFor(currentEx?.name ?? '').weight);
   }
 
   /// 训练中临时加动作：从动作库挑的动作追加到队尾（只进本次会话，不改计划）。
@@ -1025,15 +1735,28 @@ class SessionController extends ChangeNotifier {
         orderIdx: order++,
         kind: m.isCompound ? 'compound' : 'assistance',
         restSec: 0,
+        // 临时追加也按动作库口径给自重动作落 bodyweight（P2-E 复核）。
+        loadType: defaultLoadTypeFor(m.name),
         rule: ProgressionRule.fallback,
+        // 减载周/停练回归临时加的动作同样少做 1 组；其余情况保持 0
+        //（无快照，回退规则 workingSets），与旧行为一致。
+        targetSets: (_deloadWeek || _layoffActive)
+            ? layoffWorkingSets(ProgressionRule.fallback.workingSets)
+            : 0,
         trace: prevName.isEmpty
             ? tx('追加于：会话开头', en: 'Added at start of session')
             : tx('追加于：$prevName', en: 'Added after $prevName'),
+        // 新动作先查同名已有键（计划/历史里可能保留着改名前的旧键），
+        // 查不到再按名字现算：避免同名动作被拆成第二个身份。
+        exerciseKey:
+            await _db.knownExerciseKey(m.name) ?? exerciseKeyOf(m.name),
       );
       final id = await _db.insertSessionExercise(draft);
       exercises.add(draft.copyWithId(id));
       prevName = m.name;
     }
+    // 临时追加的动作也要在练到它时显示已存器械设置：按新键补载备注。
+    await _loadSetupNotes();
     notifyCard();
     notifyListeners();
   }
@@ -1055,16 +1778,25 @@ class SessionController extends ChangeNotifier {
       kind: ex.kind,
       restSec: ex.restSec,
       rule: ex.rule,
+      // 换成的新动作按动作库口径决定负荷类型（P2-E 复核）：替换成
+      // 俯卧撑/引体向上等自重动作时不再沿用旧动作的 weighted。
+      loadType: defaultLoadTypeFor(meta.name),
       // 条目 14：快照列原样保留——整行覆写若丢这三列会把已快照的
       // 模板目标抹成 0，老记录完成度对比就失真了。
       targetSets: ex.targetSets,
       targetRepsMin: ex.targetRepsMin,
       targetRepsMax: ex.targetRepsMax,
       trace: tx('替换自：${ex.name}', en: 'Replaced from ${ex.name}'),
+      // 动作稳定键（v16）：换成了另一个动作，旧键不能沿用；先查新动作
+      // 同名已有键（改名过的动作），查不到再按名字现算。
+      exerciseKey:
+          await _db.knownExerciseKey(meta.name) ?? exerciseKeyOf(meta.name),
     );
     await _db.updateSessionExercise(updated);
     exercises[curExIdx] = updated;
     await _loadContextForCurrent();
+    // 替换成的新动作可能已有器械设置备注：重载一次，第一组前立即显示。
+    await _loadSetupNotes();
     weightDraft = _recommendFor(meta.name);
     notifyCard();
     notifyListeners();
@@ -1123,6 +1855,11 @@ class SessionController extends ChangeNotifier {
       'rest_ms': restMs,
       'active_ms': activeMs,
     });
+    // 记下这场是减载/停练回归会话：下次处方/平台期回溯跳过它，
+    // 避免把主动降负荷（90%/85%）的档位带低，停练回归后下一场
+    // 间隔正常时能回到停练前的档位。
+    if (_deloadWeek || _layoffActive) await _markDeloadSession(session!);
+    await _clearSessionBlockState(session!.id!);
     await _exitFocus();
     session = await _db.sessionById(session!.id!);
     WakelockPlus.disable();
@@ -1142,11 +1879,17 @@ class SessionController extends ChangeNotifier {
       'rest_ms': restMs,
       'active_ms': activeMs,
     });
+    await _clearSessionBlockState(session!.id!);
     await _exitFocus();
     WakelockPlus.disable();
     session = null;
     prHit.clear();
     truncatedEndAtMs = null;
+    _blockWeek = null;
+    _blockWeeks = 0;
+    _deloadWeek = false;
+    _layoffActive = false;
+    _layoffDays = 0;
     _setPhase(WorkoutPhase.idle);
     onSessionClosed?.call();
   }
@@ -1159,6 +1902,8 @@ class SessionController extends ChangeNotifier {
     await _db.updateSession(session!.id!, {'impression': v});
     session = await _db.sessionById(session!.id!);
     notifyListeners();
+    // 自评是收工后才写的：通知 App 容器再补一份快照，别让最新备份缺这条。
+    onSessionRated?.call();
   }
 
   /// 本次训练汇总（用于结束页与飞书回填）。
@@ -1185,15 +1930,124 @@ class SessionController extends ChangeNotifier {
     final out = <String>[];
     for (final ex in exercises) {
       final sets = setsByEx[ex.id!] ?? [];
-      final state = chainStateFromHistory(sets, ex.rule);
-      final v = evaluateChain(rule: ex.rule, state: state, workingSets: sets);
-      final tSets = ex.targetSets > 0 ? ex.targetSets : ex.rule.workingSets;
+      final tSets = plannedSetsOf(ex);
       final tMin = ex.targetRepsMin > 0 ? ex.targetRepsMin : ex.rule.repsMin;
       final tMax = ex.targetRepsMax > 0 ? ex.targetRepsMax : ex.rule.repsMax;
-      out.add(tx(
-        '${ex.name}（计划目标 $tSets×$tMin-$tMax 次）：${v.reason}',
-        en: '${exname(ex.name)} (target $tSets×$tMin-$tMax reps): ${v.reason}',
-      ));
+      final unit = ex.logging == LoggingMode.time ? '秒' : '次';
+      // 有效负荷类型（P2-E 复核）：与目标解释/变式建议同一口径。
+      // 老计划把自重动作存成默认 weighted 时，0kg 历史也按 bodyweight
+      // 判定，避免总结页出现「下次加重至 2.5kg」的相反建议。
+      final effective = _effectiveLoadTypeOf(ex);
+      // 停练回归场次不计入渐进判定（会话 id 已记入本地排除表）：
+      // 85% 只是回来找感觉，不能把下一场的档位带低。总结页直接说明，
+      // 并和减载周同框时说清「取更低的 85% 一档、不重复打折」。
+      if (_layoffActive) {
+        final bodyweight = effective == LoadMode.bodyweight;
+        final lastWorking =
+            _progressionLastWorkout[ex.name] ?? const <SetEntry>[];
+        final assisted =
+            !bodyweight &&
+            lastWorking.isNotEmpty &&
+            lastWorking.last.weightKg < 0;
+        final zhDetail = bodyweight
+            ? '本次少做 1 组'
+            : assisted
+            ? '本次辅助配重增加约 15%、少做 1 组'
+            : '本次按约 85% 重量、少做 1 组';
+        final enDetail = bodyweight
+            ? 'one fewer set'
+            : assisted
+            ? '~15% more machine assist and one fewer set'
+            : '~85% weight and one fewer set';
+        final dual = _deloadWeek ? '；本周同时是减载周，取更低的 85% 一档，不重复打折' : '';
+        final enDual = _deloadWeek
+            ? '; this is also a deload week — the lower 85% factor applies once, no double discount'
+            : '';
+        out.add(
+          tx(
+            '${ex.name}（计划目标 $tSets×$tMin-$tMax $unit）：停练 $_layoffDays 天回归——$zhDetail，'
+            '不计入渐进判定；下次间隔正常后回到原档$dual。',
+            en:
+                '${exname(ex.name)} (target $tSets×$tMin-$tMax ${ex.logging == LoggingMode.time ? 's' : 'reps'}): back after $_layoffDays days off — '
+                '$enDetail; this session does not affect progression, back to your usual tier once you train again within 14 days$enDual.',
+          ),
+        );
+        continue;
+      }
+      // 减载周的组不计入渐进判定（会话 id 已记入本地排除表），
+      // 总结页直接说明「本次不参与加重」，不诱导下一块从 90% 档位起步。
+      if (_deloadWeek) {
+        final bodyweight = effective == LoadMode.bodyweight;
+        final lastWorking =
+            _progressionLastWorkout[ex.name] ?? const <SetEntry>[];
+        final assisted =
+            !bodyweight &&
+            lastWorking.isNotEmpty &&
+            lastWorking.last.weightKg < 0;
+        final zhDetail = bodyweight
+            ? '本次少做 1 组'
+            : assisted
+            ? '本次辅助配重增加约 10%、少做 1 组'
+            : '本次按约 90% 重量、少做 1 组';
+        final enDetail = bodyweight
+            ? 'one fewer set'
+            : assisted
+            ? '~10% more machine assist and one fewer set'
+            : '~90% weight and one fewer set';
+        out.add(
+          tx(
+            '${ex.name}（计划目标 $tSets×$tMin-$tMax $unit）：减载周——$zhDetail，'
+            '不计入渐进判定；下周回到${bodyweight ? '原计划' : '原档'}。',
+            en:
+                '${exname(ex.name)} (target $tSets×$tMin-$tMax ${ex.logging == LoggingMode.time ? 's' : 'reps'}): deload week — '
+                '$enDetail; this session does not affect progression, back to normal next week.',
+          ),
+        );
+        continue;
+      }
+      final state = chainStateFromHistory(sets, ex.rule);
+      // 计划组数一起传（P0-B）：少练的组不能用剩下的达标组换推进；
+      // 计时/自重形态一并透传，否则总结页会把秒数说成次数、把加组说成加重。
+      final v = evaluateChain(
+        rule: ex.rule,
+        state: state,
+        workingSets: sets,
+        targetSets: tSets,
+        logging: ex.logging,
+        loadType: effective,
+      );
+      // 停滞协议（P1-C）：平台期未顶格时，链判定只会说「继续冲」；
+      // 换成有原因的下一步（减载 10% 或换变式）。已顶格保留链的加重建议。
+      final protocol = plateauProtocolOf(
+        plateauFor(ex.name),
+        rule: ex.rule,
+        logging: ex.logging,
+        loadType: effective,
+      );
+      // 不能无条件覆盖规则链：
+      // - 链已成功加重（本次顶格/换档）→ 保留链的加重建议；
+      // - 少做（P0-B）/没记录/换档位的 hold → 保留链原因，
+      //   不能借平台期协议把「本次只完成 X/Y 组」改写成「继续加重」。
+      final chainAddedWeight =
+          v.action == 'advance' && v.next.weightKg != state.weightKg;
+      final canReduce =
+          protocol.action == 'reduce' &&
+          !chainAddedWeight &&
+          (v.action == 'decrease' ||
+              v.action == 'advance' ||
+              v.holdKind == 'target_miss');
+      final canAdd =
+          protocol.action == 'add' &&
+          (v.holdKind == 'target_miss' ||
+              (v.holdKind == 'chain_end' &&
+                  effective == LoadMode.bodyweight));
+      final reason = canReduce || canAdd ? protocol.reason : v.reason;
+      out.add(
+        tx(
+          '${ex.name}（计划目标 $tSets×$tMin-$tMax $unit）：$reason',
+          en: '${exname(ex.name)} (target $tSets×$tMin-$tMax ${ex.logging == LoggingMode.time ? 's' : 'reps'}): $reason',
+        ),
+      );
     }
     return out;
   }
@@ -1212,6 +2066,10 @@ class SessionController extends ChangeNotifier {
   /// 会话关闭（结束/放弃）后回调：App 容器接练前提醒重排——
   /// 今天已练完，当天未到的练前提醒随即取消。
   void Function()? onSessionClosed;
+
+  /// 训练自评（impression）写入后回调：App 容器据此再补一份自动快照
+  /// （收工时先写的那份还不包含这条自评）。
+  void Function()? onSessionRated;
 
   Future<void> _enterFocus() async {
     // 常亮开关兜底：startFromDay 里 _setPhase(_applyWakelock) 先按设置
@@ -1284,6 +2142,7 @@ class SessionController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _tick?.cancel();
     _hbTimer?.cancel();
     restRemainingMs.dispose();
@@ -1292,15 +2151,10 @@ class SessionController extends ChangeNotifier {
   }
 }
 
-/// 内置起始重量查询。
-double presetStartOf(String name) {
-  for (final list in kBaojiExercisesByWeekday.values) {
-    for (final pe in list) {
-      if (pe.name == name) return pe.startWeightKg;
-    }
-  }
-  return 20;
-}
+/// 内置起始重量查询（P2-A）：内置计划显式值 → 少量高频动作覆盖 →
+/// 按「器械 + 复合/单关节」启发式 → 词表外动作仍回退 20kg。
+/// 共享实现见 presets/start_weights.dart（计划仓库同口径）。
+double presetStartOf(String name) => knownStartWeightOf(name) ?? 20;
 
 /// 训练卡通知内容（原生前台服务展示，调研条目 1/3）。
 /// [remaining]/[total] 休息剩余秒与总秒（进度条，-1 = 无进度）；

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:baoji_timer/db/db.dart';
 import 'package:baoji_timer/services/heart_rate_service.dart';
@@ -78,6 +79,41 @@ void main() {
       expect(withLoad, contains('Z2 18分'));
       final noLoad = buildHrAnalysisPrompt(pts, durationMin: 30);
       expect(noLoad, isNot(contains('TRIMP')));
+    });
+  });
+
+  group('读数新鲜度 freshBpm（休息建议依据）', () {
+    late HeartRateService svc;
+
+    setUp(() async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      svc = HeartRateService(prefs);
+    });
+
+    tearDown(() => svc.dispose());
+
+    test('新鲜窗口内的读数返回，bpm 与 freshBpm 一致', () {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      svc.debugSetReading(bpm: 130, atMs: now - 3000);
+      expect(svc.bpm, 130);
+      expect(svc.freshBpm, 130);
+    });
+
+    test('超过 10 秒窗口的旧读数：freshBpm 为 null，bpm 保留最后值', () {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      svc.debugSetReading(bpm: 130, atMs: now - 10001);
+      expect(svc.bpm, 130, reason: 'chip 仍显示最后读数');
+      expect(svc.freshBpm, isNull, reason: '旧读数不作为建议依据');
+    });
+
+    test('无读数 / 断链后 freshBpm 为 null', () {
+      expect(svc.freshBpm, isNull);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      svc.debugSetReading(bpm: 100, atMs: now);
+      expect(svc.freshBpm, 100);
+      svc.debugSetReading(link: HrLink.idle, bpm: null);
+      expect(svc.freshBpm, isNull);
     });
   });
 }

@@ -97,7 +97,9 @@ class _TodayEditSheetState extends State<_TodayEditSheet> {
     );
     if (picked == null || picked.isEmpty || !mounted) return;
     final next = [..._list];
-    next[i] = next[i].copyWith(name: picked.first.name);
+    // 换成了另一个动作：旧动作的稳定键不能沿用（v15），否则备注等按 key
+    // 关联的数据会串到新动作上；留空后开练/落库按新动作名取键。
+    next[i] = next[i].copyWith(name: picked.first.name, exerciseKey: '');
     _apply(next);
   }
 
@@ -125,9 +127,27 @@ class _TodayEditSheetState extends State<_TodayEditSheet> {
               en: '"${exname(result.name)}" is already in the list; pick another name'));
       return;
     }
+    final c = app(context);
+    final storedNewKey = await c.db.storedExerciseKey(result.name);
+    if (!mounted) return;
+    final canonicalNew = canonicalExerciseNameOf(result.name);
+    final newIdentity = exerciseKeyOf(result.name);
+    final newNameIsKnown = widget.metas.any((m) =>
+        m.name == result.name ||
+        m.name == canonicalNew ||
+        exerciseKeyOf(m.name) == newIdentity);
     final next = [..._list];
     next[i] = next[i].copyWith(
       name: result.name,
+      // 同页编辑改名默认沿用旧键（任意改名历史不断）；只有新名字已经
+      // 对应另一个已有动作时才换键（“换”按钮是另一条独立路径）。
+      exerciseKey: exerciseKeyAfterRename(
+        oldName: ex.name,
+        oldKey: ex.exerciseKey,
+        newName: result.name,
+        storedNewKey: storedNewKey,
+        newNameIsKnownExercise: newNameIsKnown,
+      ),
       sets: result.sets,
       repsMin: result.repsMin,
       repsMax: result.repsMax,

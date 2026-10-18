@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
@@ -30,12 +31,27 @@ class NotifyService {
 
   final _plugin = FlutterLocalNotificationsPlugin();
   bool _ready = false;
+  Future<void>? _initFuture;
 
   /// 前台服务通道（Dart → Kotlin：启停与内容推送；Kotlin → Dart：按钮动作）
   static const _trainingChannel = MethodChannel('baoji/training');
 
   /// 通知栏按钮动作回调（App 容器接到 SessionController）
   void Function(String action)? onNotifAction;
+
+  /// 周复盘通知点击回调（App 容器接到页面导航）。
+  void Function()? onWeeklyRecapTap;
+
+  /// 周复盘通知的 payload（Android 点击回传，用于区分通知来源）。
+  static const weeklyRecapPayload = 'weekly_recap';
+
+  /// 周复盘通知 id 段（与休息 2/3、空闲 20、练前提醒 30-37 不冲突）。
+  static const weeklyRecapIdBase = 40;
+
+  /// 一次排未来 8 周。不用 matchDateTimeComponents 的每周重复：
+  /// tz.local 未绑定系统时区（默认 UTC），按 UTC 星期重复会把
+  /// 「周日 20:00」推到本地周一凌晨；逐次计算绝对时刻则不受时区影响。
+  static const weeklyRecapHorizon = 8;
 
   // v2（2026-10-11）：通道属性冻结在首次创建，老 ID 在升级安装上拿不到
   // 后补的锁屏可见性；与原生 ensureRestChannel 的 ID 必须保持一致。
@@ -64,13 +80,38 @@ class NotifyService {
     enableVibration: true,
   );
 
-  Future<void> init() async {
-    if (_ready) return;
+  static final _weeklyRecapChannel = AndroidNotificationChannel(
+    'weekly_recap',
+    tx('每周复盘提醒', en: 'Weekly recap reminder'),
+    description: tx(
+      '每周固定时刻提醒花两分钟看周复盘',
+      en: 'A weekly nudge to spend two minutes reviewing your week',
+    ),
+    importance: Importance.defaultImportance,
+    playSound: true,
+    enableVibration: true,
+  );
+
+  Future<void> init() {
+    if (_ready) return Future<void>.value();
+    final pending = _initFuture;
+    if (pending != null) return pending;
+    final f = _doInit();
+    _initFuture = f;
+    return f.whenComplete(() {
+      if (identical(_initFuture, f)) _initFuture = null;
+    });
+  }
+
+  Future<void> _doInit() async {
     tzdata.initializeTimeZones();
     await _plugin.initialize(
       const InitializationSettings(
         android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       ),
+      onDidReceiveNotificationResponse: (response) {
+        if (response.payload == weeklyRecapPayload) onWeeklyRecapTap?.call();
+      },
     );
     await _plugin
         .resolvePlatformSpecificImplementation<
@@ -82,9 +123,33 @@ class NotifyService {
           AndroidFlutterLocalNotificationsPlugin
         >()
         ?.createNotificationChannel(_idleChannel);
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >()
+        ?.createNotificationChannel(_weeklyRecapChannel);
     _ready = true;
+    // 冷启动由通知拉起时不会走 onDidReceiveNotificationResponse：
+    // 读一次启动详情把周复盘请求交给 UI（失败静默，测试环境
+    // 平台实现可能不返回详情，不能因此拖垮通知初始化）。
+    try {
+      final launch = await _plugin.getNotificationAppLaunchDetails();
+      if (launch?.didNotificationLaunchApp == true &&
+          launch?.notificationResponse?.payload == weeklyRecapPayload) {
+        onWeeklyRecapTap?.call();
+      }
+    } catch (_) {}
     // rest_timer_v2 的勿扰穿透由原生侧在通道首次创建时设置（bypassDnd 只在
     // 创建时生效），这里无需也不应重复设置。
+  }
+
+  /// 通知插件就绪（失败返回 false，调用方静默跳过）。
+  Future<bool> _ensureReady() async {
+    if (_ready) return true;
+    try {
+      await init();
+    } catch (_) {}
+    return _ready;
   }
 
   // ---------- 训练卡（前台服务，条目 1/3） ----------
@@ -259,4 +324,110 @@ class NotifyService {
     if (!_ready) return;
     await _plugin.cancel(20);
   }
+
+  // ---------- 每周复盘提醒（P1-E2） ----------
+
+  /// 取消未来 8 周的周复盘通知（设置关闭、训练开始、重排前都会调）。
+  Future<void> cancelWeeklyRecap() async {
+    if (!await _ensureReady()) return;
+    for (var i = 0; i < weeklyRecapHorizon; i++) {
+      try {
+        await _plugin.cancel(weeklyRecapIdBase + i);
+      } catch (_) {
+        // 单个取消失败不挡其余 id
+      }
+    }
+  }
+
+  /// 按星期与时刻重排未来 8 周的周复盘通知（payload 固定为
+  /// [weeklyRecapPayload]，点击由 App 容器打开周复盘页）。
+  /// 失败静默：提醒排不上是体验问题，不能变成训练崩溃。
+  Future<void> scheduleWeeklyRecap({
+    required int weekday,
+    required int minutesOfDay,
+    DateTime? now,
+  }) async {
+    if (!await _ensureReady()) return;
+    await cancelWeeklyRecap();
+    final fires = nextWeeklyRecapFires(
+      now: now ?? DateTime.now(),
+      weekday: weekday,
+      minutesOfDay: minutesOfDay,
+    );
+    final title = tx('该看周复盘了', en: 'Weekly recap time');
+    final body = tx(
+      '花两分钟看看这周练得怎么样、下周怎么加',
+      en: 'Two minutes to see how this week went and what to do next',
+    );
+    for (var i = 0; i < fires.length; i++) {
+      try {
+        await _plugin.zonedSchedule(
+          weeklyRecapIdBase + i,
+          title,
+          body,
+          tz.TZDateTime.from(fires[i], tz.local),
+          NotificationDetails(
+            android: AndroidNotificationDetails(
+              _weeklyRecapChannel.id,
+              _weeklyRecapChannel.name,
+              channelDescription: _weeklyRecapChannel.description,
+              importance: Importance.defaultImportance,
+              priority: Priority.defaultPriority,
+            ),
+          ),
+          // 周复盘不需要精确到秒：非精确闹钟免申请精确闹钟权限，
+          // 也降低系统对高频精确闹钟的限制风险。
+          androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+          payload: weeklyRecapPayload,
+          uiLocalNotificationDateInterpretation:
+              UILocalNotificationDateInterpretation.absoluteTime,
+        );
+      } catch (_) {
+        // 单个失败不挡其余周次；下次 reschedule 再补
+      }
+    }
+  }
+}
+
+/// 纯函数：从 [now] 起算出未来 [count] 次「每周 [weekday] 的
+/// [minutesOfDay]」触发时刻（本地时区）。
+/// 当天还没到点就算当天；已过点（含正好到点）顺延到下周。
+@visibleForTesting
+List<DateTime> nextWeeklyRecapFires({
+  required DateTime now,
+  required int weekday,
+  required int minutesOfDay,
+  int count = NotifyService.weeklyRecapHorizon,
+}) {
+  final targetWeekday = weekday < 1 ? 1 : (weekday > 7 ? 7 : weekday);
+  final minutes =
+      minutesOfDay < 0 ? 0 : (minutesOfDay > 23 * 60 + 59 ? 1439 : minutesOfDay);
+  var delta = (targetWeekday - now.weekday) % 7;
+  if (delta < 0) delta += 7;
+  var first = DateTime(
+    now.year,
+    now.month,
+    now.day + delta,
+    minutes ~/ 60,
+    minutes % 60,
+  );
+  if (!first.isAfter(now)) {
+    first = DateTime(
+      first.year,
+      first.month,
+      first.day + 7,
+      first.hour,
+      first.minute,
+    );
+  }
+  return [
+    for (var i = 0; i < count; i++)
+      DateTime(
+        first.year,
+        first.month,
+        first.day + i * 7,
+        first.hour,
+        first.minute,
+      ),
+  ];
 }
