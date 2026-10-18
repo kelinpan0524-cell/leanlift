@@ -152,6 +152,10 @@ class HeartRateService extends ChangeNotifier {
   String? get savedName => _savedName;
   List<ScanResult> get found => List.unmodifiable(_found);
 
+  /// 本场已采样的心率点（只读视图）。休息页点心率看消耗时，卡路里/
+  /// 负荷直接从这里现算——采样仍按 v13 约定在会话结束时一次性落库。
+  List<HrPoint> get samples => List.unmodifiable(_samples);
+
   void _setLink(HrLink v) {
     if (_link == v) return;
     _link = v;
@@ -168,6 +172,16 @@ class HeartRateService extends ChangeNotifier {
     _bpmAt = bpm == null
         ? null
         : (atMs ?? DateTime.now().millisecondsSinceEpoch);
+    notifyListeners();
+  }
+
+  /// 测试注入：直接填充采样缓冲（不触发任何 BLE 调用），模拟「本场已
+  /// 练了几十分钟」供卡路里/负荷面板测试用。正式代码不要调用。
+  @visibleForTesting
+  void debugSeedSamples(List<HrPoint> points) {
+    _samples
+      ..clear()
+      ..addAll(points);
     notifyListeners();
   }
 

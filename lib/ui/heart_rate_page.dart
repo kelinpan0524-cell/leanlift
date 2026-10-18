@@ -31,9 +31,8 @@ class HrRestChip extends StatelessWidget {
         if (hr.link != HrLink.connected) return const SizedBox.shrink();
         final bpm = hr.bpm;
         return GestureDetector(
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const HeartRatePage()),
-          ),
+          key: const Key('hrRestChip'),
+          onTap: () => showHrRestSheet(context),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
@@ -67,6 +66,139 @@ class HrRestChip extends StatelessWidget {
       },
     );
   }
+}
+
+/// 休息页点心率：本次消耗速览（2026-10-18 Arono）。
+/// 用户主动唤起的底部面板（与「直接输入重量」同一先例，不算打断训练）：
+/// 大字卡路里（训练中 + 练后 EPOC 拆分）、平均/峰值、循环负荷，
+/// 「查看心率曲线」保留原设备管理页入口。数据来自本场的实时采样缓冲
+/// （hr.samples，落库仍按 v13 在会话结束一次性写入）。
+Future<void> showHrRestSheet(BuildContext context) async {
+  final c = app(context);
+  final hr = c.hr;
+  final st = c.settings;
+  final points = hr.samples;
+  final sum = summarizeHr(points);
+  final load = computeHrLoad(
+    [for (final p in points) (ts: p.ts, bpm: p.bpm)],
+    age: st.hrAge,
+    hrRest: st.hrRest,
+    hrMaxOverride: st.hrMaxOverride,
+  );
+  final cal = computeHrCalories(
+    [for (final p in points) (ts: p.ts, bpm: p.bpm)],
+    bodyWeightKg: st.bodyWeightKg,
+    age: st.hrAge,
+    sex: HrSex.values[st.hrSex.clamp(0, HrSex.values.length - 1)],
+    z4Sec: load.zoneSec[3],
+    z5Sec: load.zoneSec[4],
+  );
+  final minutes = points.isEmpty
+      ? 0
+      : ((points.last.ts - points.first.ts) / 60000).round();
+  await showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: AppTheme.card,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (sheetCtx) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.favorite, size: 15, color: AppTheme.danger),
+                const SizedBox(width: 6),
+                Text(
+                  tx('本次训练消耗', en: 'Session Burn'),
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w700),
+                ),
+                const Spacer(),
+                Text(
+                  hr.bpm == null ? '-- bpm' : '${hr.bpm} bpm',
+                  style: const TextStyle(
+                      color: AppTheme.textDim,
+                      fontSize: 13,
+                      fontFeatures: [FontFeature.tabularFigures()]),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            if (points.isEmpty || sum == null) ...[
+              Text(
+                tx('还没有采到心率数据：确认心率带已戴上、连接正常，\n下一组休息时再点开看。',
+                    en: 'No heart-rate samples yet: wear the strap and stay\nconnected, then tap again during your next rest.'),
+                style:
+                    const TextStyle(color: AppTheme.textDim, fontSize: 13.5),
+              ),
+            ] else ...[
+              Text(
+                tx('约 ${cal.totalKcal.round()} 千卡',
+                    en: '~${cal.totalKcal.round()} kcal'),
+                style: const TextStyle(
+                    fontSize: 34,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.primary,
+                    fontFeatures: [FontFeature.tabularFigures()]),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                tx('训练中 ${cal.activeKcal.round()} · 练后恢复 +${cal.epocKcal.round()}',
+                    en: 'In-session ${cal.activeKcal.round()} · afterburn +${cal.epocKcal.round()}'),
+                style:
+                    const TextStyle(color: AppTheme.textDim, fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                tx('平均 ${sum.avg.round()} bpm · 峰值 ${sum.max} bpm · 已记录 $minutes 分钟',
+                    en: 'Avg ${sum.avg.round()} bpm · peak ${sum.max} bpm · $minutes min logged'),
+                style:
+                    const TextStyle(color: AppTheme.textDim, fontSize: 13),
+              ),
+              if (load.trimp >= 1) ...[
+                const SizedBox(height: 4),
+                Text(
+                  tx('循环负荷 ${load.trimp.round()} · ${load.zoneSummary()}',
+                      en: 'Cardio Load ${load.trimp.round()} · ${load.zoneSummary()}'),
+                  style: const TextStyle(
+                      color: AppTheme.textDim, fontSize: 13),
+                ),
+              ],
+              const SizedBox(height: 10),
+              Text(
+                tx('按心率估算（Keytel 方程 + 力量训练修正口径），仅供参考。',
+                    en: 'Estimated from heart rate (Keytel equation with\nresistance-training correction). For reference only.'),
+                style: const TextStyle(
+                    color: AppTheme.textDim,
+                    fontSize: 11.5,
+                    height: 1.35),
+              ),
+            ],
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                key: const Key('hrSheetOpenCurve'),
+                icon: const Icon(Icons.show_chart, size: 18),
+                label: Text(tx('查看心率曲线', en: 'View heart-rate curve')),
+                onPressed: () {
+                  Navigator.of(sheetCtx).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const HeartRatePage()),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 /// 心率设备管理页：状态卡 + 扫描配对 + 忘记设备 + 提示文案。

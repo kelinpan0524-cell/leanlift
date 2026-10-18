@@ -62,6 +62,9 @@ A lean physique comes from low body fat, training 3× a week, and progressive ov
 - Unilateral lifts like lunges and single-arm rows log total reps and show "N per side": 12 total means 6 per side — targets are always even, so "7 per side" can never happen
 - Screen stays awake mid-workout so the countdown never blacks out; it sleeps the moment you pause, with a switch in settings
 - Forgot to stop the timer? A guard asks before saving and trims the session to your last set — no inflated duration
+- **Bluetooth heart rate**: any standard BLE strap just works — live HR on rest screens, a "rest 30s more" nudge when it's still high (advice only, never automatic), and a tap to see **calories burned this session** and the HR curve
+- **Pain notes**: tag the area and severity on any set (never interrupts training); level 2+ suggests backing the load off or switching variants — visible in history and the AI pack
+- **kg / lb one-tap switch**: global conversion across history, suggestions and the notification card
 
 ### 📖 Illustrated exercise guides (187 exercises)
 - 187 built-in exercises (glute/leg specials, commercial-gym machines, band-at-home series), each with form cues: how-to + common mistakes (e.g. bench press: "shoulders shrug, bar drifts toward the neck"), bilingual
@@ -75,13 +78,19 @@ A lean physique comes from low body fat, training 3× a week, and progressive ov
 - Bodyweight moves (push-ups, pull-ups) skip the weight column — log reps directly; once reps hit the ceiling the engine suggests adding a set instead of endless reps
 - **Supersets**: pair 2–3 neighboring exercises and alternate (A1→B1→A2→B2…) — one lift's rest fills another's work; the AI wires them up automatically when your plan mentions supersets, the plan editor toggles them in one tap, and transition rest vs full round rest are timed separately
 - Every set logs its target at completion — history shows **target vs actual**, so you can see which set fell short and by how much
-- Automatic 1RM estimation; volume, set-count and intensity trends (weekly / monthly) without spreadsheet math
+- **Training blocks & deload**: 5-week blocks by default with an automatic week-5 deload (~90% load, one set fewer); a stuck weight gets three clear exits — deload, switch variation, or add load — never just "keep pushing"
+- **Comeback taper**: back after 2+ weeks off? The next session starts at ~85% with one set fewer (stacks with neither deload), and the plan restores itself after one normal session — no getting crushed by pre-break numbers
+- **Stable exercise identity**: renaming an exercise, using a synonym, or AI-importing no longer splits its history and PRs (253 built-in Chinese/English aliases)
+- Bodyweight moves (push-ups, pull-ups) skip the weight column — log reps directly; once reps hit the ceiling the engine suggests adding a set or the **next variation** (decline push-ups, weighted pull-ups) instead of endless reps
+- **Only 20 minutes**: on busy days the app condenses today's plan to at most 3 compound-first exercises × 2 sets — 20 minutes beats skipping
+- Automatic 1RM estimation with a **1RM ÷ bodyweight** strength-to-weight view; volume, set-count and intensity trends (weekly / monthly) without spreadsheet math
 
 ### 🤖 AI features (your key, your data)
 - Paste an existing plan and the AI converts it into a structured one — no hand-entering dozens of exercises
 - Or describe it in plain words ("4 days a week, back/chest/legs, hypertrophy") and get a complete plan
 - **Conversational planning**: chat your needs and refine as you go ("can't make Wednesday, move it") — each round returns a full plan, preview and save when happy, with every exercise still confirmed by you before it lands
 - **AI coach**: attaches your last 8 weeks of real training data and self-ratings for one-tap phase reviews or Q&A anytime; a built-in coach persona with safety guardrails, and failures say why so you can retry
+- **Weekly AI report**: after the local recap is built, optionally have AI turn it into prose — off by default, generated once in the foreground when enabled, never in the background; falls back to local without a key
 - OpenAI-compatible — local Ollama works too; one-tap "test connection" in settings
 
 ### 🔗 Let an AI on your computer read your logs (LAN MCP)
@@ -102,8 +111,14 @@ A lean physique comes from low body fat, training 3× a week, and progressive ov
 - Full CSV / JSON export; one-tap "AI analysis pack" for any AI
 - An on-device full snapshot after every workout (latest for each of the 7 most recent backup dates + 4 weekly buckets; can be switched off), with preview and one-tap restore in Data & Backup; a quiet nudge on the Stats page after 14 days without a manual export
 
+### 🧭 Weekly recap (local; AI optional)
+- Every Sunday (time adjustable) a local notification points you at the **weekly recap**: planned vs actual sessions and sets, progressing and stalling lifts, muscles that fell short, your 7-day weight pace — ending with one concrete action for next week
+- Fully computed on-device and **complete without an AI key**; with a key and "auto weekly report" enabled, AI turns it into prose (one foreground call, local fallback on failure)
+- Also reachable from the Stats page any time
+
 ### ⏰ Staying consistent
 - Pre-workout reminder: a local notification if you have not trained by your chosen time on a training day — a fallback even without the calendar sync
+- **Weekly recap reminder**: a local notification at your chosen time that opens this week's report (above); it steps aside automatically while a workout is in progress
 - Missed days auto-shift: skip a scheduled day and the plan slides one day later per missed day the next time you open the app, with a note — your rhythm stays intact; toggleable in settings
 - Four-layer rest audio cues (start / midpoint / last 3 seconds) with a headphones-only mode — sounds in your ears, not across the gym
 
