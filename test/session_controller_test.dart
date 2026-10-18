@@ -81,18 +81,22 @@ void main() {
     PlanDay day,
     String name,
     int order, {
-    int sets = 3,
+    int? sets,
     int restSec = 120,
     int workingSets = 3,
     String supersetTag = '',
     String logging = LoggingMode.reps,
     String loadType = LoadMode.weighted,
+    String exerciseKey = '',
   }) async {
+    // 未显式给 sets 时与 workingSets 同步（真实计划的正常形态）；
+    // 显式传 sets 才用来复现老行/导入行「快照组数 ≠ 规则组数」。
+    final setCount = sets ?? workingSets;
     final pe = PlanExercise(
       dayId: day.id!,
       name: name,
       orderIdx: order,
-      sets: sets,
+      sets: setCount,
       repsMin: 5,
       repsMax: 8,
       restSec: restSec,
@@ -101,16 +105,19 @@ void main() {
       supersetTag: supersetTag,
       logging: logging,
       loadType: loadType,
+      exerciseKey: exerciseKey,
     );
     final id = await db.insertPlanExercise(pe);
     return pe.copyWith(id: id);
   }
 
   test('A1-1：跨动作回退撤销后计数收敛到 DB 真值，剩余组仍是 PR 则保留标记', () async {
-    // 前置历史：深蹲 在一次 done 会话里推过 60kg（62.5 即历史新高）
+    // 前置历史：深蹲 在一次 done 会话里推过 60kg（62.5 即历史新高）。
+    // 日期取 1 天前：P1-D 停练回归按「全库上一场 done」判定，用几个月前
+    // 的固定日期会让本测试意外进入 85% 降档、打乱组数推进。
     final s0 = await db.insertSession(
       Session(
-        date: '2026-09-01',
+        date: fmtDate(DateTime.now().subtract(const Duration(days: 1))),
         planDayTitle: '旧训练',
         startedAt: 1,
         endedAt: 2,
@@ -450,6 +457,28 @@ void main() {
     expect(c.weightDraft, -300, reason: '负值下限 -300kg');
   });
 
+  test('P0-A：finish/quit 都触发会话关闭回调；自评写入触发补快照回调', () async {
+    final day = await makePlanDay('日');
+    final a = await addPlanEx(day, '动作甲', 0, sets: 1, workingSets: 1);
+
+    final c = makeController();
+    var closed = 0;
+    var rated = 0;
+    c.onSessionClosed = () => closed++;
+    c.onSessionRated = () => rated++;
+    await c.startFromDay(day: day, planExercises: [a]);
+    await c.finish();
+    expect(closed, 1, reason: 'finish 是会话结束，自动快照接线点');
+    await c.setImpression(3);
+    expect(rated, 1, reason: '收工后才写的自评要再触发一次快照');
+
+    final c2 = makeController();
+    c2.onSessionClosed = () => closed++;
+    await c2.startFromDay(day: day, planExercises: [a]);
+    await c2.quit();
+    expect(closed, 2, reason: 'quit 也是会话结束，已记录的组不应漏备份');
+  });
+
   test('B9：手动改重量并完成后，下次训练直接从实际重量开始（不回计划初始）', () async {
     final day = await makePlanDay('日');
     final a = await addPlanEx(day, '动作甲', 0, sets: 2, workingSets: 2);
@@ -483,10 +512,18 @@ void main() {
 
   test('B3：训练中可追加动作、可替换未记组动作，已记组不可替换', () async {
     final day = await makePlanDay('日');
-    final a = await addPlanEx(day, '动作甲', 0, sets: 3, workingSets: 3);
+    final a = await addPlanEx(day, '动作甲', 0,
+        sets: 3, workingSets: 3, exerciseKey: 'exercise_a');
 
     final c = makeController();
     await c.startFromDay(day: day, planExercises: [a]);
+    final started = await rawDb.query(
+      'session_exercises',
+      where: 'session_id = ?',
+      whereArgs: [c.session!.id],
+    );
+    expect(started.single['exercise_key'], 'exercise_a',
+        reason: 'v15：开练快照计划动作的稳定键');
 
     await c.appendExercises(const [
       ExerciseMeta('临时动作', MuscleGroups(main: '胸'), true),
@@ -518,6 +555,10 @@ void main() {
     expect(renamed.first['name'], '替换动作');
     expect(renamed.first['trace'], '替换自：动作甲',
         reason: '点名条目三：替换痕迹落库（原动作是什么）');
+    expect(renamed.first['exercise_key'], exerciseKeyOf('替换动作'),
+        reason: 'v16：换成另一个动作不继承旧键，按新名字生成稳定键');
+    expect(c.exercises[0].exerciseKey, exerciseKeyOf('替换动作'),
+        reason: '内存模型与落库行同键');
 
     // 已记组：不可替换（防把已记的组串到别的动作名下）
     await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
@@ -526,6 +567,144 @@ void main() {
     );
     expect(ok2, isFalse);
     expect(c.exercises[0].name, '替换动作');
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('P2-E：训练中追加/替换成自重动作时按动作库口径落 bodyweight', () async {
+    final day = await makePlanDay('日');
+    final a = await addPlanEx(day, '动作甲', 0, sets: 3, workingSets: 3);
+    final c = makeController();
+    await c.startFromDay(day: day, planExercises: [a]);
+
+    // 临时追加俯卧撑：不再吃 SessionExercise 默认的 weighted
+    await c.appendExercises(const [
+      ExerciseMeta('俯卧撑', MuscleGroups(main: '胸'), true),
+    ]);
+    expect(c.exercises.last.loadType, LoadMode.bodyweight,
+        reason: '追加的自重动作按动作库口径落 bodyweight');
+
+    // 当前动作还没记组：替换成引体向上同样落 bodyweight
+    final ok = await c.replaceCurrentExercise(
+      const ExerciseMeta('引体向上', MuscleGroups(main: '背'), true),
+    );
+    expect(ok, isTrue);
+    expect(c.exercises.first.loadType, LoadMode.bodyweight,
+        reason: '替换成自重动作时负荷类型跟着新动作走');
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('P2-E：老计划 weighted 的 0kg 引体按自重口径判定，不再建议加重 2.5kg',
+      () async {
+    // 上一场：老计划行 load_type=weighted（v14 默认值），实际 0kg×8 三组
+    final s0 = await db.insertSession(Session(
+      date: fmtDate(DateTime.now().subtract(const Duration(days: 3))),
+      planDayTitle: '旧训练',
+      startedAt: 1,
+      endedAt: 2,
+      status: 'done',
+    ));
+    final se0 = await db.insertSessionExercise(SessionExercise(
+      sessionId: s0.id!,
+      name: '引体向上',
+      orderIdx: 0,
+      kind: 'compound',
+      rule: const ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
+      loadType: LoadMode.weighted,
+    ));
+    final historyAt = DateTime.now()
+        .subtract(const Duration(days: 3))
+        .millisecondsSinceEpoch;
+    for (var i = 0; i < 3; i++) {
+      await db.insertSet(SetEntry(
+        sessionExerciseId: se0,
+        weightKg: 0,
+        reps: 8,
+        rir: 2,
+        kind: SetKind.working,
+        doneAt: historyAt + i,
+      ));
+    }
+
+    final day = await makePlanDay('背日');
+    final a = await addPlanEx(day, '引体向上', 0,
+        loadType: LoadMode.weighted);
+    final c = makeController();
+    await c.startFromDay(day: day, planExercises: [a]);
+    for (var i = 0; i < 3; i++) {
+      await c.completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
+      if (c.phase == WorkoutPhase.resting) c.skipRest();
+    }
+
+    final verdicts = await c.verdicts();
+    expect(verdicts.single, isNot(contains('加重至 2.5kg')),
+        reason: '0kg 的引体不能被当成负重动作建议加重');
+    expect(verdicts.single, contains('自重档位'),
+        reason: 'verdict 走自重口径（链尽头保持，不再进负重轴）');
+    expect(verdicts.single, isNot(contains('加重')),
+        reason: '不能同时建议负重加重');
+    expect(c.targetWhyOf(0), contains('加练一组'),
+        reason: '目标解释同样按自重触顶口径，不说加重');
+    expect(c.targetWhyOf(0), isNot(contains('加重')));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('H3：负重版改名保留旧键的引体按 weighted 口径，不进自重阶梯建议',
+      () async {
+    // 动作改名「引体向上（负重版）」但保留旧键（改名不断历史）：存储的
+    // load_type 仍是默认 weighted，上一场实际 0kg×8 三组——与上一条
+    // P2-E 用例唯一差别是名字带「负重」注记，结论必须反过来走负重口径。
+    final s0 = await db.insertSession(Session(
+      date: fmtDate(DateTime.now().subtract(const Duration(days: 3))),
+      planDayTitle: '旧训练',
+      startedAt: 1,
+      endedAt: 2,
+      status: 'done',
+    ));
+    final se0 = await db.insertSessionExercise(SessionExercise(
+      sessionId: s0.id!,
+      name: '引体向上（负重版）',
+      orderIdx: 0,
+      kind: 'compound',
+      rule: const ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
+      loadType: LoadMode.weighted,
+      exerciseKey: exerciseKeyOf('引体向上'),
+    ));
+    final historyAt = DateTime.now()
+        .subtract(const Duration(days: 3))
+        .millisecondsSinceEpoch;
+    for (var i = 0; i < 3; i++) {
+      await db.insertSet(SetEntry(
+        sessionExerciseId: se0,
+        weightKg: 0,
+        reps: 8,
+        rir: 2,
+        kind: SetKind.working,
+        doneAt: historyAt + i,
+      ));
+    }
+
+    final day = await makePlanDay('背日');
+    final a = await addPlanEx(day, '引体向上（负重版）', 0,
+        loadType: LoadMode.weighted, exerciseKey: exerciseKeyOf('引体向上'));
+    final c = makeController();
+    await c.startFromDay(day: day, planExercises: [a]);
+    for (var i = 0; i < 3; i++) {
+      await c.completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
+      if (c.phase == WorkoutPhase.resting) c.skipRest();
+    }
+
+    // verdict / 目标解释 / 处方与引擎同一判定入口（effectiveLoadTypeFor）：
+    // 显式负重变体压住「保留旧键命中自重阶梯」的推断。
+    final verdicts = await c.verdicts();
+    expect(verdicts.single, isNot(contains('自重档位')),
+        reason: '负重变体不走自重口径');
+    expect(verdicts.single, isNot(contains('加练一组')),
+        reason: '不进自重阶梯/加组建议');
+    expect(verdicts.single, contains('加重至 2.5kg'),
+        reason: '0kg 顶格走负重链：建议开始外加重量');
+    expect(c.targetWhyOf(0), isNot(contains('加练一组')));
+    expect(c.targetWhyOf(0), contains('加重至'),
+        reason: '目标解释与 verdict 同一 weighted 口径');
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });
 
@@ -1570,6 +1749,360 @@ void main() {
       await c.completeSet(weight: 20, reps: 7, rir: 2, kind: SetKind.working);
       final sets = await db.setsOfExercise(c.exercises[0].id!);
       expect(sets.single.reps, 8, reason: '7 → 取偶 8（每边 4 均分口径）');
+      await drainContinuations();
+    });
+  });
+
+  group('P0-B：verdicts 按计划组数判定', () {
+    Future<void> drainContinuations() =>
+        Future<void>.delayed(const Duration(milliseconds: 120));
+
+    test('只完成 1/3 组 → verdicts 文案写明「本次只完成 1/3 组，不推进」', () async {
+      final day = await makePlanDay('少做日');
+      final a = await addPlanEx(day, '深蹲', 0, sets: 3, workingSets: 3);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+      final vs = await c.verdicts();
+      expect(vs, hasLength(1));
+      expect(vs.single, contains('本次只完成 1/3 组，不推进'));
+      await drainContinuations();
+    });
+  });
+
+  group('P0-B 复核：下次处方与计划组数口径', () {
+    Future<void> drainContinuations() =>
+        Future<void>.delayed(const Duration(milliseconds: 120));
+
+    // 直插一场 done 历史：SessionExercise 带 target_sets 快照，
+    // 组行按传入的 isExtra 原样落库（复现老行/加练数据）。
+    Future<void> seedDone({
+      required String name,
+      required List<SetEntry> sets,
+      int targetSets = 0,
+      String logging = LoggingMode.reps,
+      String loadType = LoadMode.weighted,
+      ProgressionRule rule =
+          const ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
+    }) async {
+      final s = await db.insertSession(
+        Session(
+          // 1 天前：避免 P1-D 停练回归（≥14 天）改变本组测试的处方断言。
+          date: fmtDate(DateTime.now().subtract(const Duration(days: 1))),
+          planDayTitle: '历史',
+          startedAt: 1,
+          endedAt: 2,
+          status: 'done',
+        ),
+      );
+      final se = await db.insertSessionExercise(
+        SessionExercise(
+          sessionId: s.id!,
+          name: name,
+          orderIdx: 0,
+          kind: 'compound',
+          rule: rule,
+          targetSets: targetSets,
+          logging: logging,
+          loadType: loadType,
+        ),
+      );
+      for (final e in sets) {
+        await db.insertSet(SetEntry(
+          sessionExerciseId: se,
+          weightKg: e.weightKg,
+          reps: e.reps,
+          rir: e.rir,
+          kind: e.kind,
+          doneAt: e.doneAt,
+          isExtra: e.isExtra,
+        ));
+      }
+    }
+
+    test('上次只完成 1/3 组（12 次触顶）→ 下次开练重量不推进', () async {
+      await seedDone(
+        name: '深蹲',
+        targetSets: 3,
+        sets: [
+          SetEntry(
+            sessionExerciseId: 0,
+            weightKg: 60,
+            reps: 12,
+            kind: SetKind.working,
+            doneAt: 1000,
+          ),
+        ],
+      );
+      final day = await makePlanDay('少做后的下一次');
+      final a = await addPlanEx(day, '深蹲', 0, sets: 3, workingSets: 3);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      expect(c.weightDraft, 60,
+          reason: '上次 1/3 组 → hold；即使 12 次触顶也不能加到 62.5');
+      await drainContinuations();
+    });
+
+    test('上次 3/3 达标 + 低次数加练 → 下次重量按正式组推进', () async {
+      await seedDone(
+        name: '深蹲',
+        targetSets: 3,
+        sets: [
+          for (var i = 0; i < 3; i++)
+            SetEntry(
+              sessionExerciseId: 0,
+              weightKg: 60,
+              reps: 8,
+              kind: SetKind.working,
+              doneAt: 1000 + i,
+            ),
+          SetEntry(
+            sessionExerciseId: 0,
+            weightKg: 60,
+            reps: 4,
+            kind: SetKind.working,
+            doneAt: 4000,
+            isExtra: true,
+          ),
+        ],
+      );
+      final day = await makePlanDay('加练后的下一次');
+      final a = await addPlanEx(day, '深蹲', 0, sets: 3, workingSets: 3);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      expect(c.weightDraft, 62.5,
+          reason: '加练 4 次不参与判定：3/3 达标 → 加重，而不是被带回 57');
+      await drainContinuations();
+    });
+
+    test('上一场无 target_sets 快照：按该场历史规则组数判定，不误判少做', () async {
+      await seedDone(
+        name: '深蹲',
+        targetSets: 0,
+        rule: const ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 2),
+        sets: [
+          for (var i = 0; i < 2; i++)
+            SetEntry(
+              sessionExerciseId: 0,
+              weightKg: 60,
+              reps: 8,
+              kind: SetKind.working,
+              doneAt: 1000 + i,
+            ),
+        ],
+      );
+      final day = await makePlanDay('老记录后的下一次');
+      final a = await addPlanEx(day, '深蹲', 0, sets: 3, workingSets: 3);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      expect(c.weightDraft, 62.5,
+          reason: '历史规则 2 组、做完 2 组 → 达标推进；不能拿当前 3 组判 false hold');
+      await drainContinuations();
+    });
+
+    test('上一场无快照且历史规则 3 组只做 2 组 → 按历史组数 hold', () async {
+      await seedDone(
+        name: '深蹲',
+        targetSets: 0,
+        sets: [
+          for (var i = 0; i < 2; i++)
+            SetEntry(
+              sessionExerciseId: 0,
+              weightKg: 60,
+              reps: 8,
+              kind: SetKind.working,
+              doneAt: 1000 + i,
+            ),
+        ],
+      );
+      final day = await makePlanDay('减组后的下一次');
+      final a = await addPlanEx(day, '深蹲', 0, sets: 2, workingSets: 2);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      expect(c.weightDraft, 60,
+          reason: '历史规则 3 组只做 2 组 → 少做 hold，不能因当前规则 2 组就判定达标');
+      await drainContinuations();
+    });
+
+    test('同一场次同名两行：计划组数按快照求和，不误判少做', () async {
+      final s = await db.insertSession(
+        Session(
+          // 1 天前：避免 P1-D 停练回归改变本组测试的处方断言。
+          date: fmtDate(DateTime.now().subtract(const Duration(days: 1))),
+          planDayTitle: '重复动作历史',
+          startedAt: 1,
+          endedAt: 2,
+          status: 'done',
+        ),
+      );
+      const histRule = ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3);
+      var at = 1000;
+      for (var row = 0; row < 2; row++) {
+        final se = await db.insertSessionExercise(
+          SessionExercise(
+            sessionId: s.id!,
+            name: '深蹲',
+            orderIdx: row,
+            kind: 'compound',
+            rule: histRule,
+            targetSets: 3,
+          ),
+        );
+        for (var i = 0; i < 2; i++) {
+          await db.insertSet(SetEntry(
+            sessionExerciseId: se,
+            weightKg: 60,
+            reps: 8,
+            kind: SetKind.working,
+            doneAt: at++,
+          ));
+        }
+      }
+      final day = await makePlanDay('重复动作后的下一次');
+      final a = await addPlanEx(day, '深蹲', 0, sets: 6, workingSets: 6);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      expect(c.weightDraft, 60,
+          reason: '两行快照合计 6 组、只做 4 组 → hold，不能按单行 3 组误判达标');
+      await drainContinuations();
+    });
+
+    test('上一场自重、当前改成负重：按上一场形态判定，不倒推负重', () async {
+      await seedDone(
+        name: '俯卧撑',
+        targetSets: 3,
+        loadType: LoadMode.bodyweight,
+        sets: [
+          for (var i = 0; i < 3; i++)
+            SetEntry(
+              sessionExerciseId: 0,
+              weightKg: 0,
+              reps: 8,
+              kind: SetKind.working,
+              doneAt: 1000 + i,
+            ),
+        ],
+      );
+      final day = await makePlanDay('改回负重后');
+      final a = await addPlanEx(day, '俯卧撑', 0, sets: 3, workingSets: 3);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      expect(c.weightDraft, 0,
+          reason: '上一场是自重形态，不能按当前负重链给出 2.5kg');
+      await drainContinuations();
+    });
+
+    test('快照 4 组：第 3 组后切到别的动作，仍可跳回补第 4 组', () async {
+      final day = await makePlanDay('跳页日');
+      final a = await addPlanEx(day, '动作甲', 0, sets: 4, workingSets: 3);
+      final b = await addPlanEx(day, '动作乙', 1, sets: 1, workingSets: 1);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a, b]);
+      for (var i = 0; i < 3; i++) {
+        await c.completeSet(weight: 60, reps: 8, rir: 2,
+            kind: SetKind.working);
+      }
+      expect(c.curExIdx, 0, reason: '快照 4 组：第 3 组后仍在动作甲');
+      expect(await c.jumpToExercise(1), isTrue);
+      expect(await c.jumpToExercise(0), isTrue,
+          reason: '动作甲还有第 4 个计划组，应允许跳回补练');
+      await drainContinuations();
+    });
+
+    test('targetSets 快照为 0 → verdicts 回退 rule.workingSets', () async {
+      final day = await makePlanDay('老记录日');
+      final a = await addPlanEx(day, '深蹲', 0, sets: 0, workingSets: 3);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+      final vs = await c.verdicts();
+      expect(vs.single, contains('本次只完成 1/3 组，不推进'),
+          reason: '老记录 target_sets=0 时按规则 workingSets=3 判定');
+      await drainContinuations();
+    });
+
+    test('快照 4 组 / 规则 3 组：第 4 组不算加练，按 4 组判定推进', () async {
+      final day = await makePlanDay('组数快照日');
+      final a = await addPlanEx(day, '深蹲', 0, sets: 4, workingSets: 3);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      for (var i = 0; i < 4; i++) {
+        await c.completeSet(weight: 60, reps: 8, rir: 2,
+            kind: SetKind.working);
+      }
+      final sets = await db.setsOfExercise(c.exercises[0].id!);
+      expect(sets, hasLength(4));
+      expect(sets.where((s) => s.isExtra), isEmpty,
+          reason: '计划组数以快照 target_sets=4 为准，第 4 组是计划内');
+      final vs = await c.verdicts();
+      expect(vs.single, contains('4 组全部达到'));
+      await drainContinuations();
+    });
+
+    test('自重动作下次处方不按负重链加到 2.5kg', () async {
+      await seedDone(
+        name: '俯卧撑',
+        targetSets: 3,
+        loadType: LoadMode.bodyweight,
+        sets: [
+          for (var i = 0; i < 3; i++)
+            SetEntry(
+              sessionExerciseId: 0,
+              weightKg: 0,
+              reps: 8,
+              kind: SetKind.working,
+              doneAt: 1000 + i,
+            ),
+        ],
+      );
+      final day = await makePlanDay('自重下一次');
+      final a = await addPlanEx(day, '俯卧撑', 0,
+          sets: 3, workingSets: 3, loadType: LoadMode.bodyweight);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      expect(c.weightDraft, 0, reason: '自重链次数触顶后保持 0kg，不进位负重');
+      await drainContinuations();
+    });
+
+    test('P2-A：词表外自重动作首次训练起始重量为 0（不再猜 20kg）', () async {
+      final day = await makePlanDay('自定义自重日');
+      final a = await addPlanEx(day, '悬垂举腿（自定义）', 0,
+          sets: 3, workingSets: 3, loadType: LoadMode.bodyweight);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      expect(c.weightDraft, 0, reason: '自重动作重量恒 0，不走词表外 20kg 兜底');
+      await drainContinuations();
+    });
+
+    test('verdicts 透传 logging：计时动作用「秒」而不是「次」', () async {
+      final day = await makePlanDay('计时日');
+      final a = await addPlanEx(day, '平板支撑', 0,
+          sets: 3, workingSets: 3, logging: LoggingMode.time);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      for (var i = 0; i < 3; i++) {
+        await c.completeSet(weight: 0, reps: 8, rir: 2,
+            kind: SetKind.working, durationSec: 8);
+      }
+      final vs = await c.verdicts();
+      expect(vs.single, contains('秒'));
+      expect(vs.single, isNot(contains('8 次')), reason: '计时动作不能说成 8 次');
+      await drainContinuations();
+    });
+
+    test('verdicts 透传 loadType：自重动作触顶给「自重档位」而非加重', () async {
+      final day = await makePlanDay('自重日');
+      final a = await addPlanEx(day, '俯卧撑', 0,
+          sets: 3, workingSets: 3, loadType: LoadMode.bodyweight);
+      final c = makeController();
+      await c.startFromDay(day: day, planExercises: [a]);
+      for (var i = 0; i < 3; i++) {
+        await c.completeSet(weight: 0, reps: 8, rir: 2,
+            kind: SetKind.working);
+      }
+      final vs = await c.verdicts();
+      expect(vs.single, contains('自重档位'));
+      expect(vs.single, isNot(contains('加重至')), reason: '自重不碰重量轴');
       await drainContinuations();
     });
   });

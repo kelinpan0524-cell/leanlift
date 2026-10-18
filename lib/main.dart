@@ -11,6 +11,7 @@ import 'ui/onboarding_page.dart';
 import 'ui/shell.dart';
 import 'ui/splash_page.dart';
 import 'ui/theme.dart';
+import 'ui/weekly_recap_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,21 +26,58 @@ Future<void> main() async {
   unawaited(UpdateService(container.settings).silentCheck());
 }
 
-class BaojiApp extends StatelessWidget {
+class BaojiApp extends StatefulWidget {
   const BaojiApp({super.key, required this.container, required this.onboarded});
 
   final AppContainer container;
   final bool onboarded;
 
   @override
+  State<BaojiApp> createState() => _BaojiAppState();
+}
+
+class _BaojiAppState extends State<BaojiApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
+
+  @override
+  void initState() {
+    super.initState();
+    // 周复盘通知点击 → 打开周复盘页。通知可能在 App 冷启动阶段到达
+    // （容器先于导航树存在），先挂起，首帧后再消费。
+    widget.container.onWeeklyRecapRequested = _openPendingWeeklyRecap;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _openPendingWeeklyRecap();
+    });
+  }
+
+  @override
+  void dispose() {
+    widget.container.onWeeklyRecapRequested = null;
+    super.dispose();
+  }
+
+  void _openPendingWeeklyRecap() {
+    if (!mounted) return;
+    final nav = _navigatorKey.currentState;
+    if (nav == null) return;
+    if (!widget.container.takePendingWeeklyRecap()) return;
+    nav.push(
+      MaterialPageRoute(builder: (_) => const WeeklyRecapPage()),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AppScope(
-      container: container,
+      container: widget.container,
       // Builder 注册对 Settings 的依赖：语言切换（settings.notifyListeners）
       // 时整棵 MaterialApp 重建，locale / 文案即时生效。
       child: Builder(builder: (context) {
         final settings = AppScope.of(context).settings;
         return MaterialApp(
+          navigatorKey: _navigatorKey,
+          // 周复盘页需要知道「被别的路由盖住」以中止在途 AI 请求
+          navigatorObservers: <NavigatorObserver>[weeklyRecapRouteObserver],
           title: tx('薄肌训练计时器', en: 'Baoji Timer'),
           debugShowCheckedModeBanner: false,
           theme: AppTheme.dark,
@@ -64,7 +102,9 @@ class BaojiApp extends StatelessWidget {
           },
           // 开机动画先行，播完交叉淡出到首页/引导页
           home: SplashGate(
-            child: onboarded ? const HomeShell() : const OnboardingPage(),
+            child: widget.onboarded
+                ? const HomeShell()
+                : const OnboardingPage(),
           ),
         );
       }),

@@ -377,6 +377,20 @@ List<Widget> buildSessionDetailRows(
     // 加练组数（v12，2026-10-08）：「计划目标 3 组」下挂 4 行时，
     // 多出来的那行要有解释——有加练就单列一行灰字。
     final extraCount = sets.where((x) => x.isExtra).length;
+    // 疼痛标记（P2-B）：有标记才多一列，没标记的历史不挤占宽度。
+    final painSets = sets.where((x) => x.hasPain).toList();
+    final painByKey = <String, int>{};
+    for (final x in painSets) {
+      final k = '${x.painArea}\u0000${x.painLevel}';
+      painByKey[k] = (painByKey[k] ?? 0) + 1;
+    }
+    final painParts = painByKey.entries.map((e) {
+      final p = e.key.split('\u0000');
+      return tx(
+        '${painname(p[0])} ${p[1]} 级 ×${e.value} 组',
+        en: '${painname(p[0])} Lv${p[1]} ×${e.value} set${e.value > 1 ? 's' : ''}',
+      );
+    }).toList();
     // 每个动作一张小表（别再一条长文字流）：列 = 组 | 重量 kg | 次数 | 余力；
     // 余力列头写明含义，不再用 "R2" 缩写。热身=热 / 力竭=竭。
     widgets.add(
@@ -443,6 +457,26 @@ List<Widget> buildSessionDetailRows(
                       const TextStyle(color: AppTheme.textDim, fontSize: 12),
                 ),
               ),
+            // 疼痛摘要（P2-B）：一行暖色小字，部位/等级/组数一目了然；
+            // 没标记的动作完全不占位（历史页不被健康数据挤满）。
+            if (painParts.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.healing, size: 14, color: AppTheme.warn),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        tx('疼痛：${painParts.join('、')}',
+                            en: 'Pain: ${painParts.join(', ')}'),
+                        style: const TextStyle(
+                            color: AppTheme.warn, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             Table(
               border: const TableBorder(
                 horizontalInside: BorderSide(color: AppTheme.cardHi, width: 1),
@@ -453,6 +487,8 @@ List<Widget> buildSessionDetailRows(
                 1: const FlexColumnWidth(3),
                 2: const FlexColumnWidth(3),
                 3: const FlexColumnWidth(3),
+                // 有疼痛标记才加第五列（只在该动作有标记时出现）
+                if (painSets.isNotEmpty) 4: const FlexColumnWidth(4),
               },
               children: [
                 TableRow(
@@ -463,6 +499,7 @@ List<Widget> buildSessionDetailRows(
                       // 计时动作次数列头换「时长」（v14）
                       timed ? tx('时长', en: 'Time') : tx('次数', en: 'Reps'),
                       tx('余力', en: 'RIR'),
+                      if (painSets.isNotEmpty) tx('疼痛', en: 'Pain'),
                     ])
                       Padding(
                         padding: const EdgeInsets.symmetric(vertical: 4),
@@ -495,7 +532,18 @@ List<Widget> buildSessionDetailRows(
                             ? tx('热', en: 'W')
                             : sets[i].kind == SetKind.failure
                                 ? tx('竭', en: 'F')
-                                : '${sets[i].rir}',
+                                // 余力真实性（P0-C）：没点过余力的组不再显示
+                                // 计划默认值，避免把填充值当观测。
+                                : sets[i].rirRecorded
+                                    ? '${sets[i].rir}'
+                                    : tx('未记', en: '—'),
+                        if (painSets.isNotEmpty)
+                          sets[i].hasPain
+                              ? tx(
+                                  '${painname(sets[i].painArea)} ${sets[i].painLevel} 级',
+                                  en: '${painname(sets[i].painArea)} Lv${sets[i].painLevel}',
+                                )
+                              : '—',
                       ])
                         Padding(
                           padding: const EdgeInsets.symmetric(vertical: 4),

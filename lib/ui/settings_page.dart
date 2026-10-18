@@ -31,8 +31,8 @@ class SettingsPage extends StatelessWidget {
           _SettingsRow(
             icon: Icons.fitness_center,
             title: tx('训练偏好', en: 'Training Preferences'),
-            subtitle: tx('组间休息 · 震动 · 提示音 · 体重折算',
-                en: 'Rest · Vibration · Cues · Body weight'),
+            subtitle: tx('组间休息 · 训练块/减载 · 震动 · 提示音 · 体重折算',
+                en: 'Rest · Training block/deload · Vibration · Cues · Body weight'),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const TrainingPrefsPage()),
             ),
@@ -155,7 +155,9 @@ class SettingsPage extends StatelessWidget {
             title: tx('数据与备份', en: 'Data & Backup'),
             subtitle: tx('导出 CSV/JSON · 恢复 · 清空',
                 en: 'Export CSV/JSON · Restore · Delete'),
-            badge: Settings.backupNeedsAttention(s.lastExportJsonAt),
+            // 训练仍 active 时不亮提醒（系统返回离开训练页不会 quit）。
+            badge: !c.session.hasActive &&
+                Settings.backupNeedsAttention(s.lastExportJsonAt),
             badgeLabel: tx('建议备份', en: 'Backup'),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const DataBackupPage()),

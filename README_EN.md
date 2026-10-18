@@ -63,9 +63,9 @@ A lean physique comes from low body fat, training 3× a week, and progressive ov
 - Screen stays awake mid-workout so the countdown never blacks out; it sleeps the moment you pause, with a switch in settings
 - Forgot to stop the timer? A guard asks before saving and trims the session to your last set — no inflated duration
 
-### 📖 Illustrated exercise guides (186 exercises)
-- 186 built-in exercises (glute/leg specials, commercial-gym machines, band-at-home series), each with form cues: how-to + common mistakes (e.g. bench press: "shoulders shrug, bar drifts toward the neck"), bilingual
-- 175 exercises come with start/end demonstration photos — one glance before your first set shows you the setup; 14 core lifts (bench, squat and deadlift families, pull-ups, leg press, …) add **silent demo videos** on loop
+### 📖 Illustrated exercise guides (187 exercises)
+- 187 built-in exercises (glute/leg specials, commercial-gym machines, band-at-home series), each with form cues: how-to + common mistakes (e.g. bench press: "shoulders shrug, bar drifts toward the neck"), bilingual
+- 177 exercises come with start/end demonstration photos — one glance before your first set shows you the setup; 14 core lifts (bench, squat and deadlift families, pull-ups, leg press, …) add **silent demo videos** on loop
 - **Available mid-workout**: tap "📖 Form Guide" on the training screen anytime — swipe it away and keep lifting, the timer never stops
 
 ### 📈 Progressive overload engine
@@ -100,6 +100,7 @@ A lean physique comes from low body fat, training 3× a week, and progressive ov
 - **Neglected-muscle callouts**: the data page lists the muscle groups this stretch of training missed (shoulders absent for three weeks, visible at once); the plan editor previews in real time which muscles a plan hits, so gaps never sneak in
 - Weight / waist / body-fat tracking with sanity-checked input; if today's weight isn't logged, the app asks when you start a workout — skippable and switchable off in settings, so the trend line never gaps
 - Full CSV / JSON export; one-tap "AI analysis pack" for any AI
+- An on-device full snapshot after every workout (latest for each of the 7 most recent backup dates + 4 weekly buckets; can be switched off), with preview and one-tap restore in Data & Backup; a quiet nudge on the Stats page after 14 days without a manual export
 
 ### ⏰ Staying consistent
 - Pre-workout reminder: a local notification if you have not trained by your chosen time on a training day — a fallback even without the calendar sync

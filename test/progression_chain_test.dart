@@ -4,13 +4,17 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:baoji_timer/engine/engine.dart';
 
-SetEntry _set(double w, int reps, {int rir = 2, int at = 1000}) => SetEntry(
+SetEntry _set(double w, int reps,
+        {int rir = 2, int at = 1000, bool extra = false, bool rirRecorded = true}) =>
+    SetEntry(
       sessionExerciseId: 1,
       weightKg: w,
       reps: reps,
       rir: rir,
       kind: SetKind.working,
       doneAt: at,
+      isExtra: extra,
+      rirRecorded: rirRecorded,
     );
 
 /// 全达标的一场：n 组同重量同次数。
@@ -306,6 +310,179 @@ void main() {
       expect(v.action, 'hold');
       expect(v.reason, contains('自重档位'));
       expect(v.reason, isNot(contains('0kg')));
+    });
+  });
+
+  group('计划组数与加练组（P0-B：少做/加练不带偏判定）', () {
+    final rule =
+        const ProgressionRule(repsMin: 8, repsMax: 12, incrementKg: 2.5);
+    const state = ChainState(weightKg: 60, targetReps: 8);
+
+    test('只完成 1/3 组达标 → hold，写明「本次只完成 1/3 组，不推进」', () {
+      final v = evaluateChain(
+        rule: rule,
+        state: state,
+        workingSets: [_set(60, 8, at: 1000)],
+        targetSets: 3,
+      );
+      expect(v.action, 'hold');
+      expect(v.next, state);
+      expect(v.reason, contains('本次只完成 1/3 组，不推进'));
+    });
+
+    test('1/3 组且次数破下限 → hold，不因组少误判减重', () {
+      final v = evaluateChain(
+        rule: rule,
+        state: state,
+        workingSets: [_set(60, 4, at: 1000)],
+        targetSets: 3,
+      );
+      expect(v.action, 'hold');
+      expect(v.next, state);
+      expect(v.reason, contains('本次只完成 1/3 组，不推进'));
+    });
+
+    test('targetSets 缺省（0）保持旧行为：1 组达标仍推进', () {
+      final v = evaluateChain(
+        rule: rule,
+        state: state,
+        workingSets: [_set(60, 8, at: 1000)],
+      );
+      expect(v.action, 'advance');
+      expect(v.next.targetReps, 9);
+    });
+
+    test('3/3 达标 + 低次数加练第 4 组 → advance（加练不触发减重）', () {
+      final sets = [
+        _set(60, 8, at: 1000),
+        _set(60, 8, at: 2000),
+        _set(60, 8, at: 3000),
+        _set(60, 4, at: 4000, extra: true),
+      ];
+      final v = evaluateChain(
+        rule: rule,
+        state: state,
+        workingSets: sets,
+        targetSets: 3,
+      );
+      expect(v.action, 'advance');
+      expect(v.next.weightKg, 60);
+      expect(v.next.targetReps, 9);
+    });
+
+    test('3/3 达标 + 高次数加练 → advance 只按 3 组正式组算', () {
+      final sets = [
+        _set(60, 8, at: 1000),
+        _set(60, 8, at: 2000),
+        _set(60, 8, at: 3000),
+        _set(60, 12, at: 4000, extra: true),
+      ];
+      final v = evaluateChain(
+        rule: rule,
+        state: state,
+        workingSets: sets,
+        targetSets: 3,
+      );
+      expect(v.action, 'advance');
+      expect(v.next.weightKg, 60);
+      expect(v.next.targetReps, 9);
+      expect(v.reason, contains('3 组全部达到'));
+    });
+
+    test('加练组不能补计划组数：2/3 + 1 组低次数加练 → hold', () {
+      final sets = [
+        _set(60, 8, at: 1000),
+        _set(60, 8, at: 2000),
+        _set(60, 4, at: 3000, extra: true),
+      ];
+      final v = evaluateChain(
+        rule: rule,
+        state: state,
+        workingSets: sets,
+        targetSets: 3,
+      );
+      expect(v.action, 'hold');
+      expect(v.reason, contains('本次只完成 2/3 组，不推进'));
+    });
+
+    test('混合重量：文案说明只统计当前档，并给出本次总正式组数', () {
+      // 60/60/55 三组：state 取最后一组 55，当前档只收 1 组
+      final v = evaluateChain(
+        rule: rule,
+        state: const ChainState(weightKg: 55, targetReps: 8),
+        workingSets: [
+          _set(60, 8, at: 1000),
+          _set(60, 8, at: 2000),
+          _set(55, 8, at: 3000),
+        ],
+        targetSets: 3,
+      );
+      expect(v.action, 'hold');
+      expect(v.reason, contains('本次只完成 1/3 组，不推进'));
+      expect(v.reason, contains('仅统计当前重量档'));
+      expect(v.reason, contains('本次共 3 组正式组'));
+    });
+
+    test('chainStateFromHistory 忽略加练组（重量与目标不被污染）', () {
+      final sets = [
+        _set(60, 8, at: 1000),
+        _set(60, 8, at: 2000),
+        _set(60, 8, at: 3000),
+        _set(50, 3, at: 4000, extra: true),
+      ];
+      final s = chainStateFromHistory(sets, rule);
+      expect(s.weightKg, 60);
+      expect(s.targetReps, 8);
+    });
+  });
+
+  group('RIR 真实性（P0-C：未记录的默认值不参与判定）', () {
+    final rule = const ProgressionRule(repsMin: 5, repsMax: 8);
+
+    test('未记录 RIR（rir=0 只是默认填充）不阻塞加重，reason 说明余力未记录', () {
+      final sets = [
+        _set(60, 8, rir: 0, at: 1000, rirRecorded: false),
+        _set(60, 8, rir: 0, at: 2000, rirRecorded: false),
+        _set(60, 8, rir: 0, at: 3000, rirRecorded: false),
+      ];
+      final v = evaluateChain(
+        rule: rule,
+        state: const ChainState(weightKg: 60, targetReps: 8),
+        workingSets: sets,
+      );
+      expect(v.action, 'advance', reason: '余力未记录 → 只按次数判定');
+      expect(v.next.weightKg, 62.5);
+      expect(v.next.targetReps, 5);
+      expect(v.reason, contains('余力未记录'));
+    });
+
+    test('未记录 RIR 且次数未达目标 → hold，reason 仍说明余力未记录', () {
+      final sets = [
+        _set(60, 7, rir: 0, at: 1000, rirRecorded: false),
+        _set(60, 7, rir: 0, at: 2000, rirRecorded: false),
+        _set(60, 7, rir: 0, at: 3000, rirRecorded: false),
+      ];
+      final v = evaluateChain(
+        rule: rule,
+        state: const ChainState(weightKg: 60, targetReps: 8),
+        workingSets: sets,
+      );
+      expect(v.action, 'hold');
+      expect(v.reason, contains('余力未记录'));
+    });
+
+    test('同样 rir=0 但已记录 → 仍按余力门槛 hold（对照，不放松真实观测）', () {
+      final v = evaluateChain(
+        rule: rule,
+        state: const ChainState(weightKg: 60, targetReps: 8),
+        workingSets: [
+          _set(60, 8, rir: 0, at: 1000),
+          _set(60, 8, rir: 0, at: 2000),
+          _set(60, 8, rir: 0, at: 3000),
+        ],
+      );
+      expect(v.action, 'hold');
+      expect(v.reason, isNot(contains('余力未记录')));
     });
   });
 

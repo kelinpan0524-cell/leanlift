@@ -4,14 +4,18 @@
 // 这里只锁形态差异。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:baoji_timer/engine/engine.dart';
+import 'package:baoji_timer/presets/exercise_library.dart';
 
-SetEntry _set(double w, int reps, {int rir = 2, int at = 1000}) => SetEntry(
+SetEntry _set(double w, int reps,
+        {int rir = 2, int at = 1000, bool extra = false}) =>
+    SetEntry(
       sessionExerciseId: 1,
       weightKg: w,
       reps: reps,
       rir: rir,
       kind: SetKind.working,
       doneAt: at,
+      isExtra: extra,
     );
 
 /// 同一场 n 组同重量同「次数/秒数」。
@@ -289,6 +293,373 @@ void main() {
         bodyweightExtraSetTarget(
             state: topped, rule: rule, loadType: LoadMode.weighted),
         isNull,
+      );
+    });
+
+    test('加组建议按会话快照组数：快照 4 / 规则 3 → 建议 5 组', () {
+      const topped = ChainState(weightKg: 0, targetReps: 8);
+      expect(
+        bodyweightExtraSetTarget(
+          state: topped,
+          rule: rule,
+          loadType: LoadMode.bodyweight,
+          plannedSets: 4,
+        ),
+        5,
+        reason: '计划已是 4 组时，加组应建议第 5 组而不是第 4 组',
+      );
+      final why = chainTargetWhy(
+        rule: rule,
+        state: topped,
+        loadType: LoadMode.bodyweight,
+        plannedSets: 4,
+      );
+      expect(why, contains('5 组'));
+      expect(why, isNot(contains('4 组')));
+    });
+  });
+
+  group('自重变式阶梯（P2-E）', () {
+    test('任务点名的四类都查得到下一档（含双杠胸版）', () {
+      expect(nextBodyweightVariation('俯卧撑'), '下斜俯卧撑（脚垫高）');
+      expect(nextBodyweightVariation('引体向上'), '负重引体向上');
+      expect(nextBodyweightVariation('双杠臂屈伸'), '双杠臂屈伸（挺胸）');
+      expect(nextBodyweightVariation('双杠臂屈伸（挺胸）'), '负重双杠臂屈伸');
+      expect(nextBodyweightVariation('徒手深蹲'), '箭步蹲');
+      expect(nextBodyweightVariation('臀桥'), '单腿臀桥');
+    });
+
+    test('阶梯里的每一级都是动作库规范名（防拼写漂移）', () {
+      final names = kExerciseLibrary.map((m) => m.name).toSet();
+      for (final ladder in kBodyweightLadders) {
+        for (final name in ladder) {
+          expect(names, contains(name), reason: '阶梯动作「$name」不在动作库');
+        }
+      }
+    });
+
+    test('别名/英文名同一口径查到下一档', () {
+      expect(nextBodyweightVariation('push up'), '下斜俯卧撑（脚垫高）');
+      expect(nextBodyweightVariation('pull-up'), '负重引体向上');
+      expect(nextBodyweightVariation('dips'), '双杠臂屈伸（挺胸）');
+      expect(nextBodyweightVariation('glute bridge'), '单腿臀桥');
+    });
+
+    test('改名但保留旧 exerciseKey 的动作也能查到下一档', () {
+      expect(
+        nextBodyweightVariation('地板俯卧撑', exerciseKey: '俯卧撑'),
+        '下斜俯卧撑（脚垫高）',
+      );
+      expect(
+        nextBodyweightVariation('地板俯卧撑',
+            exerciseKey: 'my_custom_push_day'),
+        isNull,
+        reason: '键和名字都对不上时不能瞎猜',
+      );
+    });
+
+    test('阶梯末端、不在阶梯上、空名 → null', () {
+      expect(nextBodyweightVariation('下斜俯卧撑（脚垫高）'), isNull);
+      expect(nextBodyweightVariation('负重引体向上'), isNull);
+      expect(nextBodyweightVariation('负重双杠臂屈伸'), isNull);
+      expect(nextBodyweightVariation('平板支撑'), isNull);
+      expect(nextBodyweightVariation(''), isNull);
+    });
+
+    test('有效负荷推断：默认 weighted 的 0kg 自重动作按 bodyweight 处理', () {
+      // 内置计划/模板/老库：loadType 是默认 weighted，但动作在阶梯上且
+      // 本场正式组全是 0kg → 推断为自重（P2-E 复核修复）。
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '引体向上',
+          loadType: LoadMode.weighted,
+          workingSets: _session(0, 8),
+        ),
+        LoadMode.bodyweight,
+      );
+      // 真加了重量 → 维持 weighted（不催换变式）
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '引体向上',
+          loadType: LoadMode.weighted,
+          workingSets: _session(10, 8),
+        ),
+        LoadMode.weighted,
+      );
+      // 不在阶梯上的 0kg 动作也不推断（比如平板支撑之外的词表外动作）
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '神秘自创动作',
+          loadType: LoadMode.weighted,
+          workingSets: _session(0, 8),
+        ),
+        LoadMode.weighted,
+      );
+      // 阶梯末端（没有下一档）同样算自重动作，不能被当成负重
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '下斜俯卧撑（脚垫高）',
+          loadType: LoadMode.weighted,
+          workingSets: _session(0, 12),
+        ),
+        LoadMode.bodyweight,
+      );
+      expect(isBodyweightLadderExercise('下斜俯卧撑（脚垫高）'), isTrue);
+      expect(isBodyweightLadderExercise('单腿臀桥'), isTrue);
+      expect(isBodyweightLadderExercise('神秘自创动作'), isFalse);
+      // 负重变体（gear=自重但训练要加重量）即使 0kg 也不推断为自重
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '负重引体向上',
+          loadType: LoadMode.weighted,
+          workingSets: _session(0, 8),
+        ),
+        LoadMode.weighted,
+      );
+      // 显式 bodyweight 原样返回
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '引体向上',
+          loadType: LoadMode.bodyweight,
+          workingSets: _session(0, 8),
+        ),
+        LoadMode.bodyweight,
+      );
+    });
+
+    test('H3：改名保留旧键的负重变体不误判为自重（统一判定入口）', () {
+      // 「引体向上」改名成「引体向上（负重版）」保留旧键：旧键仍命中自重
+      // 阶梯，但名字里的「负重」是显式负重变体 → 按 weighted 口径，
+      // 0kg 组也不推断为自重。
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '引体向上（负重版）',
+          exerciseKey: '引体向上',
+          loadType: LoadMode.weighted,
+          workingSets: _session(0, 8),
+        ),
+        LoadMode.weighted,
+        reason: '后缀注记的负重变体优先于「名字以负重开头」启发式',
+      );
+      // 改名前的旧行存的 loadType 是 bodyweight 时，名字意图同样优先
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '引体向上（负重版）',
+          exerciseKey: '引体向上',
+          loadType: LoadMode.bodyweight,
+          workingSets: _session(0, 8),
+        ),
+        LoadMode.weighted,
+        reason: '显式负重变体名压住存储的 bodyweight 与阶梯推断',
+      );
+      // 前缀负重变体再叠加改名（负重引体向上（负重版））同理
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '负重引体向上（负重版）',
+          exerciseKey: '负重引体向上',
+          loadType: LoadMode.bodyweight,
+          workingSets: _session(0, 8),
+        ),
+        LoadMode.weighted,
+      );
+      // 名字干净的真改名（保留旧键）仍按自重推断：不能误伤
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '地板引体',
+          exerciseKey: '引体向上',
+          loadType: LoadMode.weighted,
+          workingSets: _session(0, 8),
+        ),
+        LoadMode.bodyweight,
+      );
+    });
+
+    test('H3：负重版不进自重阶梯建议（就绪判断与变式建议共用同一推断）', () {
+      const rule = ProgressionRule(repsMin: 5, repsMax: 8);
+      final topped = _session(0, 8); // 0kg 顶格三组：真自重动作此时已 ready
+      expect(
+        bodyweightProgressionReady(
+          exerciseName: '引体向上（负重版）',
+          exerciseKey: '引体向上',
+          rule: rule,
+          loadType: LoadMode.weighted,
+          workingSets: topped,
+          plannedSets: 3,
+        ),
+        isFalse,
+        reason: '负重变体 0kg 也不算自重触顶，不给「加练一组」',
+      );
+      expect(
+        bodyweightVariationSuggestion(
+          exerciseName: '引体向上（负重版）',
+          exerciseKey: '引体向上',
+          rule: rule,
+          loadType: LoadMode.weighted,
+          workingSets: topped,
+          plannedSets: 3,
+        ),
+        isNull,
+        reason: '不进自重阶梯建议（同一函数推断，与就绪判断结论一致）',
+      );
+    });
+
+    test('H3：引擎与控制器同一口径——库里纯自重（不在阶梯上）0kg 也推断自重', () {
+      // 平板支撑：动作库标纯自重但不在变式阶梯上；统一后引擎与控制器
+      // （此前只查动作库）对这类动作结论一致。
+      expect(
+        effectiveLoadTypeFor(
+          exerciseName: '平板支撑',
+          loadType: LoadMode.weighted,
+          workingSets: _session(0, 45),
+        ),
+        LoadMode.bodyweight,
+      );
+      // 阶梯与动作库两个信号合并，而不是各判各的
+      expect(isBodyweightLadderExercise('平板支撑'), isFalse);
+    });
+
+    test('建议只在计划组全部练满、达标且次数顶到 reps_max 时出现', () {
+      const rule = ProgressionRule(repsMin: 8, repsMax: 12);
+      String? suggest(
+        List<SetEntry> sets, {
+        String load = LoadMode.bodyweight,
+        String name = '俯卧撑',
+        String key = '',
+      }) =>
+          bodyweightVariationSuggestion(
+            exerciseName: name,
+            exerciseKey: key,
+            rule: rule,
+            loadType: load,
+            workingSets: sets,
+            plannedSets: 3,
+          );
+
+      // 3 组全部 12 次 → 下一档
+      expect(suggest(_session(0, 12)), '下斜俯卧撑（脚垫高）');
+      // 还有空间（10 次）→ 继续爬次数，不换变式
+      expect(suggest(_session(0, 10)), isNull);
+      // 计划 3 组只做了 1 组（哪怕顶格）→ 不提前建议
+      expect(suggest(_session(0, 12, n: 1)), isNull);
+      // 末组 RIR 0（已记录）→ 没达到余力门槛，不催升级
+      expect(
+        suggest([
+          _set(0, 12, at: 1000),
+          _set(0, 12, at: 1001),
+          _set(0, 12, at: 1002, rir: 0),
+        ]),
+        isNull,
+      );
+      // 默认 weighted + 0kg（内置计划/模板/老库）也要给建议
+      expect(suggest(_session(0, 12), load: LoadMode.weighted),
+          '下斜俯卧撑（脚垫高）');
+      // 默认 weighted + 真加了重量 → 负重渐进，不换变式
+      expect(suggest(_session(10, 12), load: LoadMode.weighted), isNull);
+      // 阶梯已到顶 → 没有下一档
+      expect(suggest(_session(0, 12), name: '下斜俯卧撑（脚垫高）'), isNull);
+      // 改名保留旧键 → 仍能查到
+      expect(
+        suggest(_session(0, 12), name: '地板俯卧撑', key: '俯卧撑'),
+        '下斜俯卧撑（脚垫高）',
+      );
+    });
+
+    test('bodyweightProgressionReady：练满/达标/余力够/触顶四条全满足', () {
+      const rule = ProgressionRule(repsMin: 8, repsMax: 12);
+      bool ready(List<SetEntry> sets, {int planned = 3}) =>
+          bodyweightProgressionReady(
+            exerciseName: '俯卧撑',
+            rule: rule,
+            // 默认 weighted + 0kg：走有效自重推断
+            loadType: LoadMode.weighted,
+            workingSets: sets,
+            plannedSets: planned,
+          );
+
+      expect(ready(_session(0, 12)), isTrue);
+      expect(ready(_session(0, 10)), isFalse, reason: '没有顶到 reps_max');
+      expect(ready(_session(0, 12, n: 1)), isFalse, reason: '计划 3 组只做 1 组');
+      expect(
+        ready([
+          _set(0, 12, at: 1000),
+          _set(0, 12, at: 1001),
+          _set(0, 12, at: 1002, rir: 0),
+        ]),
+        isFalse,
+        reason: '末组 RIR 0 未达 rirTarget-1',
+      );
+      expect(ready(_session(10, 12)), isFalse,
+          reason: '真加了重量 → 负重渐进，不算自重升级');
+      // 阶梯末端动作同样按自重判定 ready（只是没有下一档可建议）
+      expect(
+        bodyweightProgressionReady(
+          exerciseName: '下斜俯卧撑（脚垫高）',
+          rule: rule,
+          loadType: LoadMode.weighted,
+          workingSets: _session(0, 12),
+          plannedSets: 3,
+        ),
+        isTrue,
+      );
+      // 负重变体保持负重口径（训练页要能记录外加载重）
+      expect(
+        bodyweightProgressionReady(
+          exerciseName: '负重引体向上',
+          rule: rule,
+          loadType: LoadMode.weighted,
+          workingSets: _session(0, 12),
+          plannedSets: 3,
+        ),
+        isFalse,
+      );
+    });
+
+    test('加练组不参与触顶判定', () {
+      const rule = ProgressionRule(repsMin: 8, repsMax: 12);
+      // 只有加练组（正常组可能还没练完）→ 不触发
+      final onlyExtra = [
+        _set(0, 12, extra: true),
+        _set(0, 12, at: 1001, extra: true),
+      ];
+      expect(
+        bodyweightVariationSuggestion(
+          exerciseName: '俯卧撑',
+          rule: rule,
+          loadType: LoadMode.bodyweight,
+          workingSets: onlyExtra,
+          plannedSets: 3,
+        ),
+        isNull,
+      );
+    });
+  });
+
+  group('isBodyweightUi（H3 收尾：训练页 UI 只叠加规则①）', () {
+    test('显式负重变体名压过存储的 bodyweight（改名保留旧键场景）', () {
+      expect(
+        isBodyweightUi(
+            exerciseName: '引体向上（负重版）', loadType: LoadMode.bodyweight),
+        isFalse,
+        reason: '名字含「负重」→ 按负重 UI，要给重量输入',
+      );
+      expect(
+        isBodyweightUi(exerciseName: '负重双杠', loadType: LoadMode.bodyweight),
+        isFalse,
+      );
+    });
+
+    test('普通自重/负重行为不变', () {
+      expect(
+        isBodyweightUi(exerciseName: '引体向上', loadType: LoadMode.bodyweight),
+        isTrue,
+      );
+      expect(
+        isBodyweightUi(exerciseName: '俯卧撑', loadType: LoadMode.bodyweight),
+        isTrue,
+      );
+      expect(
+        isBodyweightUi(exerciseName: '卧推', loadType: LoadMode.weighted),
+        isFalse,
       );
     });
   });

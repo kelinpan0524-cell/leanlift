@@ -3,6 +3,8 @@
     <!-- 训练计时/提醒/专注模式所需权限 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
+    <!-- 定时通知（休息/练前/每周复盘）：重启后由插件恢复已排期 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <!-- 训练态前台服务：锁屏/切后台计时不中断（调研条目 1/3） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
@@ -71,6 +73,22 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="workout_timer_notification" />
         </service>
+        <!-- flutter_local_notifications 的定时通知接收器（休息/练前/每周复盘）：
+             插件自 v16 起自身 manifest 只声明通知权限，调度接收器必须由 App
+             声明，否则 zonedSchedule 到点没有接收者，重启后排期也会丢。 -->
+        <receiver
+            android:exported="false"
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
+        <receiver
+            android:exported="false"
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+            </intent-filter>
+        </receiver>
         <!-- 应用内更新：把缓存目录里的 APK 以 content:// 暴露给系统安装器 -->
         <provider
             android:name="androidx.core.content.FileProvider"

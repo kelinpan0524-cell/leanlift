@@ -8,7 +8,9 @@ import '../engine/superset.dart';
 import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
-import '../presets/exercise_library.dart' show libraryMetaByName;
+import '../presets/exercise_library.dart' show libraryMetaForLift;
+import '../presets/start_weights.dart' show warmupBarKgFor;
+import '../services/heart_rate_service.dart';
 import '../services/session_controller.dart';
 import 'exercise_detail_sheet.dart';
 import 'exercise_picker_page.dart';
@@ -354,11 +356,12 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
         final raw = (s.setsByEx[ex.id] ?? const <SetEntry>[])
             .where((x) => x.kind == SetKind.working)
             .length;
-        final done = raw > ex.rule.workingSets ? ex.rule.workingSets : raw;
-        if (done < ex.rule.workingSets) {
+        final planned = plannedSetsOf(ex);
+        final done = raw > planned ? planned : raw;
+        if (done < planned) {
           unfinishedLines.add(tx(
-            '${exname(ex.name)} 已完成 $done/${ex.rule.workingSets}',
-            en: '${exname(ex.name)} $done/${ex.rule.workingSets} done',
+            '${exname(ex.name)} 已完成 $done/$planned',
+            en: '${exname(ex.name)} $done/$planned done',
           ));
         }
       }
@@ -455,8 +458,8 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
                     ),
                     Text(
                       tx(
-                        '已完成 ${refs.where((r) => r.exerciseIndex == i && r.done && !r.extra).length}/${s.exercises[i].rule.workingSets}',
-                        en: '${refs.where((r) => r.exerciseIndex == i && r.done && !r.extra).length}/${s.exercises[i].rule.workingSets} done',
+                        '已完成 ${refs.where((r) => r.exerciseIndex == i && r.done && !r.extra).length}/${plannedSetsOf(s.exercises[i])}',
+                        en: '${refs.where((r) => r.exerciseIndex == i && r.done && !r.extra).length}/${plannedSetsOf(s.exercises[i])} done',
                       ),
                       style: const TextStyle(
                         color: AppTheme.textDim,
@@ -840,6 +843,15 @@ class _FlowHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final label = page.setLabel();
+    // 动作页的恢复标记：停练回归优先于减载（两者同时命中时处方按
+    // 更低的 85% 一档，不能显示成「本周减载」误导）。
+    final hasRecoveryChip = s.inLayoff || s.inDeloadWeek;
+    final recoveryColor = s.inLayoff ? AppTheme.accent : AppTheme.warn;
+    final recoveryIcon =
+        s.inLayoff ? Icons.replay : Icons.spa_outlined;
+    final recoveryLabel = s.inLayoff
+        ? tx('停练 ${s.layoffDays} 天', en: '${s.layoffDays}d off')
+        : tx('本周减载', en: 'Deload');
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       child: Row(
@@ -847,10 +859,41 @@ class _FlowHeader extends StatelessWidget {
           Expanded(
             child: Text(
               dname(s.session?.planDayTitle ?? ''),
+              maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: AppTheme.textDim, fontSize: 14),
             ),
           ),
+          // 动作页恢复标记（P1-C/P1-D）：放进顶部条的现成行里，只占宽度、
+          // 不新增高度，不遮挡动作名/三要素；休息页用完整横幅。
+          if (hasRecoveryChip && page.kind == FlowPageKind.record) ...[
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: recoveryColor.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+                border:
+                    Border.all(color: recoveryColor.withValues(alpha: 0.35)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(recoveryIcon, size: 13, color: recoveryColor),
+                  const SizedBox(width: 4),
+                  Text(
+                    recoveryLabel,
+                    style: TextStyle(
+                      color: recoveryColor,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 6),
+          ],
           if (label.isNotEmpty)
             GestureDetector(
               onTap: onJumpSheet,
@@ -918,7 +961,7 @@ String targetTextFor(SessionExercise ex) {
 /// 起始页动作卡副标题：组数 × 目标（口径随记录形态：计时=秒、
 /// 单侧=每边均分）· RIR。
 String startCardSub(SessionExercise ex) {
-  final sets = ex.rule.workingSets;
+  final sets = plannedSetsOf(ex);
   final rir = ex.rule.rirTarget;
   if (isTimedLogging(ex.logging)) {
     return tx('$sets 组 × ${ex.rule.repsMin}-${ex.rule.repsMax} 秒 · RIR $rir',
@@ -937,6 +980,156 @@ String startCardSub(SessionExercise ex) {
       en: '$sets sets × ${ex.rule.repsMin}-${ex.rule.repsMax} reps · RIR $rir');
 }
 
+/// 起始页首个动作的热身建议文案（P2-A）：只展示，不自动落库。
+/// 空串 = 不显示（辅助配重这种负重量没有正重量口径）。
+String warmupHintTextFor({
+  required String name,
+  required double targetWeightKg,
+  required String loadType,
+  String logging = LoggingMode.reps,
+}) {
+  String bodyweightText() {
+    if (isTimedLogging(logging)) {
+      return tx('热身：先做 1 组 20-30 秒的轻强度热身',
+          en: 'Warm-up: 1 easy 20-30s set');
+    }
+    if (isPerSideLogging(logging)) {
+      return tx('热身：每边 5-8 次慢速标准动作',
+          en: 'Warm-up: 5-8 slow reps per side');
+    }
+    return tx('热身：先做 1 组 5-8 次慢速标准动作',
+        en: 'Warm-up: 1 slow set of 5-8 clean reps');
+  }
+
+  if (loadType == LoadMode.bodyweight) return bodyweightText();
+  final meta = libraryMetaForLift(name);
+  final useLb = WeightUnits.isLb;
+  final plan = warmupPlanFor(
+    targetWeightKg: targetWeightKg,
+    gear: meta?.gear ?? '',
+    useLb: useLb,
+    barKgOverride: warmupBarKgFor(name, useLb: useLb),
+  );
+  if (plan.mode == WarmupMode.none) return '';
+  if (plan.mode == WarmupMode.bodyweight) return bodyweightText();
+  // 热身阶梯的量随记录形态换口径：计时→秒（重量热身按 20/15/10 秒），
+  // 单侧→每边次数，常规→次数。
+  String amount(WarmupStep st) {
+    if (isTimedLogging(logging)) {
+      final sec = st.percent == 60 ? 15 : (st.percent == 80 ? 10 : 20);
+      return tx('$sec 秒', en: '${sec}s');
+    }
+    if (isPerSideLogging(logging)) {
+      return tx('每边 ${st.reps} 次', en: '${st.reps}/side');
+    }
+    return tx('${st.reps} 次', en: '${st.reps} reps');
+  }
+
+  final parts = <String>[];
+  for (final st in plan.steps) {
+    if (st.percent == null) {
+      parts.add(tx('空杆 ${fmtWithUnit(st.weightKg)}×${amount(st)}',
+          en: 'bar ${fmtWithUnit(st.weightKg)}×${amount(st)}'));
+    } else {
+      parts.add(tx(
+        '${st.percent}% ${fmtWithUnit(st.weightKg)}×${amount(st)}',
+        en: '${st.percent}% ${fmtWithUnit(st.weightKg)}×${amount(st)}',
+      ));
+    }
+  }
+  final label = plan.mode == WarmupMode.light
+      ? tx('热身（简化）：', en: 'Warm-up (light): ')
+      : tx('热身：', en: 'Warm-up: ');
+  return '$label${parts.join(' · ')}';
+}
+
+/// 停练回归横幅（P1-D）：非弹窗、只占一行高；未触发时完全隐形。
+/// 说明为什么今天轻、组数少，以及下一次间隔正常就回到原档。
+class _LayoffBanner extends StatelessWidget {
+  const _LayoffBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final s = app(context).session;
+    if (!s.hasActive || !s.inLayoff) return const SizedBox.shrink();
+    final days = s.layoffDays;
+    final dual = s.inDeloadWeek
+        ? tx('（本周同时是减载周，取更低的 85% 一档，不重复打折）',
+            en: ' (deload week too — the lower 85% factor applies once, no double discount)')
+        : '';
+    return Container(
+      key: const Key('layoffBanner'),
+      margin: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppTheme.accent.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.accent.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.replay, size: 16, color: AppTheme.accent),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              tx(
+                '停练 $days 天，今天按 85% 找感觉：负重约 85%（辅助配重 +15%），正式组数 -1（最少 1 组）；下次间隔正常后回到原档。$dual',
+                en: 'Back after $days days off — today at 85%: loaded lifts ~85% (machine assist +15%), one fewer working set (min 1); back to normal once you train again within 14 days.$dual',
+              ),
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: AppTheme.accent, fontSize: 12.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 减载周横幅（P1-C）：非弹窗、只占一行高；不是减载周时完全隐形。
+/// 说明本周为什么轻（90% 重量、少 1 组）以及下周怎么接回去。
+class _DeloadBanner extends StatelessWidget {
+  const _DeloadBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final s = app(context).session;
+    if (!s.hasActive || !s.inDeloadWeek) return const SizedBox.shrink();
+    // 停练回归同时命中时由 _LayoffBanner 统一说明（取更低的 85% 一档），
+    // 不再并列显示「约 90%」造成两套系数打架。
+    if (s.inLayoff) return const SizedBox.shrink();
+    final weeks = s.trainingBlockWeeks;
+    final week = s.trainingBlockWeek <= 0 ? weeks : s.trainingBlockWeek;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppTheme.warn.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.warn.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.spa_outlined, size: 16, color: AppTheme.warn),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              tx(
+                '第 $week/$weeks 周 · 本周减载：负重动作按约 90% 负荷（辅助配重增加约 10%），所有动作正式组数 -1（最少 1 组）；自重动作只减组，下周回到原档继续',
+                en: 'Week $week/$weeks · Deload week: loaded lifts at ~90% (machine assist +10%) and one fewer working set (min 1) for all; bodyweight lifts drop a set only. Back to normal next week',
+              ),
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: AppTheme.warn, fontSize: 12.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 起始页（wger gym_mode 的开始页思路）：先看一眼今天练什么——
 /// 计划文案 + 每个动作的组次目标；大按钮进第一记录页。
 /// 只在"零记录"的全新会话出现；中途恢复直接落到当前记录页。
@@ -953,6 +1146,18 @@ class _StartPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 首个动作的热身建议（P2-A）：只展示，不落库、不生成热身组。
+    // 800×360 这类超矮横屏下压成单行，并收起底部「点动作看解析」提示，
+    // 避免把 88dp 开始按钮挤出视口（widget_layout_test 的横屏回归场景）。
+    final compactHeight = MediaQuery.sizeOf(context).height < 480;
+    final warmupHint = s.exercises.isEmpty
+        ? ''
+        : warmupHintTextFor(
+            name: s.exercises.first.name,
+            targetWeightKg: s.weightDraft,
+            loadType: s.exercises.first.loadType,
+            logging: s.exercises.first.logging,
+          );
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
       child: Column(
@@ -972,12 +1177,20 @@ class _StartPage extends StatelessWidget {
             textAlign: TextAlign.center,
             style: const TextStyle(color: AppTheme.textDim, fontSize: 15),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 12),
+          // 停练回归说明（P1-D）：开练前先知道今天为什么轻、组数少。
+          const _LayoffBanner(),
+          // 减载周说明（P1-C）：开练前先知道这周为什么轻、组数少。
+          const _DeloadBanner(),
+          const SizedBox(height: 8),
           for (var i = 0; i < s.exercises.length; i++)
             GestureDetector(
               // 开练前先过一眼图文解析（2026-09-27）：点动作行打开
-              onTap: () =>
-                  showExerciseDetailSheet(context, name: s.exercises[i].name),
+              onTap: () => showExerciseDetailSheet(
+                context,
+                name: s.exercises[i].name,
+                exerciseKey: s.exercises[i].exerciseKey,
+              ),
               child: Container(
                 margin: const EdgeInsets.only(bottom: 10),
                 padding: const EdgeInsets.symmetric(
@@ -1018,6 +1231,41 @@ class _StartPage extends StatelessWidget {
                             fontSize: 13,
                           ),
                         ),
+                        // 器械设置（P2-C）：开练前先看到该动作的固定设置；
+                        // 空备注零尺寸，不额外占行。
+                        SetupNoteView(
+                          note: s.setupNoteOf(s.exercises[i]),
+                          compact: true,
+                        ),
+                        // 首个动作的热身建议（P2-A）：只展示，不自动落库。
+                        if (i == 0 && warmupHint.isNotEmpty) ...[
+                          const SizedBox(height: 5),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Padding(
+                                padding: EdgeInsets.only(top: 1),
+                                child: Icon(
+                                  Icons.local_fire_department,
+                                  size: 14,
+                                  color: AppTheme.accent,
+                                ),
+                              ),
+                              const SizedBox(width: 5),
+                              Expanded(
+                                child: Text(
+                                  warmupHint,
+                                  key: const Key('startWarmupHint'),
+                                  style: const TextStyle(
+                                    color: AppTheme.accent,
+                                    fontSize: 12.5,
+                                    height: 1.35,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                         // 「为什么是这个数字」主口在记录页目标行下（小屏/横屏
                         // 起始页不加行——800×360 下会把开始按钮挤出视口）。
                       ],
@@ -1027,12 +1275,15 @@ class _StartPage extends StatelessWidget {
               ),
               ),
             ),
-          const SizedBox(height: 8),
-          Text(
-            tx('点动作可先看图文解析', en: 'Tap an exercise for the illustrated guide'),
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
-          ),
+          if (!compactHeight) ...[
+            const SizedBox(height: 8),
+            Text(
+              tx('点动作可先看图文解析',
+                  en: 'Tap an exercise for the illustrated guide'),
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
+            ),
+          ],
           const SizedBox(height: 8),
           // 冻结基线：主操作按钮高度 ≥88dp，拇指可达区
           BigButton(
@@ -1075,12 +1326,12 @@ class _LiftView extends StatelessWidget {
       builder: (context, cons) {
         final wide = cons.maxWidth >= 840;
         if (wide) {
-          return Column(
-            children: [
-              _TopBar(s: s, onFinish: onSessionEnded),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
+            return Column(
+              children: [
+                _TopBar(s: s, onFinish: onSessionEnded),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
@@ -1545,7 +1796,8 @@ class _ExerciseInfo extends StatelessWidget {
     // 自重→纯次数；不再出现「0kg×N」假重量。
     final bool timed = isTimedLogging(ex.logging);
     final bool perSide = isPerSideLogging(ex.logging);
-    final bool bodyweight = isBodyweightLoad(ex.loadType);
+    final bool bodyweight = isBodyweightUi(
+        exerciseName: ex.name, loadType: ex.loadType);
     String lastCell(SetEntry e, bool en) {
       final n = timed ? (e.durationSec ?? e.reps) : e.reps;
       if (timed) return en ? '${n}s' : '$n 秒';
@@ -1565,7 +1817,7 @@ class _ExerciseInfo extends StatelessWidget {
             en: 'Last time: ${last.map((e) => lastCell(e, true)).join('  ')}');
     // 组数/目标行已升格为动作面板第一行的大字号条（2026-09-26 Arono），
     // 这里不再重复显示，避免同屏两处组号且挤占小屏纵向空间。
-    return Column(
+    final info = Column(
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1592,14 +1844,21 @@ class _ExerciseInfo extends StatelessWidget {
           lastText,
           style: const TextStyle(color: AppTheme.textDim, fontSize: 15),
         ),
+        // 器械设置（P2-C）：只在该动作第一组前显示（空备注不占空间）；
+        // 开始记录后收起，不挤占后续组的动作区。
+        if (s.currentSets.isEmpty)
+          SetupNoteView(note: s.setupNoteOf(ex), compact: true),
         // 动作解析入口（2026-09-27）：图文解析收在这个主动点按的入口后，
         // 不占三要素空间；弹层随时划掉，计时不受影响。
         Padding(
           padding: const EdgeInsets.only(top: 6),
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: () =>
-                showExerciseDetailSheet(context, name: ex.name),
+            onTap: () => showExerciseDetailSheet(
+              context,
+              name: ex.name,
+              exerciseKey: ex.exerciseKey,
+            ),
             child: Semantics(
               button: true,
               label: tx('查看 ${exname(ex.name)} 的动作解析',
@@ -1625,6 +1884,7 @@ class _ExerciseInfo extends StatelessWidget {
           ),
       ],
     );
+    return info;
   }
 }
 
@@ -1847,6 +2107,16 @@ class _ActionPanelState extends State<_ActionPanel> {
   int? _reps;
   int? _rir;
   bool _rirPrompt = false; // 余力没填写提醒：第一按只提示不落库
+  // 余力真实性（P0-C 复核，2026-10-18）：[rirRecorded] 的判据不是「_rir 有值」
+  // 而是「用户亲手点过余力行」。「带入上次成绩」只预填数值（重量/次数/余力
+  // 展示值），不置此标记——预填的 R2 不是本场观测，落库 rir_recorded=0，
+  // 统计与渐进判定不会把它当成真的余力记录。
+  bool _rirTouched = false;
+  // 疼痛标记（P2-B）：0/'' = 未填。默认收起，用户主动点「＋疼痛」才展开
+  // 部位/程度；不弹窗、不抢焦点，绝不打断训练（安全底线只记录不拦人）。
+  int _painLevel = 0;
+  String _painArea = '';
+  bool _painOpen = false;
   String _note = '';
   bool _noteOpen = false;
   bool _saving = false; // 防抖：力竭手抖双击不能记两组
@@ -1902,7 +2172,12 @@ class _ActionPanelState extends State<_ActionPanel> {
     if (old.ex.id != widget.ex.id) {
       _reps = null;
       _kind = SetKind.working;
+      _rir = null;
+      _rirTouched = false;
       _rirPrompt = false;
+      _painLevel = 0;
+      _painArea = '';
+      _painOpen = false;
     }
     // 计时动作换了「组页」（换动作/撤销回退改变完成组数）→ 重新起表：
     // 上一组的计时已随翻页放弃，这一组从 0 秒开始
@@ -1925,31 +2200,40 @@ class _ActionPanelState extends State<_ActionPanel> {
   List<Widget> _plateauRow(BuildContext context, SessionController s) {
     final info = s.plateauFor(widget.ex.name);
     if (info == null) return const [];
+    // 减载周/停练回归不叠加平台期提醒：这场的处方就是恢复，提示减载/加重会打架。
+    if (s.inDeloadWeek || s.inLayoff) return const [];
     // 只在"正停留在这个重量上"时提醒：已经加重/在调别的重量不打扰
     if ((info.weightKg - s.weightDraft).abs() > 0.01) return const [];
     final rule = widget.ex.rule;
-    final nextKg = round05(info.weightKg + rule.incrementKg);
-    final msg = info.hitTop
-        ? tx(
-            '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)} 且次数到顶——可以直接加重到 ${fmtWt(nextKg)}',
-            en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days with top reps hit — add weight to ${fmtWt(nextKg)} now')
+    // P1-C 停滞协议：未顶格的平台期给「减载 10% 或换变式」，
+    // 已顶格保留加重建议；2 次/12 天的老口径仍提示冲次数。
+    final protocol = plateauProtocolOf(
+      info,
+      rule: rule,
+      logging: widget.ex.logging,
+      loadType: widget.ex.loadType,
+    );
+    final reduce = protocol.action == 'reduce';
+    final msg = protocol.action != 'none'
+        ? protocol.reason
         : tx(
             '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——次数冲到 ${rule.repsMax} 就该 +${fmtWt(rule.incrementKg)}',
             en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — once you reach ${rule.repsMax} reps, add +${fmtWt(rule.incrementKg)}');
+    final color = reduce ? AppTheme.warn : AppTheme.primary;
     return [
       const SizedBox(height: 4),
       Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.trending_up, size: 15, color: AppTheme.primary),
+          Icon(reduce ? Icons.trending_down : Icons.trending_up,
+              size: 15, color: color),
           const SizedBox(width: 5),
           Flexible(
             child: Text(
               msg,
               overflow: TextOverflow.ellipsis,
               maxLines: 2,
-              style:
-                  const TextStyle(color: AppTheme.primary, fontSize: 12.5),
+              style: TextStyle(color: color, fontSize: 12.5),
             ),
           ),
         ],
@@ -1963,9 +2247,14 @@ class _ActionPanelState extends State<_ActionPanel> {
   List<Widget> _lastPerformanceRow(BuildContext context, SessionController s) {
     final last = s.lastPerformance(widget.ex.name);
     if (last == null) return const [];
-    final rirText = last.rir >= 0 ? ' R${last.rir}' : '';
+    // 余力真实性（P0-C）：上次没点过余力时 rir 只是计划默认值，
+    // 不以「R2」伪装成观测；带入时也只当展示值预填（配合 _rirTouched，
+    // 不落成 rir_recorded=1 的假观测）。
+    final lastRirRecorded = last.rirRecorded;
+    final rirText = lastRirRecorded && last.rir >= 0 ? ' R${last.rir}' : '';
     final bool timed = isTimedLogging(widget.ex.logging);
-    final bool bodyweight = isBodyweightLoad(widget.ex.loadType);
+    final bool bodyweight = isBodyweightUi(
+        exerciseName: widget.ex.name, loadType: widget.ex.loadType);
     final lastNum =
         timed ? (last.durationSec ?? last.reps) : last.reps;
     final String zhLast;
@@ -1987,15 +2276,18 @@ class _ActionPanelState extends State<_ActionPanel> {
           HapticFeedback.selectionClick();
           s.setWeightDraft(last.weightKg);
           setState(() {
+            // 只预填数值（2026-10-18）：余力展示值一并带入，但 touched 不置真
+            // ——预填值不是本场点选的观测，落库按「未记录」走。
             _reps = last.reps;
-            _rir = last.rir;
+            _rir = lastRirRecorded ? last.rir : null;
+            _rirTouched = false;
           });
         },
         child: Semantics(
           button: true,
           label: tx(
-            '带入上次成绩：${timed || bodyweight ? '' : fmtWt(last.weightKg)}$lastNum${timed ? '秒' : '次'}${last.rir >= 0 ? '余力${last.rir}' : ''}',
-            en: 'Apply last set: $enLast${last.rir >= 0 ? ', RIR ${last.rir}' : ''}',
+            '带入上次成绩：${timed || bodyweight ? '' : fmtWt(last.weightKg)}$lastNum${timed ? '秒' : '次'}${lastRirRecorded ? '余力${last.rir}' : ''}',
+            en: 'Apply last set: $enLast${lastRirRecorded ? ', RIR ${last.rir}' : ''}',
           ),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 2),
@@ -2025,7 +2317,9 @@ class _ActionPanelState extends State<_ActionPanel> {
     // 动作记录形态（v14）：计时 / 单侧 / 自重，三种形态共用本面板
     final timed = isTimedLogging(ex.logging);
     final perSide = isPerSideLogging(ex.logging);
-    final bodyweight = isBodyweightLoad(ex.loadType);
+    // H3 收尾：UI 自重判定带「显式负重变体名」规则，改名负重变体给重量输入
+    final bodyweight = isBodyweightUi(
+        exerciseName: ex.name, loadType: ex.loadType);
     // 次数点选：单侧动作 ±2 步进（总数要能两侧均分），其余 ±1
     final List<int> repsChoices;
     if (perSide) {
@@ -2048,7 +2342,7 @@ class _ActionPanelState extends State<_ActionPanel> {
       }.toList()
         ..sort();
     }
-    final doneAll = s.workingSetsDone >= ex.rule.workingSets;
+    final doneAll = s.workingSetsDone >= plannedSetsOf(ex);
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
@@ -2065,7 +2359,7 @@ class _ActionPanelState extends State<_ActionPanel> {
           // 不再被夹回计划数。
           Builder(
             builder: (context) {
-              final planned = ex.rule.workingSets;
+              final planned = plannedSetsOf(ex);
               // 目标行按记录形态换口径（v14）：计时→秒、单侧→每边均分
               final targetText = targetTextFor(ex);
               final setText = s.workingSetsDone >= planned
@@ -2266,7 +2560,9 @@ class _ActionPanelState extends State<_ActionPanel> {
             // 杠铃片速配（2026-09-26 Arono）：杠铃动作改重量时短暂显示
             // 每边挂片，约 4 秒自动收起；非杠铃动作完全不占位。
             _PlateHintStrip(
-                s: s, gear: libraryMetaByName(ex.name)?.gear ?? ''),
+                s: s,
+                exName: ex.name,
+                gear: libraryMetaForLift(ex.name)?.gear ?? ''),
             // 上次成绩行（调研条目 7，wger/LibreFit 思路）：与渐进引擎建议值
             // （大数字 = 本组推荐起点）并列的第二起点，点按整套带入重量/次数/
             // RIR；不替换建议值、不弹窗，无需手动步进即可重现上次配置。
@@ -2308,8 +2604,80 @@ class _ActionPanelState extends State<_ActionPanel> {
               _kindChip(tx('热身', en: 'Warm-up'), SetKind.warmup),
               _kindChip(tx('正式', en: 'Working'), SetKind.working),
               _kindChip(tx('力竭', en: 'Failure'), SetKind.failure),
+              // 疼痛小标记（P2-B）：与组类型同排的「＋疼痛」小 chip，
+              // 收起时只占一枚 chip 的横向位置（不占纵向空间），
+              // 点开才展开部位/程度。不弹窗、不拦「完成本组」。
+              _painChip(),
             ],
           ),
+          if (_painOpen) ...[
+            const SizedBox(height: 8),
+            Container(
+              key: const Key('workoutPainPanel'),
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                border: Border.all(
+                    color: AppTheme.warn.withValues(alpha: 0.7), width: 1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                children: [
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      Text(tx('部位', en: 'Area'),
+                          style: const TextStyle(
+                              color: AppTheme.textDim, fontSize: 12)),
+                      for (final a in PainArea.all) _painAreaChip(a),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      Text(tx('程度', en: 'Level'),
+                          style: const TextStyle(
+                              color: AppTheme.textDim, fontSize: 12)),
+                      _painLevelChip(1, tx('1 轻', en: '1 Mild')),
+                      _painLevelChip(2, tx('2 中', en: '2 Mod')),
+                      _painLevelChip(3, tx('3 重', en: '3 Severe')),
+                      _painLevelChip(0, tx('无痛', en: 'None')),
+                    ],
+                  ),
+                  // 等级 ≥2 的非弹窗建议（P2-B）：就地一行小字，不打断计时，
+                  // 也不改本组重量/次数——只提示减负荷或换变式。
+                  if (_painLevel >= 2) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.trending_down,
+                            size: 15, color: AppTheme.warn),
+                        const SizedBox(width: 5),
+                        Expanded(
+                          child: Text(
+                            tx(
+                              '建议：下一组减约 10% 重量或换更轻的变式，别硬顶；持续疼或加重就停下',
+                              en: 'Tip: drop ~10% load or switch to an easier variation next set; stop if it persists or worsens',
+                            ),
+                            style: const TextStyle(
+                                color: AppTheme.warn, fontSize: 12.5),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 8),
           // RIR（余力）：默认用计划目标值，可点选覆盖。
           // Wrap 而非 Row：系统大字号（1.6x）下窄屏一行放不下时自动换行。
@@ -2331,8 +2699,9 @@ class _ActionPanelState extends State<_ActionPanel> {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     Tooltip(
-                      message: tx('余力(RIR) = 做完这组还能再做几次，不确定就用计划默认值',
-                          en: 'RIR = reps left in the tank; keep the plan default if unsure'),
+                      message: tx(
+                          '余力(RIR) = 做完这组还能再做几次；不确定可留空，按计划默认记但不计入统计',
+                          en: 'RIR = reps left in the tank; leave it blank to log the plan default (not counted as recorded)'),
                       child: Text(
                         _rirPrompt
                             ? tx('余力没填写 ', en: 'RIR missing ')
@@ -2355,6 +2724,8 @@ class _ActionPanelState extends State<_ActionPanel> {
                           setState(() {
                             _rir = (_rir == r) ? null : r;
                             if (_rir != null) _rirPrompt = false;
+                            // 用户亲手点过余力行：此后本组的余力才算真实观测。
+                            _rirTouched = true;
                           });
                         },
                         child: Container(
@@ -2386,8 +2757,8 @@ class _ActionPanelState extends State<_ActionPanel> {
                 if (_rirPrompt) ...[
                   const SizedBox(height: 4),
                   Text(
-                    tx('点一个数字；不确定就再按一次「完成本组」，按计划默认记',
-                        en: 'Pick a number, or tap Done again to log the plan default'),
+                    tx('点一个数字；不确定就再按一次「完成本组」，按计划默认记（标为未记录）',
+                        en: 'Pick a number, or tap Done again to log the plan default (marked unrecorded)'),
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                         color: AppTheme.warn, fontSize: 12),
@@ -2563,7 +2934,9 @@ class _ActionPanelState extends State<_ActionPanel> {
     final s = widget.s;
     final ex = widget.ex;
     final timed = isTimedLogging(ex.logging);
-    final bodyweight = isBodyweightLoad(ex.loadType);
+    // H3 收尾：负重变体改名保留旧键时，保存不再强制 0kg
+    final bodyweight = isBodyweightUi(
+        exerciseName: ex.name, loadType: ex.loadType);
     // 余力没填写提醒（2026-09-26 Arono）：正式组第一按不落库，
     // 高亮余力行提示补填；再按一次按计划默认记（不拦人）。
     // 热身/力竭组不提醒（力竭本身就是 RIR 0）。
@@ -2586,6 +2959,14 @@ class _ActionPanelState extends State<_ActionPanel> {
     }
     // 计时/自重动作不落重量（自重链 recommendWeight 恒 0，保持 0kg 口径）
     final weight = (timed || bodyweight) ? 0.0 : s.weightDraft;
+    // 余力真实性（P0-C）：只有本组真的点过 chip 才算「已记录」；连按两次
+    // 走计划默认值、或「带入上次成绩」只预填了数值时，rir 照存当前值，
+    // 但 rir_recorded=0（预填不是观测）。
+    final rirRecorded = _rir != null && _rirTouched;
+    // 疼痛标记（P2-B）：保存前先记下本组的值（保存后与余力一起清空，
+    // 下一组重新问），落库与提示都用这份快照。
+    final painLevel = _painLevel;
+    final painArea = _painArea;
     final pr = await s.completeSet(
       weight: weight,
       reps: reps,
@@ -2593,6 +2974,9 @@ class _ActionPanelState extends State<_ActionPanel> {
       kind: _kind,
       note: _note,
       durationSec: durationSec,
+      rirRecorded: rirRecorded,
+      painLevel: painLevel,
+      painArea: painArea,
     );
     _saving = false;
     _rirPrompt = false;
@@ -2600,8 +2984,27 @@ class _ActionPanelState extends State<_ActionPanel> {
     // await 期间面板可能已被换页卸载（最后一组 → 确认收尾 → 总结页）：
     // 已 dispose 的 TextEditingController 不可再 clear，全部守卫
     if (mounted) {
+      // 余力/疼痛选择只代表刚记录的这组：下一组重新问，避免把上一组的
+      // 点选无感带成「已记录」。
+      _rir = null;
+      _rirTouched = false;
+      _painLevel = 0;
+      _painArea = '';
       _noteCtrl.clear();
-      if (_noteOpen) setState(() => _noteOpen = false);
+      if (_noteOpen || _painOpen) {
+        setState(() {
+          _noteOpen = false;
+          _painOpen = false;
+        });
+      }
+    }
+    // 等级 ≥2 的非弹窗建议（P2-B）：用页面顶部横幅（与 PR 祝贺同一机制，
+    // 5 秒自动收起），不弹窗、不拦流程；最后一组也照常提示。
+    if (painLevel >= 2) {
+      s.showFocusBanner(tx(
+        '疼痛 ${painname(painArea)} $painLevel 级：下一组减约 10% 重量或换更轻的变式，别硬顶',
+        en: 'Pain ${painname(painArea)} level $painLevel: drop ~10% load or switch to an easier variation next set',
+      ));
     }
     if (!context.mounted) return;
     // 最后一个动作的最后一组：状态机已自动结束，
@@ -2617,8 +3020,9 @@ class _ActionPanelState extends State<_ActionPanel> {
           ? tx('$durationSec 秒', en: '$durationSec s')
           : '${fmtLoadU(weight)} × $reps',
     );
-    // 重量 PR 祝贺只对常规负重形态有意义（计时/自重恒 0kg，没有重量轴）
-    if (pr && !timed && !bodyweight) {
+    // 重量 PR 祝贺只对常规负重形态有意义（计时/自重恒 0kg，没有重量轴）；
+    // 疼痛 ≥2 时让位给安全提示（同一横幅位，安全优先于庆祝）。
+    if (pr && !timed && !bodyweight && painLevel < 2) {
       s.showFocusBanner(tx('🏆 ${exname(ex.name)} 重量新高 PR！',
           en: '🏆 ${exname(ex.name)} New PR!'));
     }
@@ -2648,6 +3052,125 @@ class _ActionPanelState extends State<_ActionPanel> {
       ),
     );
   }
+
+  /// 疼痛入口 chip（P2-B）：收起时是一枚与组类型同排的小 chip；
+  /// 已标记时显示「部位 + 等级」并转暖色，点按展开/收起编辑区。
+  /// 【不打断】只是本面板内的展开，不弹窗、不挡「完成本组」。
+  Widget _painChip() {
+    final active = _painLevel > 0;
+    final label = active
+        ? tx('疼痛 ${painname(_painArea)} · $_painLevel',
+            en: 'Pain ${painname(_painArea)} · $_painLevel')
+        : tx('＋疼痛', en: '+ Pain');
+    return Semantics(
+      button: true,
+      toggled: _painOpen,
+      label: active
+          ? tx('已标记疼痛：${painname(_painArea)} $_painLevel 级，点按修改',
+              en: 'Pain marked: ${painname(_painArea)} level $_painLevel, tap to edit')
+          : tx('标记本组疼痛（可选），点按展开',
+              en: 'Mark pain for this set (optional), tap to expand'),
+      child: GestureDetector(
+        key: const Key('workoutPainMarker'),
+        onTap: () {
+          HapticFeedback.selectionClick();
+          setState(() => _painOpen = !_painOpen);
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: active ? AppTheme.warn : AppTheme.cardHi,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.healing,
+                size: 14,
+                color: active ? AppTheme.bgDeep : AppTheme.textDim,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: active ? AppTheme.bgDeep : AppTheme.textDim,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _painAreaChip(String area) {
+    final sel = _painArea == area && _painLevel > 0;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() {
+          // 选了部位就视为「有疼痛」：程度默认 1 级，用户可再点 2/3 覆盖。
+          _painArea = area;
+          if (_painLevel == 0) _painLevel = 1;
+        });
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: sel ? AppTheme.warn : AppTheme.cardHi,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          painname(area),
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: sel ? FontWeight.w700 : FontWeight.w400,
+            color: sel ? AppTheme.bgDeep : AppTheme.textDim,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _painLevelChip(int level, String label) {
+    final sel = _painLevel == level;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() {
+          if (level == 0) {
+            _painLevel = 0;
+            _painArea = '';
+          } else if (_painLevel == level) {
+            // 再点一次已选等级 = 取消标记
+            _painLevel = 0;
+            _painArea = '';
+          } else {
+            _painLevel = level;
+            if (_painArea.isEmpty) _painArea = PainArea.other;
+          }
+        });
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: sel ? AppTheme.warn : AppTheme.cardHi,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: sel ? FontWeight.w700 : FontWeight.w400,
+            color: sel ? AppTheme.bgDeep : AppTheme.textDim,
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // ================= 休息态 =================
@@ -2670,7 +3193,7 @@ class _RestViewState extends State<_RestView> {
     final s = c.session;
     final ex = s.currentEx;
     final isLastEx = s.curExIdx >= s.exercises.length - 1;
-    final plannedWorking = ex?.rule.workingSets ?? 0;
+    final plannedWorking = ex == null ? 0 : plannedSetsOf(ex);
     final doneAll = s.workingSetsDone >= plannedWorking;
     // 练满动作上的休息 = 落点是它的加练组（「再来一组」回退后休息继续；
     // 或收尾确认选「继续训练」后的加练态——含轮转末组落在非末位动作的
@@ -2702,6 +3225,11 @@ class _RestViewState extends State<_RestView> {
           child: IntrinsicHeight(
             child: Column(
               children: [
+                // 停练回归在休息页也保留一句说明（非弹窗、不占三要素）。
+                const _LayoffBanner(),
+                // 减载周在休息页也保留一句说明（非弹窗、不占三要素）；
+                // 非减载周完全隐形，不增加休息页高度。
+                const _DeloadBanner(),
                 Expanded(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -2755,6 +3283,12 @@ class _RestViewState extends State<_RestView> {
                         const SizedBox(height: 10),
                         const HrRestChip(),
                       ],
+                      // 心率自适应建议（P2-F）：已连接且读数偏高/已恢复时
+                      // 多一行小字 + 手动 ±30 秒；未连接时零占位。
+                      // 只给建议，绝不自动改休息时间、绝不弹窗。
+                      // 矮屏（横屏手机，showBrief<480）也保留：恢复与否
+                      // 直接影响训练决策，用紧凑布局不挤占倒计时与操作区。
+                      _HrRestAdvice(compact: !showBrief),
                       if (showBrief) ...[
                         const SizedBox(height: 12),
                         // 轻量战报（调研条目 9，Fast N Fitness 思路）：
@@ -3068,6 +3602,119 @@ class _RestActionBtn extends StatelessWidget {
   }
 }
 
+/// 心率自适应休息建议（P2-F）：心率数据参与决策，而不只是显示。
+/// - 只在「已连接且有心率读数」时出现，未连接时零占位，现有休息流程不变；
+/// - 判定交给纯函数 [restAdvice]（阈值见 rest_rules.dart）；读数走
+///   [HeartRateService.freshBpm]——超过 10 秒的旧读数不作为建议依据；
+/// - 偏高 → 「心率仍高，建议多休 30 秒」+ 手动 +30 秒；
+///   已恢复 → 「心率已恢复，可提前 30 秒开练」+ 手动 -30 秒；
+/// - 两条建议都只是提醒：用户点按钮才改休息时间，绝不自动加时、绝不弹窗；
+/// - [compact] = 矮屏（横屏手机）模式：收 margin/字号/按钮高度，
+///   保证建议行在 showBrief<480 的冻结布局里也不挤占倒计时与操作区。
+class _HrRestAdvice extends StatelessWidget {
+  const _HrRestAdvice({this.compact = false});
+
+  final bool compact;
+
+  /// 刚完成那组的余力：休息开始时 extraSetExerciseName 指向刚完成的动作
+  /// （与「再来一组」/破纪录横幅同一数据源），练满推进后也能拿到；否则
+  /// 回落当前动作最后一组。没有记录时用 2（计划常见默认值）。
+  int _rirOf(SessionController s) {
+    final name = s.extraSetExerciseName;
+    if (name != null) {
+      for (final e in s.exercises) {
+        if (e.name == name) {
+          final sets = s.setsByEx[e.id] ?? const <SetEntry>[];
+          if (sets.isNotEmpty) return sets.last.rir;
+        }
+      }
+    }
+    final sets = s.currentSets;
+    return sets.isEmpty ? 2 : sets.last.rir;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = app(context);
+    final s = c.session;
+    final hr = c.hr;
+    return ListenableBuilder(
+      listenable: Listenable.merge([hr, s.restRemainingMs]),
+      builder: (context, _) {
+        if (!s.hasActive ||
+            s.phase != WorkoutPhase.resting ||
+            hr.link != HrLink.connected) {
+          return const SizedBox.shrink();
+        }
+        // 新鲜度：超过约 10 秒的旧读数不作为建议依据（设备可能已断流）
+        final bpm = hr.freshBpm;
+        if (bpm == null) return const SizedBox.shrink();
+        final advice = restAdvice(
+          bpm,
+          c.settings.hrRest,
+          s.restRemainingMs.value ~/ 1000,
+          _rirOf(s),
+        );
+        if (advice.action == RestAdviceAction.ok) {
+          return const SizedBox.shrink();
+        }
+        final extend = advice.action == RestAdviceAction.extend;
+        final accent = extend ? AppTheme.warn : AppTheme.primary;
+        final delta = extend ? 30 : -30;
+        return Container(
+          key: const Key('restHrAdvice'),
+          margin: EdgeInsets.only(top: compact ? 4 : 8),
+          padding: EdgeInsets.fromLTRB(compact ? 10 : 12, compact ? 2 : 4,
+              compact ? 4 : 6, compact ? 2 : 4),
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.favorite, size: compact ? 12 : 15, color: accent),
+              SizedBox(width: compact ? 4 : 6),
+              Flexible(
+                child: Text(
+                  advice.reason,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      color: accent, fontSize: compact ? 11.5 : 12.5),
+                ),
+              ),
+              SizedBox(width: compact ? 2 : 4),
+              TextButton(
+                key: Key(extend
+                    ? 'restHrAdviceExtend'
+                    : 'restHrAdviceShorten'),
+                onPressed: () {
+                  HapticFeedback.selectionClick();
+                  s.extendRest(delta);
+                },
+                style: TextButton.styleFrom(
+                  foregroundColor: accent,
+                  minimumSize:
+                      Size(compact ? 44 : 52, compact ? 28 : 36),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: Text(
+                  extend ? tx('+30 秒', en: '+30s') : tx('-30 秒', en: '-30s'),
+                  style: TextStyle(
+                      fontSize: compact ? 12 : 13,
+                      fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// 休息页渐进主动提醒（2026-09-26 Arono）：刚完成的组若破纪录 → 🏆 横幅；
 /// 当前动作停在同一重量过久（≥3 次或 ≥2 次跨约两周）→ 📈 平台期横幅。
 /// 只在休息等待页渲染、永不弹窗；无提醒时完全隐形。
@@ -3114,23 +3761,65 @@ class _ProgressNudges extends StatelessWidget {
         ));
       }
     }
-    // ② 平台期：同重量停留过久 → 提醒加重（正在举这个重量时才提醒）
-    final info = s.plateauFor(ex.name);
+    // ② 平台期：同重量停留过久 → 有原因的下一步（P1-C 停滞协议）。
+    // 减载周/停练回归不叠加（处方是恢复，不催加重也不催再减）。
+    final info = (s.inDeloadWeek || s.inLayoff) ? null : s.plateauFor(ex.name);
     if (info != null && (info.weightKg - last.weightKg).abs() <= 0.01) {
       final rule = ex.rule;
-      final nextKg = round05(info.weightKg + rule.incrementKg);
-      banners.add(_nudge(
-        context,
-        icon: Icons.trending_up,
-        color: AppTheme.primary,
-        text: info.hitTop
-            ? tx(
-                '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——次数到顶了，下一组可以直接 ${fmtWt(nextKg)}',
-                en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — reps maxed out, go ${fmtWt(nextKg)} next set')
-            : tx(
-                '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——次数冲到 ${rule.repsMax} 就 +${fmtWt(rule.incrementKg)}',
-                en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax} reps, then +${fmtWt(rule.incrementKg)}'),
-      ));
+      final protocol = plateauProtocolOf(
+        info,
+        rule: rule,
+        logging: ex.logging,
+        loadType: ex.loadType,
+      );
+      if (protocol.action == 'reduce') {
+        banners.add(_nudge(
+          context,
+          icon: Icons.trending_down,
+          color: AppTheme.warn,
+          text: protocol.reason,
+        ));
+      } else if (protocol.action == 'add') {
+        banners.add(_nudge(
+          context,
+          icon: Icons.trending_up,
+          color: AppTheme.primary,
+          text: protocol.reason,
+        ));
+      } else {
+        banners.add(_nudge(
+          context,
+          icon: Icons.trending_up,
+          color: AppTheme.primary,
+          text: tx(
+              '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——次数冲到 ${rule.repsMax} 就 +${fmtWt(rule.incrementKg)}',
+              en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax} reps, then +${fmtWt(rule.incrementKg)}'),
+        ));
+      }
+    }
+    // ③ 自重变式阶梯（P2-E）：练满计划组、全部达标、末组余力达标且次数
+    // 顶到 reps_max 才提示；减载周/停练回归的处方是「回到原档」，
+    // 不在此叠加升级建议（与平台期提醒同一 guard）。
+    if (!s.inDeloadWeek && !s.inLayoff) {
+      final nextVariation = bodyweightVariationSuggestion(
+        exerciseName: ex.name,
+        exerciseKey: ex.exerciseKey,
+        rule: ex.rule,
+        loadType: ex.loadType,
+        logging: ex.logging,
+        workingSets: sets,
+        plannedSets: plannedSetsOf(ex),
+      );
+      if (nextVariation != null) {
+        banners.add(_nudge(
+          context,
+          icon: Icons.stairs_outlined,
+          color: AppTheme.accent,
+          text: tx(
+              '次数到顶，试试${exname(nextVariation)}——同一动作的下一档，不改你的计划',
+              en: 'Reps topped out — try ${exname(nextVariation)}, the next step in this progression. Your plan stays the same'),
+        ));
+      }
     }
     if (banners.isEmpty) return const SizedBox.shrink();
     return Column(children: banners);
@@ -3473,23 +4162,40 @@ class _SummaryPage extends StatelessWidget {
     );
   }
 
-  /// 自重动作「次数到顶 → 下次加练一组」提示（v14）：全部正式组记满后
-  /// 用本场表现回放链状态，触顶才给一行建议——只做展示层口径，
-  /// 不改计划本身（改组数走计划编辑）。
+  /// 自重动作「次数到顶 → 下次加练一组 / 试试下一档变式」提示（v14 / P2-E）：
+  /// 计划正式组记满后用本场表现回放链状态，触顶才给建议——只做展示层口径，
+  /// 不改计划本身（改组数/换动作走计划编辑）。
+  /// 减载周/停练回归的处方是「回到原档」，不叠加升级建议（与休息页同一 guard）。
   List<Widget> _bwExtraHint(SessionExercise ex) {
-    if (!isBodyweightLoad(ex.loadType)) return const [];
+    if (s.inDeloadWeek || s.inLayoff) return const [];
     final today = (s.setsByEx[ex.id] ?? const <SetEntry>[])
         .where((x) => x.kind == SetKind.working)
         .toList();
-    final plannedDone = today.where((x) => !x.isExtra).length;
-    if (plannedDone < ex.rule.workingSets) return const [];
-    final state = chainStateFromHistory(today, ex.rule);
-    final extra = bodyweightExtraSetTarget(
-      state: state,
+    final planned = plannedSetsOf(ex);
+    // 与休息页变式建议同一道闸（P2-E 复核）：练满计划组 + 全部达标 +
+    // 末组余力达标 + 次数轴触顶，任一条不满足都不给升级建议。
+    final ready = bodyweightProgressionReady(
+      exerciseName: ex.name,
+      exerciseKey: ex.exerciseKey,
       rule: ex.rule,
       loadType: ex.loadType,
+      logging: ex.logging,
+      workingSets: today,
+      plannedSets: planned,
+    );
+    if (!ready) return const [];
+    final extra = bodyweightExtraSetTarget(
+      state: chainStateFromHistory(today, ex.rule),
+      rule: ex.rule,
+      loadType: LoadMode.bodyweight,
+      plannedSets: planned,
     );
     if (extra == null) return const [];
+    // 变式阶梯（P2-E）：同一动作的下一档，纯建议、不自动换。
+    final nextVariation = nextBodyweightVariation(
+      ex.name,
+      exerciseKey: ex.exerciseKey,
+    );
     return [
       Padding(
         padding: const EdgeInsets.only(left: 4, bottom: 6),
@@ -3499,6 +4205,15 @@ class _SummaryPage extends StatelessWidget {
           style: const TextStyle(color: AppTheme.primary, fontSize: 12.5),
         ),
       ),
+      if (nextVariation != null)
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 6),
+          child: Text(
+            tx('也可以试试${exname(nextVariation)}：同一动作的下一档（不改计划）',
+                en: 'Or try ${exname(nextVariation)} — the next step up (your plan stays the same)'),
+            style: const TextStyle(color: AppTheme.accent, fontSize: 12.5),
+          ),
+        ),
     ];
   }
 }
@@ -3580,9 +4295,13 @@ class _ImpressionSelectorState extends State<_ImpressionSelector> {
 /// 短暂显示每边挂片组合，约 4 秒自动收起。低调不弹窗：字号小、暗色、
 /// 不挡任何操作；非杠铃动作整块不渲染。
 class _PlateHintStrip extends StatefulWidget {
-  const _PlateHintStrip({required this.s, required this.gear});
+  const _PlateHintStrip(
+      {required this.s, required this.exName, required this.gear});
 
   final SessionController s;
+
+  /// 当前动作名：杆重口径与起始页热身同源（warmupBarKgFor，EZ 杠 10kg/25lb）。
+  final String exName;
 
   /// 当前动作的细分器械（动作库词表外为空 → 不显示）。
   final String gear;
@@ -3596,12 +4315,24 @@ class _PlateHintStripState extends State<_PlateHintStrip> {
   bool _visible = false;
   String _text = '';
 
+  /// 上次见到的重量草稿：s 是同一个控制器对象，old.s.weightDraft 与
+  /// widget.s.weightDraft 读到的都是当前值（永远相等），判变化只能自己记。
+  double? _lastDraft;
+
+  @override
+  void initState() {
+    super.initState();
+    _lastDraft = widget.s.weightDraft;
+  }
+
   @override
   void didUpdateWidget(_PlateHintStrip old) {
     super.didUpdateWidget(old);
     // 只在重量变化时闪现；切动作但重量没动不闪（换动作的推荐值变化除外，
     // 那也是一次"该挂几片"的有效提示）
-    if (widget.s.weightDraft != old.s.weightDraft) _flash();
+    final draft = widget.s.weightDraft;
+    if (draft != _lastDraft) _flash();
+    _lastDraft = draft;
   }
 
   @override
@@ -3617,17 +4348,22 @@ class _PlateHintStripState extends State<_PlateHintStrip> {
       _collapse();
       return;
     }
-    // lb 模式（2026-10-17）：整体在 lb 空间配片（45lb 杆 + 美制片组），
-    // 显示值先 snap 0.5lb 网格；kg 模式维持原口径
-    final b = WeightUnits.isLb
+    // 杆重口径与起始页热身同源（2026-10-18）：EZ 杠 10kg/25lb，
+    // 其余标准奥杆 20kg/45lb；warmupBarKgFor 返回 null = 标准奥杆。
+    final useLb = WeightUnits.isLb;
+    final ezBarKg = warmupBarKgFor(widget.exName, useLb: useLb);
+    final barKg = ezBarKg ?? kStandardBarKg;
+    // lb 模式在 lb 空间配片（美制片组），显示值先 snap 0.5lb 网格；
+    // 标准奥杆取 45lb 整数，不走 20kg 换算（避免 44lb 漂移）。
+    final barLb = ezBarKg != null ? lbSnap(kgToLb(ezBarKg)) : kLbBar;
+    final b = useLb
         ? platesForLoad(lbSnap(kgToLb(w)),
-            barKg: kLbBar, inventory: kLbPlateSizes)
-        : platesForLoad(w);
+            barKg: barLb, inventory: kLbPlateSizes)
+        : platesForLoad(w, barKg: barKg);
     final String t;
     if (b.perSide.isEmpty) {
-      t = WeightUnits.isLb
-          ? tx('空杆 45lb，不用挂片', en: 'Empty 45lb bar, no plates needed')
-          : tx('空杆 20kg，不用挂片', en: 'Empty 20kg bar, no plates needed');
+      final barTxt = useLb ? '${_fmtPlate(barLb)}lb' : '${_fmtPlate(barKg)}kg';
+      t = tx('空杆 $barTxt，不用挂片', en: 'Empty $barTxt bar, no plates needed');
     } else if (b.exact) {
       t = tx('每边 ${b.perSide.map(_fmtPlate).join(' + ')}',
           en: 'Per side: ${b.perSide.map(_fmtPlate).join(' + ')}');

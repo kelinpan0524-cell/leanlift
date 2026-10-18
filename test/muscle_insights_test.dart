@@ -19,6 +19,15 @@ PlanExercise ex(String name,
     );
 
 void main() {
+  /// 造一条正式组（默认 working；kind 可改为热身/力竭验证过滤）。
+  SetEntry set({String kind = SetKind.working}) => SetEntry(
+        sessionExerciseId: 1,
+        weightKg: 20,
+        reps: 10,
+        kind: kind,
+        doneAt: 0,
+      );
+
   group('untrainedRegions（未练点名）', () {
     test('空 map → 六大肌群全部点名（「其他」永不点名）', () {
       expect(untrainedRegions({}),
@@ -119,6 +128,198 @@ void main() {
       ], metas);
       expect(after['胸']!, greaterThan(before['胸']!));
       expect(after['背']!, lessThan(before['背']!));
+    });
+  });
+
+  group('weeklyWorkingSetsByMuscle（每周组数计数）', () {
+    const bench = ExerciseMeta(
+        '测试卧推', MuscleGroups(main: '胸', secondary: ['肩', '手臂']), true);
+
+    test('空数据 → 全零，键覆盖全部分区（含「其他」）', () {
+      final sets = weeklyWorkingSetsByMuscle([], {});
+      expect(sets.keys.toSet(), kMuscleRegions.toSet());
+      expect(sets.values.every((v) => v == 0), isTrue);
+    });
+
+    test('主肌群计 1 组、次肌群计 0.5 组', () {
+      // 系数本身锁死：主 1 / 次 0.5（改系数必须同步改测试与注释）
+      expect(kSecondaryMuscleSetWeight, 0.5);
+      final sets = weeklyWorkingSetsByMuscle([
+        MapEntry('测试卧推', [set(), set(), set()]),
+      ], {'测试卧推': bench});
+      expect(sets['胸'], 3); // 主肌群：3 组 × 1
+      expect(sets['肩'], 1.5); // 次肌群：3 组 × 0.5
+      expect(sets['手臂'], 1.5);
+      expect(sets['背'], 0);
+    });
+
+    test('只计正式组：热身组与力竭组都不计（与概览容量同口径）', () {
+      final sets = weeklyWorkingSetsByMuscle([
+        MapEntry('测试卧推', [
+          set(kind: SetKind.warmup),
+          set(),
+          set(),
+          set(kind: SetKind.failure),
+        ]),
+      ], {'测试卧推': bench});
+      expect(sets['胸'], 2,
+          reason: '2 组 working；热身组与力竭组都不计（docs/progression-rules.md §6）');
+      expect(sets['肩'], 1.0);
+    });
+
+    test('多动作累加：同一肌群跨动作叠加，未知动作归「其他」', () {
+      const row = ExerciseMeta(
+          '测试划船', MuscleGroups(main: '背', secondary: ['手臂']), true);
+      final sets = weeklyWorkingSetsByMuscle([
+        MapEntry('测试卧推', [set(), set()]), // 胸 2，肩/手臂 1
+        MapEntry('测试划船', [set()]), // 背 1，手臂 0.5
+        MapEntry('神秘动作', [set(), set()]), // 查不到 meta → 其他 2
+      ], {'测试卧推': bench, '测试划船': row});
+      expect(sets['胸'], 2);
+      expect(sets['背'], 1);
+      expect(sets['肩'], 1);
+      expect(sets['手臂'], 1.5);
+      expect(sets['其他'], 2);
+    });
+
+    test('空组列表的动作不产出剂量', () {
+      final sets = weeklyWorkingSetsByMuscle([
+        MapEntry('测试卧推', const <SetEntry>[]),
+      ], {'测试卧推': bench});
+      expect(sets.values.every((v) => v == 0), isTrue);
+    });
+  });
+
+  group('planWeeklyWorkingSetsByMuscle（按计划推算每周组数）', () {
+    const bench = ExerciseMeta(
+        '测试卧推', MuscleGroups(main: '胸', secondary: ['肩', '手臂']), true);
+
+    test('空计划 → 全零（键覆盖全部分区）', () {
+      final sets = planWeeklyWorkingSetsByMuscle([], {});
+      expect(sets.keys.toSet(), kMuscleRegions.toSet());
+      expect(sets.values.every((v) => v == 0), isTrue);
+    });
+
+    test('主 1 / 次 0.5：4 组卧推 → 胸 4、肩/手臂各 2', () {
+      final sets = planWeeklyWorkingSetsByMuscle(
+          [ex('测试卧推', sets: 4)], {'测试卧推': bench});
+      expect(sets['胸'], 4);
+      expect(sets['肩'], 2);
+      expect(sets['手臂'], 2);
+    });
+
+    test('多动作累加：组数直接相加，不按次数加权', () {
+      const row = ExerciseMeta(
+          '测试划船', MuscleGroups(main: '背', secondary: ['手臂']), true);
+      final sets = planWeeklyWorkingSetsByMuscle([
+        ex('测试卧推', sets: 3),
+        ex('测试划船', sets: 4),
+      ], {'测试卧推': bench, '测试划船': row});
+      expect(sets['胸'], 3);
+      expect(sets['背'], 4);
+      expect(sets['手臂'], 1.5 + 2);
+    });
+
+    test('weeklyFactor 只做纯缩放（循环系数由 cycleWeeklyFactor 计算）', () {
+      final sets = planWeeklyWorkingSetsByMuscle(
+          [ex('测试卧推', sets: 3)],
+          {'测试卧推': bench},
+          weeklyFactor: 7 / 3);
+      expect(sets['胸'], closeTo(7, 1e-9));
+      expect(sets['肩'], closeTo(3.5, 1e-9));
+    });
+
+    test('0 组动作不产出剂量', () {
+      final sets = planWeeklyWorkingSetsByMuscle(
+          [ex('测试卧推', sets: 0)], {'测试卧推': bench});
+      expect(sets.values.every((v) => v == 0), isTrue);
+    });
+  });
+
+  group('cycleWeeklyFactor（循环折算到每周）', () {
+    const bench = ExerciseMeta(
+        '测试卧推', MuscleGroups(main: '胸', secondary: ['肩', '手臂']), true);
+
+    test('训练日数 = 连练数时退化为 7/(N+M)', () {
+      // 2 个训练日 + 练2休1：每个周期恰好把两个模板日各练一遍
+      expect(cycleWeeklyFactor(train: 2, rest: 1, trainableDays: 2),
+          closeTo(7 / 3, 1e-9));
+    });
+
+    test('模板日多于连练数：每个模板日平均每周期只轮到 N/trainableDays 次', () {
+      // 6 个训练日 + 练2休1：一个 3 天周期只练 2 次 → 7×2/(3×6) = 7/9
+      expect(cycleWeeklyFactor(train: 2, rest: 1, trainableDays: 6),
+          closeTo(7 / 9, 1e-9));
+      // 4 个训练日 + 练2休1 → 7×2/(3×4) = 7/6
+      expect(cycleWeeklyFactor(train: 2, rest: 1, trainableDays: 4),
+          closeTo(7 / 6, 1e-9));
+    });
+
+    test('无休息日：天天练，7 天转完一轮', () {
+      expect(cycleWeeklyFactor(train: 3, rest: 0, trainableDays: 3),
+          closeTo(7 / 3, 1e-9));
+      expect(cycleWeeklyFactor(train: 2, rest: 0, trainableDays: 4),
+          closeTo(7 / 4, 1e-9));
+    });
+
+    test('参数无效 → 0（无连练天数 / 无模板日）', () {
+      expect(cycleWeeklyFactor(train: 0, rest: 1, trainableDays: 3), 0);
+      expect(cycleWeeklyFactor(train: 2, rest: 1, trainableDays: 0), 0);
+    });
+
+    test('整份计划组数：6 个训练日各 3 组、练2休1 → 每周胸 14 组', () {
+      final sets = planWeeklyWorkingSetsByMuscle(
+        [for (var i = 0; i < 6; i++) ex('测试卧推', sets: 3)],
+        {'测试卧推': bench},
+        weeklyFactor:
+            cycleWeeklyFactor(train: 2, rest: 1, trainableDays: 6),
+      );
+      // 旧口径（直接 ×7/(2+1)）会得到 42 组，超出目标上限 20 → 误报过量
+      expect(sets['胸'], closeTo(14, 1e-9));
+      expect(sets['肩'], closeTo(7, 1e-9));
+      expect(weeklySetStatusOf('胸', sets['胸']!), WeeklySetStatus.onTarget);
+    });
+  });
+
+  group('每周组数目标区间与状态', () {
+    test('目标区间：胸/背/腿 10-20，肩/手臂 8-16，核心 6-12', () {
+      expect(kWeeklySetTargets['胸']!.min, 10);
+      expect(kWeeklySetTargets['胸']!.max, 20);
+      expect(kWeeklySetTargets['背']!.min, 10);
+      expect(kWeeklySetTargets['背']!.max, 20);
+      expect(kWeeklySetTargets['腿']!.min, 10);
+      expect(kWeeklySetTargets['腿']!.max, 20);
+      expect(kWeeklySetTargets['肩']!.min, 8);
+      expect(kWeeklySetTargets['肩']!.max, 16);
+      expect(kWeeklySetTargets['手臂']!.min, 8);
+      expect(kWeeklySetTargets['手臂']!.max, 16);
+      expect(kWeeklySetTargets['核心']!.min, 6);
+      expect(kWeeklySetTargets['核心']!.max, 12);
+      expect(kWeeklySetTargets.containsKey('其他'), isFalse,
+          reason: '「其他」不是真实肌群，不设目标');
+    });
+
+    test('状态：低于下限不足、区间内（含边界）达标、高于上限过量', () {
+      expect(weeklySetStatusOf('胸', 9.5), WeeklySetStatus.low);
+      expect(weeklySetStatusOf('胸', 10), WeeklySetStatus.onTarget);
+      expect(weeklySetStatusOf('胸', 20), WeeklySetStatus.onTarget);
+      expect(weeklySetStatusOf('胸', 20.5), WeeklySetStatus.high);
+      expect(weeklySetStatusOf('核心', 5.5), WeeklySetStatus.low);
+      expect(weeklySetStatusOf('核心', 12), WeeklySetStatus.onTarget);
+      expect(weeklySetStatusOf('核心', 12.5), WeeklySetStatus.high);
+    });
+
+    test('无目标分区（其他）→ null', () {
+      expect(weeklySetStatusOf('其他', 100), isNull);
+      expect(weeklySetStatusOf('不存在的肌群', 5), isNull);
+    });
+
+    test('空数据：各肌群 0 组 → 全部不足', () {
+      final sets = weeklyWorkingSetsByMuscle([], {});
+      for (final r in kWeeklySetTargets.keys) {
+        expect(weeklySetStatusOf(r, sets[r]!), WeeklySetStatus.low,
+            reason: '$r 空数据应为不足');
+      }
     });
   });
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/app.dart';
+import '../../engine/muscle_insights.dart';
 import '../../engine/weight_unit.dart';
 import '../../l10n/lang.dart';
 import '../theme.dart';
@@ -297,3 +298,28 @@ void toast(BuildContext context, String msg) {
 
 /// 读取容器快捷方式。
 AppContainer app(BuildContext context) => AppScope.of(context);
+
+/// 每周组数展示：整数不带小数点，半组保留一位（3 / 3.5）。
+/// 数据页肌肉 tab 与计划编辑页命中预览共用，保证两处数字格式一致。
+/// 循环折算会产生 13.999999999999998 这类浮点尾差，先按 1e-9 归整，
+/// 否则本该显示「14」的组数会显示成「14.0」。
+String fmtSetDose(double sets) {
+  final rounded = sets.roundToDouble();
+  return (sets - rounded).abs() < 1e-9
+      ? rounded.toStringAsFixed(0)
+      : sets.toStringAsFixed(1);
+}
+
+/// 每周组数目标状态文案（P1-B 剂量口径，两处共用）。
+String weeklySetStatusText(WeeklySetStatus status) => switch (status) {
+      WeeklySetStatus.low => tx('不足', en: 'Below target'),
+      WeeklySetStatus.onTarget => tx('达标', en: 'On target'),
+      WeeklySetStatus.high => tx('过量', en: 'Above target'),
+    };
+
+/// 每周组数目标状态配色：不足=警示黄、达标=主绿、过量=红。
+Color weeklySetStatusColor(WeeklySetStatus status) => switch (status) {
+      WeeklySetStatus.low => AppTheme.warn,
+      WeeklySetStatus.onTarget => AppTheme.primary,
+      WeeklySetStatus.high => AppTheme.danger,
+    };

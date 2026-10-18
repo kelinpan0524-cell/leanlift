@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:baoji_timer/db/db.dart';
+import 'package:baoji_timer/engine/engine.dart' show fmtDate;
 import 'package:baoji_timer/models/models.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -67,6 +68,44 @@ void main() {
       expect(all.first.id, b.id, reason: '启用的排最前');
       final aRow = all.where((p) => p.id == a.id).first;
       expect(aRow.isActive, 0);
+    });
+
+    test('切换启用记录 activated_at；重复启用同一个计划不刷新', () async {
+      final a = await makePlan('A', isActive: 1);
+      final b = await makePlan('B');
+      await db.setActivePlan(b.id!);
+      final b1 = (await db.allPlans()).firstWhere((p) => p.id == b.id);
+      expect(b1.activatedAt, fmtDate(DateTime.now()));
+
+      await db.setActivePlan(b.id!);
+      final b2 = (await db.allPlans()).firstWhere((p) => p.id == b.id);
+      expect(b2.activatedAt, b1.activatedAt, reason: '重复点已启用计划不能把启用日刷新到今天');
+
+      await db.setActivePlan(a.id!);
+      final a1 = (await db.allPlans()).firstWhere((p) => p.id == a.id);
+      expect(a1.activatedAt, fmtDate(DateTime.now()));
+    });
+
+    test('切换再切回：activated_at 保留最早启用日，不把计划起点推后', () async {
+      // 语义（2026-10-18）：activated_at = 最早一次启用日。计划 A 曾在
+      // 2026-09-01 启用过，切到 B 再切回 A，起点仍是 09-01——周复盘的
+      // 回溯窗口不因切换器的来回操作被推后。
+      final a = await makePlan('A');
+      final b = await makePlan('B');
+      await db.setActivePlan(a.id!);
+      // 手工把 A 的启用日拨回过去（模拟它实际是更早启用过的老计划）
+      await db.updatePlanFields(a.id!, {'activated_at': '2026-09-01'});
+
+      // 切走（B 启用，A 失活）再切回 A
+      await db.setActivePlan(b.id!);
+      expect((await db.allPlans()).firstWhere((p) => p.id == a.id).isActive, 0);
+      await db.setActivePlan(a.id!);
+
+      final back = (await db.allPlans()).firstWhere((p) => p.id == a.id);
+      expect(back.activatedAt, '2026-09-01',
+          reason: '重激活不刷新启用日：最早启用日就是计划起点');
+      expect(back.isActive, 1);
+      expect((await db.allPlans()).firstWhere((p) => p.id == b.id).isActive, 0);
     });
 
     test('重命名与删除（级联删除日与动作）', () async {
@@ -229,10 +268,12 @@ void main() {
 
   group('身体数据部分更新', () {
     test('同日二次录入只覆盖填写的字段', () async {
-      await db.upsertBodyMetric(const BodyMetric(
-          date: '2026-09-23', weightKg: 80, waistCm: 85));
       await db.upsertBodyMetric(
-          const BodyMetric(date: '2026-09-23', waistCm: 84));
+        const BodyMetric(date: '2026-09-23', weightKg: 80, waistCm: 85),
+      );
+      await db.upsertBodyMetric(
+        const BodyMetric(date: '2026-09-23', waistCm: 84),
+      );
 
       final rows = await db.bodyMetrics();
       expect(rows.length, 1, reason: '同日期只有一行');

@@ -69,11 +69,19 @@ void main() {
       // 统一回 false；void 回包的 cancel/zonedSchedule 对 false 同样兼容
       return false;
     });
-    SharedPreferences.setMockInitialValues({});
+    SharedPreferences.setMockInitialValues({
+      // 本文件只验证休息提醒双通道；关掉周复盘提醒（P1-E2）避免它在
+      // 启动时排 8 条 weekly_recap 通知，干扰 zonedSchedule 的空表断言。
+      'set.weeklyRecapOn': false,
+    });
     final prefs = await SharedPreferences.getInstance();
     final dir = await databaseFactory.getDatabasesPath();
     dbPath = '$dir/test_dual_${DateTime.now().microsecondsSinceEpoch}.db';
     rawDb = await databaseFactory.openDatabase(dbPath);
+    // macOS fileproviderd（iCloud 同步）会短暂打开新建的库文件扫描，
+    // 撞上就报 SQLITE_BUSY(5)。给连接挂 3 秒忙等窗口，瞬时锁等释放
+    // 而不是立刻失败（实测释放 <300ms；生产库同口径在 Db._onConfigure）。
+    await rawDb.execute('PRAGMA busy_timeout = 3000');
     await Db.instance.createSchema(rawDb);
     c = AppContainer(prefs: prefs, db: Db.forTesting(rawDb));
     await c.init();

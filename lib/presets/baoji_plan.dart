@@ -2,6 +2,7 @@ export 'exercise_library.dart'
     show kBaojiExerciseMeta, kExerciseLibrary, PresetExercise;
 
 import '../models/models.dart';
+import 'exercise_library.dart' show defaultLoadTypeFor;
 
 /// 内置薄肌计划（PRD：四大项核心 + 每周三练 + 肩背偏重、上胸重点）。
 /// 首次启动一键写入；每个动作带建议起始重量，用户可在设置里改。
@@ -29,6 +30,8 @@ class PresetExercise {
         repsMax: repsMax,
         restSec: restSec,
         kind: kind,
+        // 内置计划里的引体向上等自重动作按自重口径落库（P2-E 复核修复）。
+        loadType: defaultLoadTypeFor(name),
         rule: ProgressionRule(
           repsMin: repsMin,
           repsMax: repsMax,

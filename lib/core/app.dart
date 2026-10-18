@@ -8,6 +8,7 @@ import '../l10n/lang.dart';
 import '../presets/exercise_library.dart';
 import '../services/ai_service.dart';
 import '../services/auto_shift.dart';
+import '../services/backup_service.dart';
 import '../services/export_service.dart';
 import '../services/focus_service.dart';
 import '../services/heart_rate_service.dart';
@@ -21,10 +22,18 @@ import '../services/training_reminder.dart';
 
 /// 全局容器：App 启动时构造一次，经 AppScope 注入整棵 Widget 树。
 class AppContainer {
-  AppContainer({required this.prefs, Db? db, AiService? aiOverride, LocalBridgeService? bridgeOverride})
-    : settings = Settings(prefs),
-      db = db ?? Db.instance,
-      notify = NotifyService() {
+  AppContainer({
+    required this.prefs,
+    Db? db,
+    AiService? aiOverride,
+    LocalBridgeService? bridgeOverride,
+    AutoBackupService? backupOverride,
+  })  : settings = Settings(prefs),
+        db = db ?? Db.instance,
+        notify = NotifyService() {
+    // 本机偏好标记随备份走（2026-10-18）：全量导出/恢复把减载/停练标记
+    // 与训练块锚点带上。挂到 Db 实例上，exportAllJson/restoreAll 读写。
+    this.db.attachSessionPrefs(prefs);
     focus = FocusService(settings);
     planRepo = PlanRepository(this.db, settings);
     session = SessionController(this.db, settings, prefs, focus);
@@ -32,6 +41,9 @@ class AppContainer {
     ai = aiOverride ?? AiService(settings);
     lark = LarkService(settings, this.db);
     export = ExportService(this.db);
+    // 自动快照：每次训练正常结束写一份全量 JSON；启动时超 24 小时补档。
+    // [backupOverride] 仅测试注入（临时目录，避免碰 path_provider 插件）。
+    autoBackup = backupOverride ?? AutoBackupService(this.db);
     // 局域网只读桥（方案 B）：构造即挂容器，但**默认不自动启动**——
     // 开关状态不落盘，每次都要用户在设置页主动开，空闲超时自动关；
     // 已配对设备（令牌摘要）落盘，所以"配对一次"成立，重开无需重配。
@@ -56,6 +68,7 @@ class AppContainer {
     // + 心率直连窗口（2026-10-17）：卡出现 = 会话活跃，自动重连已存
     // 设备并开始采样；卡消失 = 会话关闭，采样落库 + 断连省电。
     int? hrSessionId;
+    Future<void>? hrFlush;
     session.onCardChanged = (card) {
       if (card.active) {
         unawaited(notify.showTrainingCard(card));
@@ -70,14 +83,19 @@ class AppContainer {
         if (sid != null) {
           hrSessionId = null;
           hr.stopRecording();
-          // quit 会话也落库（历史不展示但数据不丢）；失败静默不阻塞收工
-          unawaited(hr.flushSamples(this.db, sid));
+          // quit 会话也落库（历史不展示但数据不丢）；失败静默不阻塞收工。
+          // 自动快照会先等这个 Future，避免备份缺最后一截心率。
+          hrFlush = hr.flushSamples(this.db, sid);
+          unawaited(hrFlush);
           hr.disconnect();
         }
       }
     };
     // 通知栏遥控按钮（暂停/继续/±10 秒）→ 会话状态机
     notify.onNotifAction = _onNotifAction;
+    // 点击「周复盘」通知 → 请求 UI 打开周复盘页（冷启动先挂起，
+    // 由 BaojiApp 首帧消费；导航层不在容器里）。
+    notify.onWeeklyRecapTap = requestWeeklyRecap;
     // 空闲提醒：人在屏上走 App 内横幅，离开前台才发系统通知
     session.onIdleNudge = (minutes) async {
       if (_inForeground) {
@@ -104,6 +122,19 @@ class AppContainer {
     autoShift = AutoShiftService(planRepo, prefs);
     session.onSessionClosed = () {
       unawaited(trainReminders.reschedule());
+      // 收工/放弃后补排周复盘提醒（训练中曾被抑制）。
+      unawaited(rescheduleWeeklyRecap());
+      // 正常收工与中途放弃都算会话结束，各留一份快照。
+      // 预约式写入：先等心率落库，失败只在服务里记录，不打断收工。
+      if (settings.autoBackupEnabled) {
+        autoBackup.scheduleSnapshot(waitFor: hrFlush);
+      }
+    };
+    session.onSessionRated = () {
+      // 自评是收工后才点的：稍等 2 秒合并连点，再补一份带自评的快照。
+      if (settings.autoBackupEnabled) {
+        autoBackup.scheduleSnapshot(delay: const Duration(seconds: 2));
+      }
     };
     planRepo.addListener(() {
       unawaited(trainReminders.reschedule());
@@ -126,6 +157,7 @@ class AppContainer {
   late final AiService ai;
   late final LarkService lark;
   late final ExportService export;
+  late final AutoBackupService autoBackup;
   late final LocalBridgeService bridge;
   late final TrainingReminderService trainReminders;
   late final AutoShiftService autoShift;
@@ -133,6 +165,50 @@ class AppContainer {
 
   /// 本次启动自动顺延掉的训练日（首页读过一次即清空；空 = 无提示）。
   List<DateTime> pendingAutoShiftDates = const [];
+
+  /// 周复盘导航请求（UI 层设置；容器只负责挂起/转交，不依赖页面）。
+  VoidCallback? onWeeklyRecapRequested;
+  bool _pendingWeeklyRecap = false;
+
+  /// 通知点击/冷启动详情都走这里：UI 已挂好就立刻打开，否则先挂起。
+  void requestWeeklyRecap() {
+    _pendingWeeklyRecap = true;
+    onWeeklyRecapRequested?.call();
+  }
+
+  /// UI 首帧/回到前台时消费一次挂起的打开请求（true = 需要打开）。
+  bool takePendingWeeklyRecap() {
+    final pending = _pendingWeeklyRecap;
+    _pendingWeeklyRecap = false;
+    return pending;
+  }
+
+  /// 周复盘提醒（P1-E2）：按设置重排未来 8 周；训练进行中不排
+  /// （避免通知打断训练），收工后由 onSessionClosed 补排。
+  /// 设置变更时由设置页直接调用；失败静默，下次触发再排。
+  ///
+  /// 串行化：设置页连续改星期/时刻会连发多次重排，取消与预约若并发
+  /// 交错，可能出现「开关已关却又排上」；用一条 Future 链保证按调用
+  /// 顺序执行（每次都是先取消旧 id 段再排新）。
+  Future<void> _weeklyRecapChain = Future<void>.value();
+
+  Future<void> rescheduleWeeklyRecap() {
+    final next =
+        _weeklyRecapChain.then((_) => _applyWeeklyRecapSchedule());
+    _weeklyRecapChain = next.catchError((Object _) {});
+    return next;
+  }
+
+  Future<void> _applyWeeklyRecapSchedule() async {
+    if (!settings.weeklyRecapReminderOn || session.hasActive) {
+      await notify.cancelWeeklyRecap();
+      return;
+    }
+    await notify.scheduleWeeklyRecap(
+      weekday: settings.weeklyRecapWeekday,
+      minutesOfDay: settings.weeklyRecapMinOfDay,
+    );
+  }
 
   bool _inForeground = true;
 
@@ -189,6 +265,17 @@ class AppContainer {
     }
     // 练前提醒：计划加载完成后排一轮（planRepo 监听会覆盖后续变化）
     unawaited(trainReminders.reschedule());
+    // 周复盘提醒：会话恢复后再排（有活跃训练时 reschedule 会跳过，
+    // 避免训练中弹出的周复盘通知打断训练）。
+    unawaited(rescheduleWeeklyRecap());
+    // 自动备份补档：距上次快照满 24 小时（或从未备份）就在启动时补一份。
+    // 失败只在服务里记录——磁盘暂时不可写也不挡启动。
+    if (settings.autoBackupEnabled) {
+      unawaited(autoBackup.maybeSnapshotOnLaunch().catchError((Object e) {
+        autoBackup.recordError(e);
+        return null;
+      }));
+    }
     // 联网补写飞书离线队列（失败静默，下轮再试）
     unawaited(lark.retryPending());
   }
@@ -218,6 +305,10 @@ class AppContainer {
   }
 
   Future<void> _onEnterFocus() async {
+    // 训练进行中抑制周复盘提醒：留在通知栏里到点弹出会打断训练，
+    // 训练开始即取消；收工/放弃后由 onSessionClosed 补排下一次。
+    // 走同一条重排链，避免与设置变更触发的预约交错。
+    unawaited(rescheduleWeeklyRecap());
     // 锁屏时保持显示（条目 6）：按设置开关，训练期间生效，结束还原。
     // 失败静默（测试环境/低版本系统）。
     unawaited(notify.setLockScreenDisplay(settings.lockScreenKeepOn));
@@ -252,6 +343,7 @@ class AppContainer {
   }
 
   void dispose() {
+    autoBackup.dispose();
     hr.dispose();
     session.dispose();
     settings.dispose();

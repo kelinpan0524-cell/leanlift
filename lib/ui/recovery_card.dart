@@ -58,11 +58,25 @@ class _MuscleRecoveryCardState extends State<MuscleRecoveryCard> {
     for (final s in sessions) {
       final ses = await c.db.sessionExercises(s.id!);
       final map = await c.db.setsOfSession(s.id!);
+      // 按稳定身份键分桶、展示名用规范名：同义名/改名不再拆成两个动作，
+      // 别名也能在 exercise_meta 里找到正确肌群（不落到「其他」）。
+      // 若两个身份恰好共用展示名，用带键后缀的标签区分，避免被并桶。
+      final groups = groupExerciseListsByIdentity<SetEntry>([
+        for (final se in ses)
+          (
+            name: se.name,
+            exerciseKey: se.exerciseKey,
+            items: map[se.id!] ?? const <SetEntry>[],
+          ),
+      ]);
       final byName = <String, List<SetEntry>>{};
-      for (final se in ses) {
-        final sets = map[se.id!] ?? const <SetEntry>[];
-        if (sets.isEmpty) continue;
-        byName.putIfAbsent(se.name, () => []).addAll(sets);
+      final usedLabels = <String>{};
+      for (final g in groups) {
+        if (g.items.isEmpty) continue;
+        final label = uniqueExerciseLabel(g.displayName, g.key, usedLabels);
+        byName[label] = g.items;
+        final meta = metaMap[g.displayName];
+        if (meta != null) metaMap[label] = meta;
       }
       input.add(RecoverySession(
         endedAtMs: s.endedAt ?? s.startedAt,

@@ -483,6 +483,8 @@ class LocalBridgeService extends ChangeNotifier {
           for (final se in ses)
             {
               'name': se.name,
+              // 稳定身份键：MCP 端查历史时可原样回传，改名后仍能命中。
+              'exerciseKey': se.exerciseKey,
               'kind': se.kind,
               'restSec': se.restSec,
               'target': '${se.targetSets}×${se.targetRepsMin}-${se.targetRepsMax}',
@@ -492,8 +494,14 @@ class LocalBridgeService extends ChangeNotifier {
                     'weightKg': x.weightKg,
                     'reps': x.reps,
                     'rir': x.rir,
+                    // P0-C：rir 是真实观测（true）还是计划默认填充（false）
+                    'rirRecorded': x.rirRecorded,
                     'kind': x.kind,
                     'doneAt': x.doneAt,
+                    // P2-B 疼痛记录（v15）：painLevel 0 = 未填/无痛；
+                    // painArea 是中文数据键（与动作名/肌群名同约定）
+                    'painLevel': x.painLevel,
+                    'painArea': x.painArea,
                   }
               ],
             }
@@ -533,6 +541,7 @@ class LocalBridgeService extends ChangeNotifier {
           for (final e in exs)
             {
               'name': e.name,
+              'exerciseKey': e.exerciseKey,
               'sets': e.sets,
               'repsMin': e.repsMin,
               'repsMax': e.repsMax,
@@ -552,20 +561,31 @@ class LocalBridgeService extends ChangeNotifier {
   }
 
   /// 单个动作的战绩：历史最高（PR）、上次成绩、最近若干组。
+  ///
+  /// 查询优先用 `key`（稳定身份键，MCP 从 /v1/sessions /v1/today 拿到后
+  /// 原样回传）；只给 `name` 时先按同名既有行反查键，改名后保留旧键的
+  /// 动作也能命中历史。
   Future<int> _exercise(HttpRequest req) async {
     final name = (req.uri.queryParameters['name'] ?? '').trim();
-    if (name.isEmpty) {
-      return _json(req.response, 400, {'error': '缺少 name 参数'});
+    final keyParam = (req.uri.queryParameters['key'] ?? '').trim();
+    if (name.isEmpty && keyParam.isEmpty) {
+      return _json(req.response, 400, {'error': '缺少 name 或 key 参数'});
     }
+    final key = keyParam.isNotEmpty
+        ? keyParam
+        : (await db.knownExerciseKey(name) ?? exerciseKeyOf(name));
+    final displayName = name.isNotEmpty ? name : key;
     final limit = _intParam(req, 'limit', fallback: 40, min: 1, max: 2000);
-    final last = await db.lastWorkingSets(name);
-    final pr = await db.maxWeightOf(name);
-    final history = await db.historySets(name, kindFilter: 'working');
+    final last = await db.lastWorkingSets(displayName, exerciseKey: key);
+    final pr = await db.maxWeightOf(displayName, exerciseKey: key);
+    final history = await db.historySets(displayName,
+        exerciseKey: key, kindFilter: 'working');
     final recent = history.length > limit
         ? history.sublist(history.length - limit)
         : history;
     return _json(req.response, 200, {
-      'name': name,
+      'name': displayName,
+      'exerciseKey': key,
       'prKg': pr,
       'lastSession': [
         for (final x in last)
@@ -573,7 +593,11 @@ class LocalBridgeService extends ChangeNotifier {
             'weightKg': x.weightKg,
             'reps': x.reps,
             'rir': x.rir,
+            'rirRecorded': x.rirRecorded,
             'doneAt': x.doneAt,
+            // P2-B 疼痛记录：painLevel 0 = 未填/无痛，painArea 中文数据键
+            'painLevel': x.painLevel,
+            'painArea': x.painArea,
           }
       ],
       'historyCount': history.length,
@@ -583,7 +607,10 @@ class LocalBridgeService extends ChangeNotifier {
             'weightKg': x.weightKg,
             'reps': x.reps,
             'rir': x.rir,
+            'rirRecorded': x.rirRecorded,
             'doneAt': x.doneAt,
+            'painLevel': x.painLevel,
+            'painArea': x.painArea,
           }
       ],
     });

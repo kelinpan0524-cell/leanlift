@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../engine/training_block.dart' show kDefaultTrainingBlockWeeks;
 import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../models/app_release.dart';
@@ -71,6 +72,16 @@ class Settings extends ChangeNotifier {
   bool trainReminderOn = true;
   int trainReminderMinOfDay = 20 * 60;
 
+  // 每周复盘提醒（P1-E2，2026-10-18）：每周固定时刻提醒看「周复盘」。
+  // 默认周日（DateTime.sunday = 7）20:00；训练进行中不排，收工后补排。
+  bool weeklyRecapReminderOn = true;
+  int weeklyRecapWeekday = DateTime.sunday; // 1=周一 … 7=周日
+  int weeklyRecapMinOfDay = 20 * 60;
+
+  // AI 自动写周报（P1-E2）：只有配置了 AI 且用户主动打开时才在
+  // 「打开周复盘页」时前台请求一次；不后台联网。默认关。
+  bool aiWeeklyRecapOn = false;
+
   // 错过训练日自动顺延（2026-10-04 Arono）：训练日过了 24 点还没练，
   // 下次打开 App 自动把计划往后推一天（每错一个训练日推一天），
   // 并在首页提示。默认开；关闭期间不扫描不推进检查点。
@@ -90,6 +101,10 @@ class Settings extends ChangeNotifier {
   // 先弹底部面板顺手记一条（预填上次体重）。默认开；跳过即直接开练。
   bool askWeightOnStart = true;
 
+  // 自动备份（P0-A）：每次训练结束/启动补档写本机 JSON 快照。
+  // 默认开；用户可在「数据与备份」关掉（存储紧张/隐私偏好）。
+  bool autoBackupEnabled = true;
+
   // 心率循环负荷参数（2026-10-17：Edwards TRIMP 估算用）
   int hrAge = 0; // 0 = 未填（最大心率回落 190 兜底）
   int hrRest = 60; // 静息心率
@@ -100,6 +115,11 @@ class Settings extends ChangeNotifier {
   // 重量显示单位（2026-10-17）：kg 是唯一存储口径，lb 只在显示/输入层换算。
   // 出差/换健身房混用 kg、lb 器械时全局一键切换，历史数据同步换算显示。
   WeightUnit weightUnit = WeightUnit.kg;
+
+  /// 训练块长度（P1-C）：每 N 周安排 1 周减载，默认 5 周一块；
+  /// 0 = 关闭减载（长期线性加重）。块起点 = 当前计划第一次 done 训练。
+  /// 只影响新开的训练会话，进行中的会话按启动时的处方走完。
+  int trainingBlockWeeks = kDefaultTrainingBlockWeeks;
 
   /// 切换重量单位并同步全局静态值（持久化仍走 save()）。
   void toggleWeightUnit() {
@@ -157,10 +177,28 @@ class Settings extends ChangeNotifier {
     trainReminderOn = _prefs.getBool('${_kprefix}trainRemindOn') ?? true;
     trainReminderMinOfDay =
         _prefs.getInt('${_kprefix}trainRemindMin') ?? 20 * 60;
+    weeklyRecapReminderOn =
+        _prefs.getBool('${_kprefix}weeklyRecapOn') ?? true;
+    // 脏值兜底：星期必须是 1-7、时刻必须是 0-1439，否则下拉框会断言。
+    final recapWeekday =
+        _prefs.getInt('${_kprefix}weeklyRecapWeekday') ?? DateTime.sunday;
+    weeklyRecapWeekday =
+        recapWeekday >= 1 && recapWeekday <= 7 ? recapWeekday : DateTime.sunday;
+    final recapMin =
+        _prefs.getInt('${_kprefix}weeklyRecapMin') ?? 20 * 60;
+    weeklyRecapMinOfDay = recapMin >= 0 && recapMin <= 23 * 60 + 59
+        ? recapMin
+        : 20 * 60;
+    aiWeeklyRecapOn = _prefs.getBool('${_kprefix}aiWeeklyRecapOn') ?? false;
+    // 撤销 AI 配置即收回「自动写周报」授权：重新配置任意端点后，
+    // 必须由用户再次明确打开，避免旧开关把数据发给新端点。
+    if (!aiConfigured) aiWeeklyRecapOn = false;
     autoShiftOnMiss = _prefs.getBool('${_kprefix}autoShiftOnMiss') ?? true;
     lockScreenKeepOn = _prefs.getBool('${_kprefix}lockScreenKeepOn') ?? false;
     wakelockEnabled = _prefs.getBool('${_kprefix}wakelockOn') ?? true;
     askWeightOnStart = _prefs.getBool('${_kprefix}askWeightOnStart') ?? true;
+    autoBackupEnabled =
+        _prefs.getBool('${_kprefix}autoBackupEnabled') ?? true;
     hrAge = _prefs.getInt('${_kprefix}hrAge') ?? 0;
     hrRest = _prefs.getInt('${_kprefix}hrRest') ?? 60;
     hrMaxOverride = _prefs.getInt('${_kprefix}hrMax') ?? 0;
@@ -179,6 +217,9 @@ class Settings extends ChangeNotifier {
       'lb' => WeightUnit.lb,
       _ => WeightUnit.kg,
     };
+    // 老版本没有这个键：默认 5 周一块（0 也是合法值 = 关闭）
+    trainingBlockWeeks = _prefs.getInt('${_kprefix}trainingBlockWeeks') ??
+        kDefaultTrainingBlockWeeks;
     // 服务侧（通知/导出/前台服务）读全局静态值，启动即与偏好同步一次
     Lang.setResolved(resolvedLang == 'en');
     WeightUnits.setResolved(weightUnit);
@@ -202,6 +243,9 @@ class Settings extends ChangeNotifier {
   }
 
   Future<void> save() async {
+    // 撤销 AI 配置即收回「自动写周报」授权（与 _load 同一不变量）：
+    // 重新配置后开关必须是关闭状态，用户要再点一次才联网。
+    if (!aiConfigured) aiWeeklyRecapOn = false;
     await _prefs.setInt('${_kprefix}restCompound', restCompoundSec);
     await _prefs.setInt('${_kprefix}restAssist', restAssistanceSec);
     await _prefs.setDouble('${_kprefix}bodyWeight', bodyWeightKg);
@@ -228,10 +272,19 @@ class Settings extends ChangeNotifier {
     await _prefs.setBool('${_kprefix}restCueHpOnly', restCueHeadphoneOnly);
     await _prefs.setBool('${_kprefix}trainRemindOn', trainReminderOn);
     await _prefs.setInt('${_kprefix}trainRemindMin', trainReminderMinOfDay);
+    await _prefs.setBool(
+        '${_kprefix}weeklyRecapOn', weeklyRecapReminderOn);
+    await _prefs.setInt(
+        '${_kprefix}weeklyRecapWeekday', weeklyRecapWeekday);
+    await _prefs.setInt(
+        '${_kprefix}weeklyRecapMin', weeklyRecapMinOfDay);
+    await _prefs.setBool('${_kprefix}aiWeeklyRecapOn', aiWeeklyRecapOn);
     await _prefs.setBool('${_kprefix}autoShiftOnMiss', autoShiftOnMiss);
     await _prefs.setBool('${_kprefix}lockScreenKeepOn', lockScreenKeepOn);
     await _prefs.setBool('${_kprefix}wakelockOn', wakelockEnabled);
     await _prefs.setBool('${_kprefix}askWeightOnStart', askWeightOnStart);
+    await _prefs.setBool(
+        '${_kprefix}autoBackupEnabled', autoBackupEnabled);
     await _prefs.setInt('${_kprefix}hrAge', hrAge);
     await _prefs.setInt('${_kprefix}hrRest', hrRest);
     await _prefs.setInt('${_kprefix}hrMax', hrMaxOverride);
@@ -243,6 +296,7 @@ class Settings extends ChangeNotifier {
     await _prefs.setInt('${_kprefix}lastExportJsonAt', lastExportJsonAt);
     await _prefs.setString('${_kprefix}lang', langPref.name);
     await _prefs.setString('${_kprefix}weightUnit', weightUnit.name);
+    await _prefs.setInt('${_kprefix}trainingBlockWeeks', trainingBlockWeeks);
     Lang.setResolved(resolvedLang == 'en');
     WeightUnits.setResolved(weightUnit);
     notifyListeners();
@@ -250,11 +304,13 @@ class Settings extends ChangeNotifier {
 
   bool get aiConfigured => aiBaseUrl.isNotEmpty && aiApiKey.isNotEmpty;
 
-  /// 从未导出、或上次导出已超 7 天 → 数据与备份行亮「建议备份」。
+  /// 从未手动导出、或上次手动导出已超 14 天 → 数据与备份行亮
+  /// 「建议备份」并在数据与备份页显示非打断式提醒。
+  /// 自动快照只在同一台手机上，卸载/换机仍会丢，所以手动导出仍要提醒。
   static bool backupNeedsAttention(int lastExportJsonAtMs, {int? nowMs}) {
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     return lastExportJsonAtMs <= 0 ||
-        now - lastExportJsonAtMs > const Duration(days: 7).inMilliseconds;
+        now - lastExportJsonAtMs > const Duration(days: 14).inMilliseconds;
   }
 
   List<String> get distractingAppsList => distractingApps

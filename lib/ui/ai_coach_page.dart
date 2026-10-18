@@ -309,7 +309,7 @@ class _AiCoachPageState extends State<AiCoachPage> {
         assistanceRest: c.settings.restAssistanceSec,
       );
       if (exs.isEmpty) return;
-      await c.planRepo.refreshRecommendations(exs.map((e) => e.name));
+      await c.planRepo.refreshRecommendations(exs);
       await c.session.startAdHoc(
         title: spec.title.trim().isEmpty ? tx('临时训练', en: 'Ad-hoc workout') : spec.title.trim(),
         planExercises: exs,

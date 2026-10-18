@@ -51,15 +51,19 @@ class ExportService {
     final sessions = await _db.recentSessions(limit: 100000);
     // v14 起带动作记录形态三列：logging/load_type（动作行）、duration_sec
     // （计时组实际保持秒数，非计时/老记录为空）。
+    // P0-C：rir_recorded 置末列（1=用户真的点过余力，0=只是计划默认值），
+    // 不挤动前 11 列的既有顺序。
+    // P2-B：疼痛两列接在最后（pain_level 0-3、pain_area 中文数据键），
+    // 同样不挤动既有列序；老数据/老备份默认 0 与空串。
     final buf = StringBuffer(
-        'date,plan_day,exercise,weight_kg,reps,rir,kind,done_at,logging,load_type,duration_sec\n');
+        'date,plan_day,exercise,weight_kg,reps,rir,kind,done_at,logging,load_type,duration_sec,rir_recorded,pain_level,pain_area\n');
     for (final s in sessions) {
       final ses = await _db.sessionExercises(s.id!);
       final map = await _db.setsOfSession(s.id!);
       for (final se in ses) {
         for (final set in map[se.id!] ?? const <SetEntry>[]) {
           buf.writeln(
-              '${s.date},${_csv(s.planDayTitle)},${_csv(se.name)},${set.weightKg},${set.reps},${set.rir},${set.kind},${set.doneAt},${se.logging},${se.loadType},${set.durationSec ?? ''}');
+              '${s.date},${_csv(s.planDayTitle)},${_csv(se.name)},${set.weightKg},${set.reps},${set.rir},${set.kind},${set.doneAt},${se.logging},${se.loadType},${set.durationSec ?? ''},${set.rirRecorded ? 1 : 0},${set.painLevel},${_csv(set.painArea)}');
         }
       }
     }
@@ -71,23 +75,31 @@ class ExportService {
     return const JsonEncoder.withIndent('  ').convert(all);
   }
 
+  /// 全量备份必须包含的数据段（手动恢复与自动快照共用校验）。
+  static const List<String> backupSections = [
+    'plans',
+    'plan_days',
+    'plan_exercises',
+    'sessions',
+    'session_exercises',
+    'sets',
+  ];
+
+  /// 校验一份全量备份的结构；缺关键数据段时抛 FormatException。
+  static void validateBackupData(Map<String, dynamic> data) {
+    for (final k in backupSections) {
+      if (data[k] is! List) {
+        throw FormatException('备份缺少必要数据段（$k）');
+      }
+    }
+  }
+
   /// 从全量 JSON 恢复（清空后写入）。返回恢复的训练次数；
   /// 缺关键数据段时抛 FormatException，行损坏交给 Db.restoreAll 的事务兜底。
   /// v14 键（logging/load_type/duration_sec）老备份行缺失时由列 DEFAULT
   /// 回默认（按次数 + 常规负重），无需预处理。
   Future<int> restoreFromJson(Map<String, dynamic> data) async {
-    for (final k in const [
-      'plans',
-      'plan_days',
-      'plan_exercises',
-      'sessions',
-      'session_exercises',
-      'sets',
-    ]) {
-      if (data[k] is! List) {
-        throw FormatException('备份缺少必要数据段（$k）');
-      }
-    }
+    validateBackupData(data);
     await _db.restoreAll(data);
     return (data['sessions'] as List).length;
   }
@@ -143,6 +155,13 @@ class ExportService {
     buf.writeln();
     buf.writeln('## 每次训练明细');
     final byNameVolume = <String, double>{};
+    // 疼痛记录汇总（P2-B）：逐条塞进每次训练明细会淹没在长文里，
+    // 单列一段让 AI/外部工具能直接定位「哪个动作、哪个部位、几级」。
+    final painItems = <String>[];
+    // 身份键 → 展示标签：跨会话累计容量按稳定身份合并，同义名/改名不再
+    // 拆行；两个身份恰好共用展示名时加键后缀，不能被并成一桶。
+    final labelByIdentity = <String, String>{};
+    final usedLabels = <String>{};
     for (final s in sessions) {
       final ses = await _db.sessionExercises(s.id!);
       final map = await _db.setsOfSession(s.id!);
@@ -161,19 +180,46 @@ class ExportService {
       for (final se in ses) {
         final sets = map[se.id!] ?? const <SetEntry>[];
         if (sets.isEmpty) continue;
-        // 计时动作（v14）组表述带秒数单位，按次数动作保持原样
+        // 计时动作（v14）组表述带秒数单位，按次数动作保持原样；
+        // 疼痛标记（P2-B）紧跟在该组后面（如「60kg×8·痛肩2级」）。
         final desc = sets
             .map((x) =>
-                '${x.weightKg}kg×${x.durationSec != null ? '${x.durationSec}秒' : '${x.reps}'}${x.kind == SetKind.warmup ? '(热)' : x.kind == SetKind.failure ? '(失)' : ''}')
+                '${x.weightKg}kg×${x.durationSec != null ? '${x.durationSec}秒' : '${x.reps}'}${x.kind == SetKind.warmup ? '(热)' : x.kind == SetKind.failure ? '(失)' : ''}${x.painLevel > 0 ? '·痛${x.painArea}${x.painLevel}级' : ''}')
             .join(', ');
         buf.writeln('- ${se.name}${_loggingNote(se)}: $desc${_actualRestNote(se, sets)}');
-        byNameVolume[se.name] = (byNameVolume[se.name] ?? 0) +
+        // 疼痛汇总：按「部位+等级」归并同动作内重复组
+        final pains = sets.where((x) => x.painLevel > 0).toList();
+        if (pains.isNotEmpty) {
+          final byKey = <String, int>{};
+          for (final x in pains) {
+            final k = '${x.painArea} ${x.painLevel} 级';
+            byKey[k] = (byKey[k] ?? 0) + 1;
+          }
+          painItems.add(
+              '- ${s.date} ${se.name}：${byKey.entries.map((e) => '${e.key} ×${e.value} 组').join('，')}');
+        }
+        final identity =
+            exerciseIdentityKeyOf(se.name, se.exerciseKey);
+        final display = labelByIdentity.putIfAbsent(
+          identity,
+          () => uniqueExerciseLabel(
+              canonicalExerciseNameOf(se.name), identity, usedLabels),
+        );
+        byNameVolume[display] = (byNameVolume[display] ?? 0) +
             sets.fold(
                 0.0,
                 (a, b) =>
                     a +
                     setVolumeWithBodyweight(b,
-                        exerciseName: se.name, bodyWeightKg: bodyWeightKg));
+                        exerciseName: display, bodyWeightKg: bodyWeightKg));
+      }
+      buf.writeln();
+    }
+    // 疼痛记录（P2-B）：只在该段时间有标记时出现，老数据完全不多一段。
+    if (painItems.isNotEmpty) {
+      buf.writeln('## 疼痛记录（2 级及以上优先调整）');
+      for (final line in painItems) {
+        buf.writeln(line);
       }
       buf.writeln();
     }
@@ -219,8 +265,14 @@ class ExportService {
                     'w': x.weightKg,
                     'r': x.reps,
                     'rir': x.rir,
+                    // P0-C：rir 是否是真实观测（1）还是计划默认填充（0）
+                    'rir_recorded': x.rirRecorded ? 1 : 0,
                     'kind': x.kind,
                     if (x.durationSec != null) 'dur_s': x.durationSec,
+                    // P2-B：疼痛字段每个组都带（0/空 = 未填），
+                    // 外部工具不必猜「缺键」还是「无痛」。
+                    'pain_level': x.painLevel,
+                    if (x.painArea.isNotEmpty) 'pain_area': x.painArea,
                   }
               ],
             }
@@ -249,7 +301,9 @@ class ExportService {
     buf.writeln('3. 肌群均衡度（哪个肌群训练量偏低）；');
     buf.writeln('4. 组间休息是否合适：结合"计划休息 vs 实际休息"判断哪些动作休息过长或过短'
         '（参考：增肌复合动作 90-180 秒、辅助动作 60-90 秒、大重量低次数力量组 3-5 分钟）；');
-    buf.writeln('5. 给出未来 2-4 周的具体调整建议（加重策略、弱项补强、恢复建议）。');
+    buf.writeln('5. 疼痛记录：找出反复出现疼痛的部位/动作（2 级及以上优先），'
+        '给出减负荷或换变式的具体建议；');
+    buf.writeln('6. 给出未来 2-4 周的具体调整建议（加重策略、弱项补强、恢复建议）。');
     buf.writeln();
     buf.write(await buildAiData(
         weeks: weeks, bodyWeightKg: bodyWeightKg, planRepo: planRepo));

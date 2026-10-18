@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/app.dart';
 import '../engine/engine.dart';
 import '../engine/superset.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
+import '../presets/exercise_library.dart' show defaultLoadTypeFor;
 import '../services/plan_repository.dart';
 import 'exercise_picker_page.dart';
 import 'muscle_body_view.dart';
@@ -34,6 +36,8 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
   bool _loading = true;
   bool _dirty = false; // 本次进入是否改过内容
   bool _previewOpen = false; // 肌群命中预览折叠态（缺省收起，贴合版面密度）
+  // 按整个计划推算的每周组数（P1-B，2026-10-18）：命中预览里与目标区间对比。
+  Map<String, double> _weeklyPlanSets = {};
   // 循环模式的轮转编号（与 plan_page 模板日列表同口径）：
   // _rotation: dayId → 第几练；_slotRotation: 槽位(weekday) → 第几练（仅非空日）。
   Map<int, int> _rotation = {};
@@ -59,9 +63,42 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
     _exercises = await c.db.dayExercises(_day.id!);
     final metas = await c.db.allExerciseMeta();
     _metaByName = {for (final m in metas) m.name: m};
+    _weeklyPlanSets = await _loadWeeklyPlanSets(c);
     await _loadRotation();
     if (!mounted) return;
     setState(() => _loading = false);
+  }
+
+  /// 按整个计划推算每周每肌群正式组数（P1-B 剂量口径）：
+  /// 汇总计划全部训练日的处方组数，主肌群记 1 组、次肌群记 0.5 组。
+  /// 按星期排程每周每练一次 → 系数 1；循环「练 N 休 M」按应用的真实
+  /// 轮转语义折算：一个周期只练 N 次、模板日按训练序号轮转，
+  /// 所以整份计划求和后乘 [cycleWeeklyFactor]（7N / ((N+M)·训练日数)），
+  /// 不是 7/(N+M)——模板日多于连练数时后者会把周组数放大。
+  Future<Map<String, double>> _loadWeeklyPlanSets(AppContainer c) async {
+    final days = await c.db.planDays(_day.planId);
+    final exMap = await c.db.daysExercisesMap([
+      for (final d in days)
+        if (d.id != null) d.id!,
+    ]);
+    final plans = await c.db.allPlans();
+    final plan = plans.where((p) => p.id == _day.planId).firstOrNull;
+    // 只数有动作的模板日：空模板日不参与轮转（与 _cycleDayFor 同口径）。
+    final trainableDays = days
+        .where((d) => (exMap[d.id] ?? const <PlanExercise>[]).isNotEmpty)
+        .length;
+    final factor = widget.isCycle
+        ? cycleWeeklyFactor(
+            train: plan?.cycleTrain ?? 0,
+            rest: plan?.cycleRest ?? 0,
+            trainableDays: trainableDays,
+          )
+        : 1.0;
+    return planWeeklyWorkingSetsByMuscle(
+      [for (final d in days) ...(exMap[d.id] ?? const <PlanExercise>[])],
+      _metaByName,
+      weeklyFactor: factor,
+    );
   }
 
   /// 重算循环轮转编号：动作增删会让某天从「未排内容」变「第N练」（或反之），
@@ -271,9 +308,25 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
       await c.db.insertPlanExercise(draft);
       await saveMeta();
     } else {
-      // 编辑时同步重建渐进规则：改组数/次数要影响训练引擎的判定
+      // 编辑时同步重建渐进规则：改组数/次数要影响训练引擎的判定。
+      // 改名默认沿用旧键（任意改名历史不断）；只有新名字已经对应
+      // 另一个已有动作（同名计划/历史，或词表里的另一个动作）时才换键。
+      final storedNewKey = await c.db.storedExerciseKey(result.name);
+      final canonicalNew = canonicalExerciseNameOf(result.name);
+      final newIdentity = exerciseKeyOf(result.name);
+      final newNameIsKnown = _metaByName.keys.any((name) =>
+          name == result.name ||
+          name == canonicalNew ||
+          exerciseKeyOf(name) == newIdentity);
       final updated = existing.copyWith(
         name: result.name,
+        exerciseKey: exerciseKeyAfterRename(
+          oldName: existing.name,
+          oldKey: existing.exerciseKey,
+          newName: result.name,
+          storedNewKey: storedNewKey,
+          newNameIsKnownExercise: newNameIsKnown,
+        ),
         sets: result.sets,
         repsMin: result.repsMin,
         repsMax: result.repsMax,
@@ -300,7 +353,10 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
           id: null,
           name: tx('${ex.name}（副本）', en: '${ex.name} (copy)'),
           orderIdx: _exercises.length,
-          supersetTag: ''),
+          supersetTag: '',
+          // 副本是待改名的独立动作，不继承源动作的稳定键（v15）；留空后
+          // insertPlanExercise 会按副本名生成新键，不与源动作共享身份。
+          exerciseKey: ''),
     );
     _dirty = true;
     await _reload();
@@ -684,10 +740,99 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
                       color:
                           untrained.isEmpty ? AppTheme.primary : AppTheme.warn),
                 ),
+                const SizedBox(height: 10),
+                // 每周组数（P1-B）：从占比升级为剂量，直接看计划够不够目标
+                Text(
+                  tx('按计划每周组数（主肌群 1 组 / 次肌群 0.5 组）',
+                      en: 'Planned weekly sets (main 1 / secondary 0.5)'),
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 2),
+                for (final r in kMuscleRegions)
+                  if (kWeeklySetTargets.containsKey(r))
+                    _planDoseRow(r, _weeklyPlanSets[r] ?? 0),
+                // 词表外动作的组数也要露出来，否则全是不认识的动作时
+                // 六行都是 0，用户看不到自己实际排了多少组。
+                if ((_weeklyPlanSets['其他'] ?? 0) > 0)
+                  _planOtherDoseRow(_weeklyPlanSets['其他']!),
               ],
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// 计划推算的单行剂量：「每周约 X 组 / 目标 10-20」+ 状态。
+  Widget _planDoseRow(String region, double sets) {
+    final target = kWeeklySetTargets[region]!;
+    final status = weeklySetStatusOf(region, sets)!;
+    return Padding(
+      key: ValueKey('plan-weekly-dose-$region'),
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 76,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(mname(region),
+                  maxLines: 1, style: const TextStyle(fontSize: 14)),
+            ),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tx('每周约 ${fmtSetDose(sets)} 组 / 目标 ${target.min}-${target.max}',
+                      en: 'About ${fmtSetDose(sets)} sets/week / target ${target.min}-${target.max}'),
+                  style: const TextStyle(fontSize: 13),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  weeklySetStatusText(status),
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: weeklySetStatusColor(status)),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 「其他」行：词表外动作只显示推算组数，没有目标区间/状态。
+  Widget _planOtherDoseRow(double sets) {
+    return Padding(
+      key: const ValueKey('plan-weekly-dose-其他'),
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 76,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(mname('其他'),
+                  maxLines: 1, style: const TextStyle(fontSize: 14)),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              tx('每周约 ${fmtSetDose(sets)} 组（未归类动作，无目标）',
+                  en: 'About ${fmtSetDose(sets)} sets/week (unclassified, no target)'),
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -860,6 +1005,10 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
   // 记录形态/负荷类型（v14）：编辑时沿用既有值，新增默认按次数+负重
   late String _logging = widget.initial?.logging ?? LoggingMode.reps;
   late String _loadType = widget.initial?.loadType ?? LoadMode.weighted;
+  // 用户手动点过负荷类型后不再按动作名自动推断（P2-E 复核）：
+  // 选到俯卧撑/引体向上等词表自重动作时自动切到「自重」，
+  // 手改过则尊重用户选择。
+  bool _loadTypeTouched = false;
   late String? _muscle =
       widget.initialMuscle ?? widget.initial?.name ?? '';
   String? _nameError;
@@ -879,6 +1028,16 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
         .where((n) => n != q && n.contains(q))
         .take(6)
         .toList();
+  }
+
+  /// 动作名变化时按动作库口径同步负荷类型（P2-E 复核）：
+  /// 仅对**新增**动作生效——词表里的自重动作（俯卧撑/引体/双杠/臀桥等）
+  /// 自动切「自重」。编辑已有动作时保存过的负荷类型优先：改名不覆盖，
+  /// 避免自定义自重动作被库外兜底改成负重、或刻意设为负重的引体向上
+  /// 被改回自重；要改就手动点负荷类型。用户手动点过同样不再自动覆盖。
+  void _syncLoadTypeFromName() {
+    if (widget.initial != null || _loadTypeTouched) return;
+    _loadType = defaultLoadTypeFor(_nameCtrl.text.trim());
   }
 
   @override
@@ -910,7 +1069,7 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
             TextField(
               controller: _nameCtrl,
               autofocus: widget.initial == null,
-              onChanged: (_) => setState(() {}),
+              onChanged: (_) => setState(_syncLoadTypeFromName),
               decoration: InputDecoration(
                 labelText: tx('动作名', en: 'Exercise name'),
                 errorText: _nameError,
@@ -935,8 +1094,10 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
                           final meta = widget.knownMetas
                               .where((m) => m.name == n)
                               .firstOrNull;
-                          setState(
-                              () => _muscle = meta?.muscles.main ?? _muscle);
+                          setState(() {
+                            _syncLoadTypeFromName();
+                            _muscle = meta?.muscles.main ?? _muscle;
+                          });
                         },
                       ),
                   ],
@@ -989,7 +1150,10 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
                 (LoadMode.bodyweight, tx('自重', en: 'Bodyweight')),
               ],
               _loadType,
-              (v) => setState(() => _loadType = v),
+              (v) => setState(() {
+                _loadTypeTouched = true;
+                _loadType = v;
+              }),
             ),
             const SizedBox(height: 10),
             _stepper(tx('组数', en: 'Sets'), _sets, 1, 8, 1,

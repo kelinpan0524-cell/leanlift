@@ -17,6 +17,12 @@ import '../models/models.dart';
 /// 页面种类：起始 / 记录 / 休息 / 总结。
 enum FlowPageKind { start, record, rest, summary }
 
+/// 计划组数统一口径（P0-B）：会话快照 target_sets 优先（老记录为 0），
+/// 回退规则参数 workingSets。控制器、页面流、跳页与 UI 文案共用——
+/// 「快照 4 组、规则 3 组」时各层必须显示/推进同一组数。
+int plannedSetsOf(SessionExercise e) =>
+    e.targetSets > 0 ? e.targetSets : e.rule.workingSets;
+
 /// 页面流里的一页。字段级判等（==/hashCode）供 UI 的 AnimatedSwitcher
 /// 判断"是否换了页"——同页重建不触发翻页动画，换页才触发。
 class FlowPage {
@@ -132,13 +138,13 @@ class WorkoutFlow {
 
   /// 全程计划正式组总数（加练不计入：进度条到 1 即计划完成）。
   int get totalPlannedSets =>
-      exercises.fold(0, (n, e) => n + e.rule.workingSets);
+      exercises.fold(0, (n, e) => n + plannedSetsOf(e));
 
   /// 已完成的计划正式组数（逐动作封顶在各自计划组数上，加练不超 1）。
   int get donePlannedSets {
     var done = 0;
     for (final e in exercises) {
-      done += _doneWorkingOf(e).clamp(0, e.rule.workingSets);
+      done += _doneWorkingOf(e).clamp(0, plannedSetsOf(e));
     }
     return done;
   }
@@ -153,7 +159,7 @@ class WorkoutFlow {
   bool exerciseDone(int i) =>
       i >= 0 &&
       i < exercises.length &&
-      _doneWorkingOf(exercises[i]) >= exercises[i].rule.workingSets;
+      _doneWorkingOf(exercises[i]) >= plannedSetsOf(exercises[i]);
 
   /// 自动当前页（起始页是 UI 入口态，不在这里推导；会话已结束时的
   /// 总结页由 UI 层在收尾流程里给，不经这里——那里还带着总结数据）。
@@ -162,7 +168,7 @@ class WorkoutFlow {
     if (exercises.isEmpty) return const FlowPage.summary();
     final i = curExIdx.clamp(0, exercises.length - 1);
     final ex = exercises[i];
-    final planned = ex.rule.workingSets;
+    final planned = plannedSetsOf(ex);
     // 加练组计数不封顶（2026-09-26 Arono：加练没显示加的这一组的 bug 根因
     // 就是这里把已完成数 clamp 到计划数，加练第 2、3 组永远显示 3/3）。
     // 记录页组号 = 已完成 + 1，加练时继续涨（第 4、5…组）；
@@ -194,7 +200,7 @@ class WorkoutFlow {
   List<FlowSetRef> setRefs() {
     final out = <FlowSetRef>[];
     for (var i = 0; i < exercises.length; i++) {
-      final planned = exercises[i].rule.workingSets;
+      final planned = plannedSetsOf(exercises[i]);
       final rawDone = _doneWorkingOf(exercises[i]);
       final shown = rawDone > planned ? rawDone : planned;
       for (var k = 1; k <= shown; k++) {

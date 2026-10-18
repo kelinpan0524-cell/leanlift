@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/app.dart';
 import '../engine/engine.dart';
 import '../engine/superset.dart';
+import '../engine/today_plan_edit.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
 import '../services/weight_prompt.dart';
@@ -12,6 +13,7 @@ import 'settings_subpages.dart';
 import 'theme.dart';
 import 'today_edit_sheet.dart';
 import 'weight_prompt_sheet.dart';
+import 'weekly_recap_page.dart';
 import 'widgets/common.dart';
 import 'workout_page.dart';
 
@@ -124,6 +126,7 @@ class _HomePageState extends State<HomePage> {
             _todayCard(c, active, day),
           ],
           const SizedBox(height: 16),
+          _weeklyRecapEntry(context),
           if (_lastSession != null) _lastSummaryCard(c),
         ],
       ),
@@ -433,6 +436,25 @@ class _HomePageState extends State<HomePage> {
                 ? null
                 : () => _start(context, day, exs),
           ),
+          // 「只有 20 分钟」（P2-D）：忙的时候练一点，而不是整场放弃。
+          // 精简清单由 shortSessionPlan 生成（复合优先/最多 3 个/每个 2 组/
+          // 休 90 秒），开练仍走 _start（开练前确认 → startFromDay 全链路），
+          // 会话挂今天的计划日，记录照常保存。下方小字说明会跳过什么。
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: (exs.isEmpty || _starting)
+                  ? null
+                  : () => _startShort(context, day, exs),
+              icon: const Icon(Icons.timer_outlined, size: 18),
+              label: Text(tx('只有 20 分钟', en: 'Only 20 minutes')),
+              style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(52)),
+            ),
+          ),
+          const SizedBox(height: 6),
+          _shortSessionHint(exs),
           // 今天不练的出口（2026-09-29）：休息并把之后所有训练推一天。
           // 低调文字按钮，不与开始训练抢视觉。
           Align(
@@ -497,6 +519,99 @@ class _HomePageState extends State<HomePage> {
     return (sec / 60).ceil();
   }
 
+  /// 「只有 20 分钟」入口下方的小字：说明精简规则、会跳过哪些动作、
+  /// 多余组数不练。文案里的动作名走 exname（英文界面同步翻译）。
+  Widget _shortSessionHint(List<PlanExercise> exs) {
+    final short = shortSessionPlan(exs);
+    if (short.isEmpty) return const SizedBox.shrink();
+    final dropped = shortSessionDroppedNames(exs);
+    final setCut = exs.any((e) => e.sets > kShortSessionSets);
+    String? detail;
+    if (dropped.isNotEmpty) {
+      final names = dropped.map(exname).join(tx('、', en: ', '));
+      detail = tx(
+          '跳过：$names${setCut ? '；多出的组数不练' : ''}',
+          en:
+              'Skip: $names${setCut ? '; extra sets are dropped' : ''}');
+    } else if (setCut) {
+      detail = tx('多出的组数不练', en: 'Extra sets are dropped');
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 数字全部从常量生成（kShortSession*）：改精简口径只动
+          // today_plan_edit.dart 一处，文案不会各说各话。
+          // 「最多 2 组」：组数取 min(原组数, 2)，原 1 组的动作不放大。
+          Text(
+              tx(
+                  '复合优先保留 ${short.length} 个动作 · 每个最多 $kShortSessionSets 组 · 组间休 $kShortSessionRestSec 秒',
+                  en:
+                      'Keep ${short.length} exercises (compound first) · up to $kShortSessionSets sets each · ${kShortSessionRestSec}s rest'),
+              style: const TextStyle(color: AppTheme.textDim, fontSize: 12)),
+          if (detail != null) ...[
+            const SizedBox(height: 2),
+            Text(detail,
+                style:
+                    const TextStyle(color: AppTheme.textDim, fontSize: 12)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 本地周复盘入口（P1-E1）：不配 AI Key 也能看「这周练得怎么样、
+  /// 下周做什么」。低调一行，不与训练主操作抢视觉。
+  Widget _weeklyRecapEntry(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: AppTheme.card,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const WeeklyRecapPage()),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: AppTheme.primary.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.assessment_outlined,
+                    size: 16, color: AppTheme.primary),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(tx('本周复盘', en: 'Weekly Recap'),
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 2),
+                    Text(
+                        tx('这周练得怎么样、下周做什么',
+                            en: 'How this week went and what to do next'),
+                        style: const TextStyle(
+                            color: AppTheme.textDim, fontSize: 12)),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: AppTheme.textDim),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _lastSummaryCard(AppContainer c) {
     final s = _lastSession!;
     final st = _lastStats!;
@@ -551,7 +666,7 @@ class _HomePageState extends State<HomePage> {
         final go = await showWeightPromptSheet(context, presetKg: preset);
         if (go != true || !context.mounted) return;
       }
-      await c.planRepo.refreshRecommendations(edited.map((e) => e.name));
+      await c.planRepo.refreshRecommendations(edited);
       await c.session.startFromDay(day: day, planExercises: edited);
       if (!context.mounted) return;
       await _openWorkout(context);
@@ -565,6 +680,17 @@ class _HomePageState extends State<HomePage> {
   }
 
   bool _starting = false;
+
+  /// 「只有 20 分钟」开练（P2-D）：生成精简清单后复用 [_start] 的完整
+  /// 开始流程（开练前确认 → 体重提醒 → refreshRecommendations →
+  /// startFromDay → 打开训练页）。会话挂在今天的计划日上，历史/统计
+  /// 照常保存，「今天已练完」也随之点亮；长期计划模板不动。
+  Future<void> _startShort(
+      BuildContext context, PlanDay day, List<PlanExercise> exs) async {
+    final short = shortSessionPlan(exs);
+    if (short.isEmpty) return;
+    await _start(context, day, short);
+  }
 
   /// 休息日临时加练：弹出计划里有动作的训练日让用户挑一个开练。
   Future<void> _pickExtraDay(BuildContext context) async {

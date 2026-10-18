@@ -1,45 +1,34 @@
 import '../l10n/lang.dart';
 import '../models/models.dart';
 import 'logging_modes.dart';
+import 'metrics.dart';
+import 'training_block.dart';
 import 'volume.dart';
 import 'weight_unit.dart' show fmtWithUnit;
 
 export '../models/models.dart';
+export 'exercise_identity.dart';
 export 'hr_calories.dart';
 export 'hr_load.dart';
+export 'layoff.dart';
 export 'local_plan.dart';
 export 'logging_modes.dart';
+export 'metrics.dart';
 export 'muscle_insights.dart';
 export 'plates.dart';
 export 'progression_chain.dart';
 export 'recovery.dart';
 export 'rest_rules.dart';
 export 'stats_kpi.dart';
+export 'training_block.dart';
 export 'trends.dart';
 export 'volume.dart';
+export 'warmup.dart';
+export 'weekly_recap.dart';
 export 'workout_flow.dart';
 
 /// 纯函数业务引擎：渐进超负荷判定、1RM、容量、肌肉分布。
 /// 不依赖 Flutter，全部可单元测试。
-
-/// 1RM 估算分公式（调研报告点名条目，docs/open-source-research-2026-09-25.md
-/// 「1RM 分公式（LibreFit，仅参考）」的保守口径；公式本体为公开运动科学公式，
-/// 不涉及 LibreFit 的 GPL 代码）：
-/// - 1 次：直接取实际完成重量（实测即真值）；
-/// - 2-5 次：Epley，w × (1 + reps/30)；
-/// - 6 次及以上：Epley 与 Brzycki（w × 36/(37-reps)）的平均——
-///   Epley 在高次数端偏乐观、Brzycki 偏保守，取平均得到更稳的估计。
-double estimate1RM(double weight, int reps) {
-  if (reps <= 0 || weight <= 0) return 0;
-  if (reps == 1) return weight;
-  final epley = weight * (1 + reps / 30.0);
-  if (reps <= 5) return epley;
-  final denom = 37 - reps;
-  // 37 次及以上 Brzycki 分母非正、公式失效，退回 Epley（该次数档已远离力量区间）。
-  if (denom <= 0) return epley;
-  final brzycki = weight * 36 / denom;
-  return (epley + brzycki) / 2;
-}
 
 /// 判定一次训练后某动作的渐进结果。
 /// [workingSets] 本次训练该动作的正式组；[rule] 该动作的规则。
@@ -204,11 +193,6 @@ SessionStats sessionStatsFrom(
       exercises: names);
 }
 
-/// 肌肉群清单（热力图分区）。
-const kMuscleRegions = [
-  '胸', '肩', '背', '手臂', '腿', '核心', '其他'
-];
-
 /// 周内各肌群正式组容量占比（0-1）。
 /// 入参为 (动作名, 该动作本周正式组) 的列表。
 /// bodyWeightKg > 0 时自重动作按 系数×体重 折算（点名条目二）。
@@ -312,19 +296,107 @@ PlateauInfo? plateauOf(List<SetEntry> history, {required int repsMax}) {
   return PlateauInfo(w, streak, days, topReps.last >= repsMax);
 }
 
-/// 训练日历：给定日期集合渲染辅助。
-DateTime parseDate(String d) {
-  final p = d.split('-').map(int.parse).toList();
-  return DateTime(p[0], p[1], p[2]);
+/// 停滞协议决策（P1-C）：平台期不再只说「继续冲」，而是给出下一步。
+///
+/// - 连续 ≥3 次同重量且**未顶格** → `reduce`：建议减载 10% 或换变式
+///   （自重 0kg 无法减重，只建议换变式；负重量按辅助配重 +10% 方向处理）；
+/// - 已顶格 → `add`：保留加重建议（次数到顶不是停滞，是该加重量了）。
+///   已顶格优先于次数门槛：2 次/≥12 天的平台期只要顶格也走 `add`；
+/// - 2 次但跨度 ≥12 天且**未顶格**、或没有平台期 → `none`
+///   （维持原有「冲次数」提醒，不提前减载）。
+class PlateauProtocol {
+  /// 'reduce'（减载/换变式）/ 'add'（加重）/ 'none'（不触发协议）
+  final String action;
+
+  /// 协议建议的下一次重量（kg）；`none` 时为 0。
+  final double suggestedWeightKg;
+
+  /// 面向用户的一句话原因 + 下一步（中英由 tx 解析）。
+  final String reason;
+
+  const PlateauProtocol(this.action, this.suggestedWeightKg, this.reason);
 }
 
-String fmtDate(DateTime d) =>
-    '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-
-/// 本周一的日期。
-DateTime mondayOf(DateTime d) {
-  final wd = d.weekday; // 1=Mon
-  return DateTime(d.year, d.month, d.day).subtract(Duration(days: wd - 1));
+/// 平台期 → 停滞协议。`historyBefore` 里没有平台期时传 null，返回 `none`。
+/// [logging] 只影响文案单位（计时动作把「次」说成「秒」）；
+/// [loadType] = bodyweight 时不做减重（0kg 档位没有重量可减）。
+PlateauProtocol plateauProtocolOf(
+  PlateauInfo? info, {
+  required ProgressionRule rule,
+  String logging = LoggingMode.reps,
+  String loadType = LoadMode.weighted,
+}) {
+  if (info == null) {
+    return const PlateauProtocol('none', 0, '');
+  }
+  final timed = logging == LoggingMode.time;
+  final unit = timed ? '秒' : '次';
+  final enUnit = timed ? 's' : 'reps';
+  // 「次数」在计时动作里是「秒数」：文案别把平板支撑说成次数。
+  final repWord = timed ? '秒数' : '次数';
+  final w = fmtWithUnit(info.weightKg);
+  final stuck = tx(
+    '连续 ${info.sessions} 次 · ${info.days} 天停在 $w',
+    en: '${info.sessions} sessions / ${info.days} days at $w',
+  );
+  if (info.hitTop) {
+    // 自重动作的渐进表达是「加组」而不是加重（与 chainTargetWhy 同口径）；
+    // 0kg 档位没有重量可加。
+    if (loadType == LoadMode.bodyweight) {
+      return PlateauProtocol(
+        'add',
+        0,
+        tx(
+          '$stuck，但$repWord已到 ${rule.repsMax} $unit上限 → 下次加练一组'
+          '（原因：自重动作$repWord顶格，渐进靠加组）',
+          en:
+              '$stuck, but $enUnit already hit the ${rule.repsMax} cap → add one extra set next time'
+              ' (reason: bodyweight progresses by adding sets)',
+        ),
+      );
+    }
+    final next = round05(info.weightKg + rule.incrementKg);
+    return PlateauProtocol(
+      'add',
+      next,
+      tx(
+        '$stuck，但$repWord已到 ${rule.repsMax} $unit上限 → 继续加重到 ${fmtWithUnit(next)}'
+        '（原因：$repWord顶格不是练不动，是重量该加了）',
+        en:
+            '$stuck, but $enUnit already hit the ${rule.repsMax} cap → add weight to ${fmtWithUnit(next)}'
+            ' (reason: capped reps means it is time to load, not a stall)',
+      ),
+    );
+  }
+  // 2 次/≥12 天的老口径平台期（未顶格）：先按原有「冲次数」提醒，
+  // 不提前减载；已顶格在上面已经走 add。
+  if (info.sessions < 3) {
+    return const PlateauProtocol('none', 0, '');
+  }
+  if (loadType == LoadMode.bodyweight || info.weightKg == 0) {
+    return PlateauProtocol(
+      'reduce',
+      0,
+      tx(
+        '$stuck 且$repWord未到 ${rule.repsMax} $unit上限 → 建议换一个变式（自重动作没有重量可减），打破停滞',
+        en:
+            '$stuck without reaching the ${rule.repsMax}-$enUnit cap → switch to a variation'
+            ' (bodyweight has no load to cut) to break the plateau',
+      ),
+    );
+  }
+  final cut = deloadWeightKg(info.weightKg);
+  return PlateauProtocol(
+    'reduce',
+    cut,
+    tx(
+      '$stuck 且$repWord未到 ${rule.repsMax} $unit上限 → 建议减载 10%（约 ${fmtWithUnit(cut)}）'
+      '或换一个变式，打破停滞',
+      en:
+          '$stuck without reaching the ${rule.repsMax}-$enUnit cap → cut ~10%'
+          ' (about ${fmtWithUnit(cut)}) or switch to a variation to break the plateau',
+    ),
+  );
 }
 
 /// 忘停表守护（2026-09-26 Arono）：会话时长是否可疑。

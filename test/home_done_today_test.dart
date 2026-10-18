@@ -56,7 +56,8 @@ void main() {
 
   /// 建一个「今天」恰好排上训练日「推日」的计划（weekday=今天的星期），
   /// 并可选插入一条今天已完成的 session（planDayTitle 同名）。
-  Future<void> seed({required bool doneToday}) async {
+  /// [extra] = 额外加几个辅助动作（20 分钟入口的跳过文案用）。
+  Future<void> seed({required bool doneToday, int extra = 0}) async {
     final now = DateTime.now();
     final plan = await container.db.insertPlan(Plan(
         name: '测试计划-完成态',
@@ -76,6 +77,19 @@ void main() {
       kind: 'compound',
       rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
     ));
+    for (var i = 1; i <= extra; i++) {
+      await container.db.insertPlanExercise(PlanExercise(
+        dayId: dayId,
+        name: '辅助$i',
+        orderIdx: i,
+        sets: 3,
+        repsMin: 8,
+        repsMax: 12,
+        restSec: 90,
+        kind: 'assistance',
+        rule: ProgressionRule(repsMin: 8, repsMax: 12, workingSets: 3),
+      ));
+    }
     if (doneToday) {
       await container.db.insertSession(Session(
         date: fmtDate(now),
@@ -118,6 +132,19 @@ void main() {
 
     expect(find.text('今天该练'), findsOneWidget);
     expect(find.text('开始训练'), findsOneWidget);
+    expect(find.text('只有 20 分钟'), findsOneWidget, reason: '20 分钟精简入口');
     expect(find.text('今天已练完'), findsNothing);
+  });
+
+  testWidgets('只有 20 分钟：入口文案说明保留规则、跳过的动作与多余组数', (tester) async {
+    // 卧推（复合）+ 辅助1/2/3：复合优先留 3 个 → 辅助3 被跳过
+    await tester.runAsync(() => seed(doneToday: false, extra: 3));
+    await pumpHome(tester);
+
+    expect(find.text('只有 20 分钟'), findsOneWidget);
+    expect(find.textContaining('复合优先保留 3 个动作'),
+        findsOneWidget, reason: '说明复合优先与动作上限');
+    expect(find.text('跳过：辅助3；多出的组数不练'),
+        findsOneWidget, reason: '点名被删掉的动作，并说明组数压缩');
   });
 }

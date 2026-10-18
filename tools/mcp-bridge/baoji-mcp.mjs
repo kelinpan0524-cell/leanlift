@@ -193,6 +193,12 @@ const TOOLS = [
           type: 'string',
           description: '动作名称，需与 App 里的叫法一致，例如「杠铃卧推」',
         },
+        key: {
+          type: 'string',
+          description:
+            '可选：动作稳定身份键（从 /v1/sessions 或 /v1/today 的 exerciseKey 取得）；' +
+            '改名后保留旧键的动作用它查询最稳。',
+        },
         limit: {
           type: 'integer',
           description: '历史组返回条数上限，默认 40',
@@ -226,11 +232,16 @@ export async function callTool(name, args, backend) {
     }
     case 'get_exercise_history': {
       const n = (args?.name || '').trim();
-      if (!n) throw new Error('必须提供动作名称 name');
+      const k = (args?.key || '').trim();
+      if (!n && !k) throw new Error('必须提供动作名称 name（或稳定键 key）');
       const text = await backend.request('/v1/exercise', {
-        params: { name: n, limit: args?.limit },
+        params: {
+          name: n || undefined,
+          key: k || undefined,
+          limit: args?.limit,
+        },
       });
-      return `动作「${n}」的战绩：\n${pretty(text)}`;
+      return `动作「${n || k}」的战绩：\n${pretty(text)}`;
     }
     default:
       throw new Error(`未知工具：${name}`);

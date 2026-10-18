@@ -209,7 +209,10 @@ void main() {
     final sj = jsonDecode(sessions.body) as Map<String, dynamic>;
     expect(sj['count'], 2);
     final first = (sj['sessions'] as List).last as Map<String, dynamic>;
-    expect(((first['exercises'] as List).first as Map)['name'], '卧推');
+    final firstEx = (first['exercises'] as List).first as Map<String, dynamic>;
+    expect(firstEx['name'], '卧推');
+    expect(firstEx['exerciseKey'], '卧推',
+        reason: 'sessions 返回稳定键，MCP 端可原样回传');
 
     final summary = await call('GET', '/v1/summary?weeks=8', token: token);
     expect(summary.status, 200);
@@ -234,6 +237,142 @@ void main() {
         400);
     expect(
         await call('GET', '/v1/nope', token: token).then((r) => r.status), 404);
+  });
+
+  test('改名后保留旧键的动作：按新名字或 key 都能查到旧历史', () async {
+    // 计划动作：显示名是改名后的「哑铃飞鸟」，稳定键仍是旧动作的「杠铃卧推」。
+    final plan = await db.insertPlan(Plan(
+      name: '改名计划',
+      source: 'manual',
+      createdAt: '2026-10-18',
+    ));
+    final dayId = await db.insertPlanDay(
+        PlanDay(planId: plan.id!, weekday: 1, title: '推日'));
+    await db.insertPlanExercise(PlanExercise(
+      dayId: dayId,
+      name: '哑铃飞鸟',
+      orderIdx: 0,
+      sets: 3,
+      repsMin: 8,
+      repsMax: 12,
+      restSec: 90,
+      kind: 'assistance',
+      rule: ProgressionRule(repsMin: 8, repsMax: 12, workingSets: 3),
+      exerciseKey: '杠铃卧推',
+    ));
+    final s = await db.insertSession(Session(
+      date: '2026-10-18',
+      planDayTitle: '旧训练',
+      startedAt: 1000,
+      endedAt: 2000,
+      status: 'done',
+    ));
+    final seId = await db.insertSessionExercise(SessionExercise(
+      sessionId: s.id!,
+      name: '杠铃卧推',
+      orderIdx: 0,
+      kind: 'compound',
+      rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
+      exerciseKey: '杠铃卧推',
+    ));
+    await db.insertSet(SetEntry(
+      sessionExerciseId: seId,
+      weightKg: 80,
+      reps: 5,
+      kind: SetKind.working,
+      doneAt: 1500,
+    ));
+
+    expect(await bridge.start(), isTrue);
+    final token = await pair();
+
+    final byName =
+        await call('GET', '/v1/exercise?name=哑铃飞鸟', token: token);
+    expect(byName.status, 200);
+    final nj = jsonDecode(byName.body) as Map<String, dynamic>;
+    expect(nj['exerciseKey'], '杠铃卧推', reason: '按新名字反查到旧稳定键');
+    expect(nj['prKg'], 80, reason: '改名不应丢掉旧历史');
+    expect(nj['historyCount'], 1);
+
+    final byKey = await call(
+        'GET', '/v1/exercise?name=哑铃飞鸟&key=杠铃卧推', token: token);
+    expect(byKey.status, 200);
+    expect((jsonDecode(byKey.body) as Map<String, dynamic>)['prKg'], 80);
+  });
+
+  test('sessions / exercise 带疼痛记录字段（painLevel / painArea）', () async {
+    // 一场训练两个组：一组带疼痛（肘 · 3 级），一组无痛（默认 0 / 空）
+    final now = DateTime.now();
+    final ses = await db.insertSession(Session(
+      date: fmtDate(now),
+      planDayTitle: '疼痛记录日',
+      startedAt: now.millisecondsSinceEpoch - 3600000,
+      endedAt: now.millisecondsSinceEpoch,
+      status: 'done',
+    ));
+    final seId = await db.insertSessionExercise(SessionExercise(
+      sessionId: ses.id!,
+      name: '卧推',
+      orderIdx: 0,
+      kind: 'compound',
+      rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 2),
+    ));
+    for (final (w, r, pl, pa) in [
+      (55.0, 8, 0, ''),
+      (65.0, 6, 3, '肘'),
+    ]) {
+      await db.insertSet(SetEntry(
+        sessionExerciseId: seId,
+        weightKg: w,
+        reps: r,
+        rir: 2,
+        kind: SetKind.working,
+        doneAt: now.millisecondsSinceEpoch,
+        painLevel: pl,
+        painArea: pa,
+      ));
+    }
+
+    expect(await bridge.start(), isTrue);
+    final token = await pair();
+
+    final sessions = await call('GET', '/v1/sessions', token: token);
+    expect(sessions.status, 200);
+    final sj = jsonDecode(sessions.body) as Map<String, dynamic>;
+    final allSets = <Map<String, dynamic>>[
+      for (final s in sj['sessions'] as List)
+        for (final ex in (s as Map)['exercises'] as List)
+          for (final st in (ex as Map)['sets'] as List)
+            st as Map<String, dynamic>,
+    ];
+    expect(
+      allSets.any((st) => st['painLevel'] == 3 && st['painArea'] == '肘'),
+      isTrue,
+      reason: '/v1/sessions 的组记录带疼痛等级与部位',
+    );
+    expect(
+      allSets.any((st) => st['painLevel'] == 0 && st['painArea'] == ''),
+      isTrue,
+      reason: '无痛组默认 0 / 空，不缺键',
+    );
+
+    final ex = await call('GET', '/v1/exercise?name=卧推', token: token);
+    expect(ex.status, 200);
+    final ej = jsonDecode(ex.body) as Map<String, dynamic>;
+    final exSets = <Map<String, dynamic>>[
+      ...(ej['lastSession'] as List).cast<Map<String, dynamic>>(),
+      ...(ej['history'] as List).cast<Map<String, dynamic>>(),
+    ];
+    expect(exSets, isNotEmpty);
+    for (final st in exSets) {
+      expect(st.containsKey('painLevel'), isTrue,
+          reason: '/v1/exercise 每组都带 painLevel（AI 才能判断疼痛趋势）');
+      expect(st.containsKey('painArea'), isTrue);
+    }
+    expect(
+      exSets.any((st) => st['painLevel'] == 3 && st['painArea'] == '肘'),
+      isTrue,
+    );
   });
 
   test('只读：任何写方法都被拒（405），不留写入口', () async {

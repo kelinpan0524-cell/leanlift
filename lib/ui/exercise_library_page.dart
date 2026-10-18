@@ -258,7 +258,7 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
     );
   }
 
-  /// 是否自定义动作（词表外沉淀行）：内置 186 条来自静态词表不可删改，
+  /// 是否自定义动作（词表外沉淀行）：内置动作来自静态词表不可删改，
   /// 自定义动作可编辑标注/删除。
   bool _isCustom(ExerciseMeta m) => libraryMetaByName(m.name) == null;
 
@@ -282,6 +282,9 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
   /// 动作详情：元信息 + 历史最佳（1RM/最大重量）+ 最近几次训练记录。
   Future<void> _showDetail(ExerciseMeta m) async {
     final c = app(context);
+    // 器械设置（P2-C）按已落库的稳定键读写：改名后的动作在计划/会话行里
+    // 仍保留旧键，动作库若按当前显示名现算会与训练页各写一份备注。
+    final noteKey = await c.db.knownExerciseKey(m.name) ?? '';
     final rows = await c.db.sessionRowsBetween(
         '0000-01-01', fmtDate(DateTime.now()));
     // 该动作按日期分组的正式组（同一 session 只取一次日期）
@@ -290,8 +293,18 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
     var curDate = '';
     double bestRm = 0, bestW = 0;
     String bestRmDesc = '';
+    // 历史匹配与 SetupNoteEditor 用同一个稳定键（noteKey）：改名保留旧键的
+    // 动作，按新显示名现算会得到新键、而历史行的 exercise_key 还是旧键，
+    // 会误判成「有备注但没练过」。knownExerciseKey 先查落库行的键（计划/
+    // 会话行同名行保留旧键），查不到才现算——别名归一能力不丢。
+    final identity =
+        noteKey.trim().isNotEmpty ? noteKey.trim() : exerciseKeyOf(m.name);
     for (final r in rows) {
-      if ((r['name'] as String?) != m.name) continue;
+      final rowKey = ((r['exercise_key'] as String?) ?? '').trim();
+      final rowIdentity = rowKey.isNotEmpty
+          ? rowKey
+          : exerciseKeyOf((r['name'] as String?) ?? '');
+      if (identity.isEmpty || rowIdentity != identity) continue;
       final sid = (r['session_id'] as num).toInt();
       if (sid != curSid) {
         curSid = sid;
@@ -321,13 +334,15 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
     if (!mounted) return;
     await showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       backgroundColor: AppTheme.card,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => SafeArea(
         child: ListView(
           shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          padding: EdgeInsets.fromLTRB(
+              16, 16, 16, 16 + MediaQuery.of(ctx).viewInsets.bottom),
           children: [
             Text(exname(m.name),
                 style: const TextStyle(
@@ -346,6 +361,8 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
               ),
               style: const TextStyle(color: AppTheme.textDim, fontSize: 13),
             ),
+            // 器械设置（P2-C）：动作库详情也能记录座椅/靠背等固定设置。
+            SetupNoteEditor(name: m.name, exerciseKey: noteKey),
             // 图文解析段（示意图 + 要点）与训练中共用同一组件
             ...exerciseMediaSection(m.name, m),
             const SizedBox(height: 14),

@@ -6,7 +6,6 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:baoji_timer/db/db.dart';
 import 'package:baoji_timer/engine/engine.dart';
-import 'package:baoji_timer/models/models.dart';
 import 'package:baoji_timer/services/session_controller.dart';
 import 'package:baoji_timer/services/settings.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -168,17 +167,21 @@ void main() {
     // 历史：done 会话里 "单杠悬垂举腿" 0kg×6×3，末组余力 0（不满足 RIR 门槛）
     // → 规则链 hold → 建议重量保持 0；修复前这里会把 0 误判为「无历史」，
     // 回退 presetStartOf 的默认 20kg。
-    const rule = ProgressionRule(repsMin: 5, repsMax: 8);
+    // 历史日期用**相对 2 天前**（2026-10-18）：固定日期离测试运行日一远
+    // （≥14 天）就会触发 P1-D 停练降档，让本测试的「链 hold」断言碰巧
+    // 由停练路径兜住——测试意图失真。这里显式断言不在停练态。
+    final histDate = fmtDate(DateTime.now().subtract(const Duration(days: 2)));
+    final rule = ProgressionRule(repsMin: 5, repsMax: 8);
     final (hist, histEx) = await db.insertSessionWithExercises(
-      const Session(
-        date: '2026-09-24',
+      Session(
+        date: histDate,
         planDayTitle: '核心日',
         startedAt: 1000,
         endedAt: 2000,
         status: 'done',
       ),
       [
-        const SessionExercise(
+        SessionExercise(
           sessionId: 0,
           name: '单杠悬垂举腿',
           orderIdx: 0,
@@ -234,6 +237,10 @@ void main() {
       day: PlanDay(id: dayId, planId: plan.id!, weekday: 4, title: '核心日'),
       planExercises: [ex],
     );
+
+    // 显式断言（2026-10-18）：2 天前有正式组的 done 训练 → 不触发停练降档；
+    // 本测试的 0kg 建议重量只来自规则链 hold，与停练路径无关。
+    expect(c.inLayoff, isFalse);
 
     // hold：0kg 保持 0（presetStartOf 对词表外动作返回 20）
     expect(c.weightDraft, 0);

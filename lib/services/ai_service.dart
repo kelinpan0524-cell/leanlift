@@ -5,7 +5,9 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../engine/engine.dart';
+import '../engine/exercise_identity.dart' as identity;
 import '../engine/weight_unit.dart' show unitLabel;
+import '../l10n/lang.dart';
 import '../presets/exercise_library.dart';
 import 'plan_repository.dart';
 import 'settings.dart';
@@ -22,6 +24,10 @@ class AiService {
 
   final Settings _settings;
   late final http.Client? _httpClient;
+
+  /// 周复盘页自己的在途请求 client（仅生产环境自建；测试注入的
+  /// client 生命周期由测试持有，不在这里关闭）。
+  http.Client? _weeklyRecapClient;
 
   // ---------- 动作词表（内置 + 用户沉淀合并集，2026-09-29） ----------
   // 用户沉淀动作 = exercise_meta 表里内置词表之外的新行（AI 生成保存、
@@ -111,6 +117,118 @@ class AiService {
     final date =
         '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
     return '# $title $date\n\n$reply\n';
+  }
+
+  // ---------- 周复盘 AI 叙事（P1-E2） ----------
+
+  /// 把本地周复盘数字写成一段 AI 叙事。
+  ///
+  /// 只允许在「用户打开周复盘页且 AI 自动写周报开关打开」时前台调用：
+  /// 本方法本身不排队、不重试、不在后台触发，失败由页面回退本地版。
+  /// 生产环境使用自建 client，页面关闭/退后台时可经
+  /// [cancelWeeklyRecapNarrative] 立即中止在途请求。
+  Future<String> weeklyRecapNarrative(WeeklyRecap recap) async {
+    final owned = _httpClient == null;
+    final client = _httpClient ?? http.Client();
+    if (owned) _weeklyRecapClient = client;
+    try {
+      return await chat(
+        [
+          AiMessage('system', _weeklyRecapPersona()),
+          AiMessage('user', buildWeeklyRecapDataPack(recap)),
+        ],
+        client: client,
+      );
+    } finally {
+      if (owned) {
+        if (identical(_weeklyRecapClient, client)) _weeklyRecapClient = null;
+        client.close();
+      }
+    }
+  }
+
+  /// 中止在途的 AI 周报请求（周复盘页关闭/退到后台/被别的页面盖住时调）。
+  /// 关闭底层 client 会让正在进行的 HTTP 请求立即失败，不再后台收发。
+  void cancelWeeklyRecapNarrative() {
+    final client = _weeklyRecapClient;
+    _weeklyRecapClient = null;
+    try {
+      client?.close();
+    } catch (_) {
+      // 已经关闭/平台差异都不影响页面回退
+    }
+  }
+
+  /// 周复盘叙事的 system 提示：只讲本地算好的数字，不编造。
+  String _weeklyRecapPersona() {
+    final language = Lang.isEn ? 'English' : '中文';
+    return '你是「薄肌教练」——「薄肌训练计时器」App 内置的私人力量训练教练。'
+        '下面这周的复盘数字是 App 在手机本地算好的，你只负责把它们讲成人话。\n'
+        '要求：\n'
+        '1. 先用一句话总结这周完成度（计划 vs 实际）；\n'
+        '2. 点出一处进步或停滞（没有可比数据就直说，不要硬编）；\n'
+        '3. 给下周一条具体、可执行的建议（动作/组次/加重/补哪个肌群）；\n'
+        '4. 只用数据里给出的数字，数据没有的不许编造；\n'
+        '5. 长度 120-180 字（英文 80-120 words），最多 3 段短句，不要 Markdown 标题；\n'
+        '6. 用$language输出。\n'
+        '重量单位口径：数据里的重量一律是 kg（存储口径）；用户 App 界面当前显示单位是 '
+        '${unitLabel()}，需要换算时请自行换算并说明。';
+  }
+
+  /// 周复盘数据包（可见于测试）：把 WeeklyRecap 压成一段紧凑文本。
+  @visibleForTesting
+  String buildWeeklyRecapDataPack(WeeklyRecap recap) {
+    String num(double v) {
+      final rounded = v.roundToDouble();
+      return (v - rounded).abs() < 0.05
+          ? rounded.toStringAsFixed(0)
+          : v.toStringAsFixed(1);
+    }
+
+    String kg(double v) => '${num(v)} kg';
+
+    String changes(List<RecapExerciseChange> list, String label) {
+      if (list.isEmpty) return '$label：无';
+      return '$label：${[
+        for (final e in list)
+          '${e.name} 1RM ${kg(e.previousBest1Rm)} → ${kg(e.best1Rm)}',
+      ].join('；')}';
+    }
+
+    final muscleParts = [
+      for (final e in recap.weeklySetsByMuscle.entries)
+        if (e.value > 0) '${e.key} ${num(e.value)} 组',
+    ];
+    final shortfallParts = [
+      for (final m in recap.underTargetMuscles)
+        '${m.muscle} ${num(m.sets)}/${m.targetMin}-${m.targetMax} 组'
+            '（差 ${num(m.deficit)} 组）',
+    ];
+    final trend = recap.weightTrend;
+    final String weight;
+    if (!trend.hasData) {
+      weight = '最近 7 天没有体重记录';
+    } else if (trend.deltaKg == null) {
+      weight = '最近 7 天 1 条记录：${kg(trend.startKg!)}';
+    } else {
+      final d = trend.deltaKg!;
+      weight = '${kg(trend.startKg!)} → ${kg(trend.endKg!)}'
+          '（${d > 0 ? '+' : ''}${num(d)} kg）';
+    }
+
+    return '周区间：${fmtDate(recap.weekStart)} ~ ${fmtDate(recap.weekEnd)}\n'
+        '计划：${recap.plannedSessions} 次训练 / ${recap.plannedWorkingSets} 个正式组\n'
+        '对上计划的完成：${recap.completedPlannedSessions} 次 / '
+        '${recap.completedPlannedWorkingSets} 个正式组\n'
+        '实际全部：${recap.completedSessions} 次训练 / '
+        '${recap.completedWorkingSets} 个正式组'
+        '（计划外 ${recap.extraSessions} 次 / ${recap.extraWorkingSets} 组）\n'
+        '肌群周组数：${muscleParts.isEmpty ? '无正式组' : muscleParts.join('、')}\n'
+        '低于目标：${shortfallParts.isEmpty ? '无' : shortfallParts.join('；')}\n'
+        '${changes(recap.improvedExercises, '进步')}\n'
+        '${changes(recap.stalledExercises, '停滞')}\n'
+        '体重：$weight\n'
+        '本地规则建议：${recap.action}';
   }
 
   /// 组装教练对话消息：人设 + 排计划契约（合并为首个 system 段）+
@@ -217,7 +335,8 @@ class AiService {
   /// 多轮对话通用入口：messages 原样发给 /chat/completions。
   /// 所有 AI 功能（计划拆解/描述生成/教练对话/分析）统一走这里，
   /// 错误统一归一为 AiException 中文文案。
-  Future<String> chat(List<AiMessage> messages) async {
+  /// [client] 可选：调用方自带可关闭的 client（周复盘页离开时要中止请求）。
+  Future<String> chat(List<AiMessage> messages, {http.Client? client}) async {
     if (!_settings.aiConfigured) {
       throw const AiException('未配置 AI 接口，请在设置里填入 Base URL 和 API Key');
     }
@@ -234,7 +353,7 @@ class AiService {
     final pathEmpty =
         parsed == null || parsed.path.isEmpty || parsed.path == '/';
     final bases = pathEmpty ? [base, '$base/v1'] : [base];
-    final post = _httpClient?.post ?? http.post;
+    final post = client?.post ?? _httpClient?.post ?? http.post;
     Future<http.Response> send(String b) => post(
           Uri.parse('$b/chat/completions'),
           headers: {
@@ -616,85 +735,12 @@ $planText
   // L6 模糊匹配（编辑距离 score<0.15 且整批确定级覆盖率 ≥0.5 才自动命中，
   //    否则给 top5 候选进预览页人工确认——workout-timer 的自动命中口径）
 
-  /// 同义词/英文别名表（→ 词表规范名）。只收无歧义映射；「卧推」「划船」
-  /// 「深蹲」「弯举」「推肩」这类泛称刻意不放——歧义交给预览页人工确认，
-  /// 保持 A3-2 收紧语义（泛称不被吸到最长变体）。
+  /// 同义词/英文别名表（→ 词表规范名）。与 [exerciseKeyOf] 共用同一张
+  /// 引擎别名表，保证「AI 落到规范名」与「历史按身份键归并」口径一致。
+  /// 只收无歧义映射；「卧推」「划船」「深蹲」「弯举」「推肩」这类泛称
+  /// 刻意不放——歧义交给预览页人工确认，保持 A3-2 收紧语义。
   @visibleForTesting
-  static const kExerciseAliases = <String, String>{
-    // 中文别名
-    '平板卧推': '杠铃卧推',
-    '杠铃推胸': '杠铃卧推',
-    '上斜卧推': '上斜杠铃卧推',
-    '引体': '引体向上',
-    '正手引体': '引体向上',
-    '引体向上（正手）': '引体向上',
-    '引体向上(正手)': '引体向上',
-    '背阔肌下拉': '高位下拉',
-    '倒蹬': '腿举（倒蹬机）',
-    '腿举': '腿举（倒蹬机）',
-    '蝴蝶机': '坐姿夹胸（蝴蝶机）',
-    '蝴蝶机夹胸': '坐姿夹胸（蝴蝶机）',
-    '高脚杯深蹲': '哑铃高脚杯深蹲',
-    '农夫行走': '哑铃农夫行走',
-    '农夫走': '哑铃农夫行走',
-    '侧平举': '哑铃侧平举',
-    '前平举': '哑铃前平举',
-    '罗马尼亚硬拉': '罗马尼亚硬拉',
-    '臀推': '杠铃臀桥',
-    '仰卧起坐': '卷腹',
-    '波比': '波比跳',
-    '立卧撑': '波比跳',
-    '登山者': '登山跑',
-    '登山式': '登山跑',
-    '俄罗斯旋转': '俄罗斯转体',
-    '壶铃摇摆': '壶铃摆荡',
-    '单臂划船': '哑铃单臂划船',
-    '飞鸟': '哑铃飞鸟',
-    '提踵': '站姿提踵',
-    '腿弯举': '腿弯举（腘绳肌）',
-    '腿屈伸': '腿屈伸（股四头）',
-    '哈克蹲': '哈克深蹲',
-    '保加利亚蹲': '保加利亚分腿蹲',
-    // 英文别名（键统一小写）
-    'bench press': '杠铃卧推',
-    'incline bench press': '上斜杠铃卧推',
-    'push up': '俯卧撑',
-    'push-up': '俯卧撑',
-    'pushup': '俯卧撑',
-    'pull up': '引体向上',
-    'pull-up': '引体向上',
-    'pullup': '引体向上',
-    'chin up': '引体向上',
-    'deadlift': '杠铃硬拉',
-    'overhead press': '站姿推举',
-    'ohp': '站姿推举',
-    'lateral raise': '哑铃侧平举',
-    'lat pulldown': '高位下拉',
-    'barbell row': '杠铃划船',
-    'leg press': '腿举（倒蹬机）',
-    'leg curl': '腿弯举（腘绳肌）',
-    'leg extension': '腿屈伸（股四头）',
-    'calf raise': '站姿提踵',
-    'hip thrust': '杠铃臀桥',
-    'goblet squat': '哑铃高脚杯深蹲',
-    'farmer walk': '哑铃农夫行走',
-    'farmers walk': '哑铃农夫行走',
-    'burpee': '波比跳',
-    'burpees': '波比跳',
-    'plank': '平板支撑',
-    'russian twist': '俄罗斯转体',
-    'mountain climber': '登山跑',
-    'mountain climbers': '登山跑',
-    'kettlebell swing': '壶铃摆荡',
-    'dip': '双杠臂屈伸',
-    'dips': '双杠臂屈伸',
-    'bulgarian split squat': '保加利亚分腿蹲',
-    'rdl': '罗马尼亚硬拉',
-    'crunch': '卷腹',
-    'sit up': '卷腹',
-    'sit-up': '卷腹',
-    'situp': '卷腹',
-  };
+  static const kExerciseAliases = identity.kExerciseAliases;
 
   /// 一条动作名的匹配结果。
   /// （文件内声明于 AiService 之外，见文件末尾的 ExerciseMatch 类。）

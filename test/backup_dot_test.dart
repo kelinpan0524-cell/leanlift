@@ -1,4 +1,4 @@
-// 「数据与备份」7 天未导出 JSON 提醒回归锁（体检清单遗留项 2026-09-26）：
+// 「数据与备份」14 天未手动导出 JSON 提醒回归锁（P0-A 自动备份配套）：
 // backupNeedsAttention 纯函数 + 设置主页角标两态 + 导出后时戳落 prefs。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -22,13 +22,13 @@ void main() {
 
   group('backupNeedsAttention', () {
     final now = DateTime(2026, 9, 28).millisecondsSinceEpoch;
-    const day = Duration(days: 7);
+    const day = Duration(days: 14);
 
     test('从未导出 → 提醒', () {
       expect(Settings.backupNeedsAttention(0, nowMs: now), isTrue);
     });
 
-    test('一周内导出过 → 不提醒；恰好第 7 天不提醒；超 7 天提醒', () {
+    test('两周内导出过 → 不提醒；恰好第 14 天不提醒；超 14 天提醒', () {
       expect(
         Settings.backupNeedsAttention(now - const Duration(days: 3).inMilliseconds,
             nowMs: now),
@@ -73,7 +73,7 @@ void main() {
       expect(find.text('建议备份'), findsOneWidget);
     });
 
-    testWidgets('一周内导出过 → 角标消失', (tester) async {
+    testWidgets('两周内导出过 → 角标消失', (tester) async {
       container.settings.lastExportJsonAt =
           DateTime.now().millisecondsSinceEpoch;
       await container.settings.save();

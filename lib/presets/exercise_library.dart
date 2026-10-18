@@ -1,3 +1,4 @@
+import '../engine/exercise_identity.dart' show exerciseKeyOf;
 import '../models/models.dart';
 
 
@@ -63,6 +64,7 @@ const kExerciseLibrary = <ExerciseMeta>[
   ExerciseMeta('弹力带弯举', MuscleGroups(main: '手臂', secondary: []), false, 'home', '双脚踩住带子，沿杠铃弯举轨迹弯举；顶端张力最大，回放要慢。常见错误：身体后仰、肘部前移。', '弹力带'),
   ExerciseMeta('凳上臂屈伸', MuscleGroups(main: '手臂', secondary: []), false, 'home', '双手撑凳背对前方，肘向后屈至约 90 度再推起，腿伸直或搭另一凳加难。常见错误：肩耸起、臀部离凳太远肩部受压。', '自重'),
   ExerciseMeta('双杠臂屈伸', MuscleGroups(main: '手臂', secondary: ['胸']), true, 'both', '身体竖直撑双杠，肘贴身后屈至约 90 度再推起，主打三头。常见错误：身体前倾过多变成练胸、下降过猛。', '自重'),
+  ExerciseMeta('负重双杠臂屈伸', MuscleGroups(main: '手臂', secondary: ['胸']), true, 'gym', '腰间挂杠铃片或穿负重带，双杠撑起后屈肘下降到约 90 度再推起；重量以能标准完成 5-8 次为准。常见错误：重量过大下降过深压肩、靠身体摆荡借力。', '自重'),
 
   // ============ 腿（健身房） ============
   ExerciseMeta('杠铃深蹲', MuscleGroups(main: '腿', secondary: ['核心']), true, 'gym', '杠压上背斜方肌，核心绷紧屈髋屈膝下蹲至大腿平行或更低，膝盖与脚尖同向，脚跟发力站起。常见错误：膝内扣、弓腰、重心跑到脚尖。', '杠铃'),
@@ -297,6 +299,81 @@ ExerciseMeta? libraryMetaByName(String name) {
   return null;
 }
 
+/// 别名/标点归一后再查库（「平板卧推」→「杠铃卧推」、半角
+/// 「上斜杠铃卧推(轻)」→ 全角库名），供起始重量/器械分支这类
+/// 「同一个动作换个叫法也要认」的场景用；词表外返回 null。
+ExerciseMeta? libraryMetaForLift(String name) {
+  final exact = libraryMetaByName(name);
+  if (exact != null) return exact;
+  final key = exerciseKeyOf(name);
+  if (key.isEmpty) return null;
+  for (final m in kExerciseLibrary) {
+    if (exerciseKeyOf(m.name) == key) return m;
+  }
+  return null;
+}
+
+/// 是否动作库标注的**纯自重**动作：gear='自重' 且不是「负重 X」变体。
+/// 「负重引体向上」「负重双杠臂屈伸」虽然挂在自重器械上，但训练时要记
+/// 外加重量，不算纯自重。
+bool isLibraryBodyweightExercise(String name) {
+  final meta = libraryMetaForLift(name);
+  if (meta == null || meta.gear != '自重') return false;
+  return !meta.name.startsWith('负重');
+}
+
+/// 新计划动作的默认负荷类型（P2-E）：动作库标注为纯自重的动作按
+/// bodyweight 落库，其余（含「负重引体/负重双杠」）按常规负重。
+/// 修复固定回归：内置薄肌计划与所有模板安装走 [PresetExercise.toPlanExercise]
+/// 时原本一律落 PlanExercise 默认的 weighted，导致俯卧撑/引体向上/双杠臂屈伸
+/// 等自重动作在训练页看不到「自重」口径与自重变式建议。
+String defaultLoadTypeFor(String name) =>
+    isLibraryBodyweightExercise(name) ? LoadMode.bodyweight : LoadMode.weighted;
+
+/// 首次训练没有历史时的起始重量（P2-A）：
+/// 按「细分器械 + 复合/单关节」推导，不给每个动作逐个手填。
+/// 单位 kg；哑铃/壶铃为每只重量（与内置计划口径一致）。
+/// 自重/弹力带/其他器械（药球、战绳、跳箱等按次或自身体重计）为 0。
+double defaultStartWeightOf(ExerciseMeta meta) {
+  switch (meta.gear) {
+    case '杠铃':
+      // 自由杠/史密斯/EZ 杠同一口径：复合含杆 40kg，单关节 20kg。
+      return meta.isCompound ? 40 : 20;
+    case '哑铃':
+    case '壶铃':
+      return meta.isCompound ? 10 : 6;
+    case '龙门架绳索':
+      return 10;
+    case '固定器械':
+      return 20;
+    case '自重':
+    case '弹力带':
+    case '其他器械':
+      return 0;
+  }
+  // 器械未标注（内置条目都有 gear；主要给外部传入的 meta/测试构造用）：
+  // 按场景兜底——健身房默认有配重，居家默认自重或轻器械。
+  switch (meta.equipment) {
+    case 'gym':
+      return 20;
+    case 'home':
+      return 0;
+  }
+  return 10;
+}
+
+/// 少量显式覆盖：按器械基线明显偏离常见起始档的动作。
+/// 只收高频、基线会明显偏轻的项；内置薄肌计划的显式起始重量另有一份
+/// （kBaojiExercisesByWeekday），优先级更高。
+const kStartWeightOverrides = <String, double>{
+  // 下拉/划船类绳索动作的配重片起点比孤立绳索动作高。
+  '高位下拉': 30,
+  'V把下拉': 30,
+  '窄距高位下拉': 30,
+  '反手高位下拉': 30,
+  '单臂绳索划船': 20,
+};
+
 // ================= 计划模板 =================
 
 class PresetExercise {
@@ -318,6 +395,9 @@ class PresetExercise {
         repsMax: repsMax,
         restSec: restSec,
         kind: kind,
+        // 自重动作（俯卧撑/引体/双杠/臀桥等）按自重口径落库，
+        // 不再吃 PlanExercise 的默认 weighted（P2-E 复核修复）。
+        loadType: defaultLoadTypeFor(name),
         rule: ProgressionRule(
           repsMin: repsMin,
           repsMax: repsMax,
