@@ -50,27 +50,33 @@ class FlowPage {
   }) : kind = FlowPageKind.record;
 
   /// 休息页：挂在「下一组」上（与训练卡同口径的组号），到点/跳过后
-  /// 自然回到对应记录页。
+  /// 自然回到对应记录页。练满动作上的休息（收尾确认选「继续训练」/
+  /// 点「再来一组」后）落点是它的加练组——[extra]=true，组号是即将做的
+  /// 加练组（2026-10-18 Arono：点「再来一组」后头部仍显示「第 4/4 组」
+  /// 的 bug 根因就是休息页组号被 clamp 在计划数里）。
   const FlowPage.rest({
     required this.exerciseIndex,
     required this.setNumber,
     required this.plannedSets,
-  }) : kind = FlowPageKind.rest,
-       extra = false;
+    this.extra = false,
+  }) : kind = FlowPageKind.rest;
 
   final FlowPageKind kind;
   final int exerciseIndex;
   final int setNumber;
   final int plannedSets;
 
-  /// 计划组已练满后的追加记录页（「加练一组」）。
+  /// 计划组已练满后的追加记录页（「加练一组」）；练满动作上的加练
+  /// 休息页同样带 true（头部组号同口径）。
   final bool extra;
 
   /// UI 过渡的稳定键（同页相同、换页必不同）。
   String get key => switch (kind) {
     FlowPageKind.start => 'start',
     FlowPageKind.summary => 'summary',
-    FlowPageKind.rest => 'rest-$exerciseIndex-$setNumber',    FlowPageKind.record =>
+    FlowPageKind.rest =>
+      'rest-$exerciseIndex-$setNumber${extra ? '-extra' : ''}',
+    FlowPageKind.record =>
       'record-$exerciseIndex-$setNumber${extra ? '-extra' : ''}',
   };
 
@@ -172,17 +178,20 @@ class WorkoutFlow {
     // 加练组计数不封顶（2026-09-26 Arono：加练没显示加的这一组的 bug 根因
     // 就是这里把已完成数 clamp 到计划数，加练第 2、3 组永远显示 3/3）。
     // 记录页组号 = 已完成 + 1，加练时继续涨（第 4、5…组）；
-    // 休息页组号语义是"计划内下一组"，练满后维持计划数封顶。
+    // 计划内休息页组号语义是"计划内下一组"（clamp 在计划数）；
+    // 练满动作上的加练休息（收尾确认「继续训练」/点「再来一组」后仍在
+    // 休息相位）与记录页同口径：extra=true、组号=即将做的加练组，不再
+    // 显示成「第 4/4 组」（2026-10-18 Arono 报障修复）。
     final rawDone = _doneWorkingOf(ex);
     final done = rawDone.clamp(0, planned);
-    final setNo =
-        (!resting && rawDone >= planned) ? rawDone + 1 : done + 1;
-    final extra = !resting && rawDone >= planned;
+    final extra = rawDone >= planned;
+    final setNo = extra ? rawDone + 1 : done + 1;
     if (resting) {
       return FlowPage.rest(
         exerciseIndex: i,
-        setNumber: setNo.clamp(1, planned),
+        setNumber: extra ? setNo : setNo.clamp(1, planned),
         plannedSets: planned,
+        extra: extra,
       );
     }
     return FlowPage.record(
@@ -196,13 +205,15 @@ class WorkoutFlow {
   /// 跳页面板的全部记录页（按动作、组序）。已完成的组带 done 标记，
   /// UI 层划线展示且不可跳（防把已记满的动作再跳回去打乱计数）。
   /// 加练组也列入（2026-09-26 Arono：加练了要显示出来）——
-  /// 行数 = max(计划数, 已完成数)，超出计划的部分带 extra 标记。
+  /// 行数 = max(计划数, 已完成数)，超出计划的部分带 extra 标记；
+  /// 练满后尚未落的那个加练组也占一行（done=false，可点直达），与休息
+  /// 页「第 N 组（加练）」的头部口径一致（2026-10-18）。
   List<FlowSetRef> setRefs() {
     final out = <FlowSetRef>[];
     for (var i = 0; i < exercises.length; i++) {
       final planned = plannedSetsOf(exercises[i]);
       final rawDone = _doneWorkingOf(exercises[i]);
-      final shown = rawDone > planned ? rawDone : planned;
+      final shown = rawDone >= planned ? rawDone + 1 : planned;
       for (var k = 1; k <= shown; k++) {
         out.add(FlowSetRef(
           exerciseIndex: i,

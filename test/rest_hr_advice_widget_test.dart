@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:baoji_timer/core/app.dart';
+import 'package:baoji_timer/db/db.dart';
 import 'package:baoji_timer/engine/engine.dart';
 import 'package:baoji_timer/l10n/lang.dart';
 import 'package:baoji_timer/services/heart_rate_service.dart';
@@ -240,6 +241,64 @@ void main() {
     container.hr.debugSetReading(bpm: 130);
     await tester.pump();
     expect(find.byKey(const Key('restHrAdvice')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('点心率小标：底部面板显示本次已消耗卡路里（2026-10-18）',
+      (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await enterRest(tester);
+    // 模拟已练 20 分钟、平均 ~140bpm 的采样（1 分钟 1 个点）
+    final now = DateTime.now().millisecondsSinceEpoch;
+    container.hr.debugSeedSamples([
+      for (var i = 0; i < 20; i++)
+        HrPoint(now - (20 - i) * 60000, 135 + (i % 5) * 3),
+    ]);
+    container.hr.debugSetReading(bpm: 145);
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('hrRestChip')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(find.text('本次训练消耗'), findsOneWidget);
+    expect(find.textContaining('千卡'), findsOneWidget,
+        reason: '大字卡路里可见（有采样就能算）');
+    expect(find.textContaining('练后恢复'), findsOneWidget,
+        reason: 'EPOC 拆分小字');
+    expect(find.textContaining('平均'), findsOneWidget,
+        reason: '平均/峰值一行');
+    expect(find.textContaining('仅供参考'), findsOneWidget,
+        reason: '估算口径免责说明');
+
+    // 「查看心率曲线」关面板进曲线页
+    await tester.tap(find.byKey(const Key('hrSheetOpenCurve')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.textContaining('心率'), findsWidgets,
+        reason: '已进入心率曲线页（原入口保留）');
+  });
+
+  testWidgets('点心率但没有采样：面板给引导文案，不崩、不显示 0 千卡',
+      (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await enterRest(tester);
+    container.hr.debugSetReading(bpm: 120);
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('hrRestChip')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(find.textContaining('还没有采到心率数据'), findsOneWidget);
+    expect(find.textContaining('千卡'), findsNothing,
+        reason: '没数据不给「约 0 千卡」的假数字');
     expect(tester.takeException(), isNull);
   });
 }

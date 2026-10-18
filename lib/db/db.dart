@@ -1497,6 +1497,10 @@ class Db {
   /// 共享同一份历史，不再因为改名/导入被拆散。
   /// [exerciseKey] 显式给定时优先（会话动作行自带的键），否则按
   /// [exerciseName] 现算。
+  /// **名字兜底（2026-10-18 Arono 报障）**：键体系切换/别名表修订/老备份
+  /// 恢复都可能让同名历史的键与当前行的键分叉，键查不到时同一显示名就
+  /// 是同一动作——WHERE 用「键或名字」双匹配，身份迁移意外断档时按升级
+  /// 前的行为自愈（显示名相同不可能属于两个不同动作）。
   /// [kindFilter] 不为空时 SQL 侧只取该 kind；最多回 2000 行防无界。
   /// SQL 侧倒序截断保留最新 2000 条，Dart 侧再反转为时间升序返回
   /// （正序截断会在超限时丢掉最新数据，PR 判定与推荐重量回退到数年前）。
@@ -1518,13 +1522,13 @@ class Db {
       SELECT s.* FROM sets s
       JOIN session_exercises se ON se.id = s.session_exercise_id
       JOIN sessions ss ON ss.id = se.session_id
-      WHERE se.exercise_key = ? AND ss.status = 'done'
+      WHERE (se.exercise_key = ? OR se.name = ?) AND ss.status = 'done'
         AND (? IS NULL OR s.kind = ?)
         $exSql
       ORDER BY s.done_at DESC
       LIMIT 2000
     ''',
-      [key, kindFilter, kindFilter, ...excluded],
+      [key, exerciseName, kindFilter, kindFilter, ...excluded],
     );
     var list = rows.map(SetEntry.fromMap).toList().reversed.toList();
     if (beforeSessionExerciseId != null) {
@@ -1544,6 +1548,7 @@ class Db {
 
   /// 该动作历史最高重量（PR 判定用聚合查询，避免全量拉取）。
   /// 按稳定身份键归并同义名；[exerciseKey] 显式给定时优先。
+  /// 名字兜底同 [historySets]：键分叉时同名历史不算丢。
   Future<double> maxWeightOf(String exerciseName, {String? exerciseKey}) async {
     final key = _effectiveExerciseKey(exerciseName, exerciseKey);
     if (key.isEmpty) return 0;
@@ -1553,15 +1558,17 @@ class Db {
       SELECT MAX(s.weight_kg) AS best FROM sets s
       JOIN session_exercises se ON se.id = s.session_exercise_id
       JOIN sessions ss ON ss.id = se.session_id
-      WHERE se.exercise_key = ? AND ss.status = 'done' AND s.kind = 'working'
+      WHERE (se.exercise_key = ? OR se.name = ?)
+        AND ss.status = 'done' AND s.kind = 'working'
     ''',
-      [key],
+      [key, exerciseName],
     );
     return (rows.first['best'] as num?)?.toDouble() ?? 0;
   }
 
   /// 上次完成该动作的那次训练里的全部正式组（用于"上次成绩"与渐进推荐）。
   /// 按稳定身份键归并同义名；[exerciseKey] 显式给定时优先。
+  /// 名字兜底同 [historySets]：键分叉时同名历史不算丢（2026-10-18 报障修复）。
   /// 按所属 session 定位，避免用毫秒时间戳相等分组。
   Future<List<SetEntry>> lastWorkingSets(
     String exerciseName, {
@@ -1583,21 +1590,21 @@ class Db {
       SELECT s.* FROM sets s
       JOIN session_exercises se ON se.id = s.session_exercise_id
       JOIN sessions ss ON ss.id = se.session_id
-      WHERE se.exercise_key = ? AND ss.status = 'done'
+      WHERE (se.exercise_key = ? OR se.name = ?) AND ss.status = 'done'
         AND s.kind = 'working'
         $exSql
         AND se.session_id = (
           SELECT se2.session_id
           FROM session_exercises se2
           JOIN sessions ss2 ON ss2.id = se2.session_id
-          WHERE se2.exercise_key = ? AND ss2.status = 'done'
+          WHERE (se2.exercise_key = ? OR se2.name = ?) AND ss2.status = 'done'
           $exSubSql
           ORDER BY ss2.id DESC
           LIMIT 1
         )
       ORDER BY s.id ASC
     ''',
-      [key, ...excluded, key, ...excluded],
+      [key, exerciseName, ...excluded, key, exerciseName, ...excluded],
     );
     return rows.map(SetEntry.fromMap).toList();
   }
@@ -1632,19 +1639,19 @@ class Db {
       SELECT se.target_sets, se.rule
       FROM session_exercises se
       JOIN sessions ss ON ss.id = se.session_id
-      WHERE se.exercise_key = ? AND ss.status = 'done'
+      WHERE (se.exercise_key = ? OR se.name = ?) AND ss.status = 'done'
         AND (se.trace = '' OR se.trace LIKE '替换自：%' OR se.trace LIKE 'Replaced from %')
         AND se.session_id = (
           SELECT se2.session_id
           FROM session_exercises se2
           JOIN sessions ss2 ON ss2.id = se2.session_id
-          WHERE se2.exercise_key = ? AND ss2.status = 'done'
+          WHERE (se2.exercise_key = ? OR se2.name = ?) AND ss2.status = 'done'
           $exSubSql
           ORDER BY ss2.id DESC
           LIMIT 1
         )
     ''',
-      [key, key, ...excluded],
+      [key, exerciseName, key, exerciseName, ...excluded],
     );
     var total = 0;
     for (final r in rows) {
@@ -1676,13 +1683,13 @@ class Db {
       FROM sets s
       JOIN session_exercises se ON se.id = s.session_exercise_id
       JOIN sessions ss ON ss.id = se.session_id
-      WHERE se.exercise_key = ? AND ss.status = 'done'
+      WHERE (se.exercise_key = ? OR se.name = ?) AND ss.status = 'done'
         AND s.kind = 'working'
         AND se.session_id = (
           SELECT se2.session_id
           FROM session_exercises se2
           JOIN sessions ss2 ON ss2.id = se2.session_id
-          WHERE se2.exercise_key = ? AND ss2.status = 'done'
+          WHERE (se2.exercise_key = ? OR se2.name = ?) AND ss2.status = 'done'
           $exSubSql
           ORDER BY ss2.id DESC
           LIMIT 1
@@ -1690,7 +1697,7 @@ class Db {
       ORDER BY s.id DESC
       LIMIT 1
     ''',
-      [key, key, ...excluded],
+      [key, exerciseName, key, exerciseName, ...excluded],
     );
     if (rows.isEmpty) return null;
     final r = rows.first;

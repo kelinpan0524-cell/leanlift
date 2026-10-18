@@ -190,19 +190,24 @@ void main() {
       expect(refs[3].done, isFalse);
     });
 
-    test('加练的组也列入清单：第 4 组带 extra 标记且已划线', () {
+    test('加练的组也列入清单：第 4 组带 extra 标记且已划线，待练加练占一行', () {
       final f = _twoExercises();
       f.setsByEx[11]!.addAll([_set(11), _set(11), _set(11), _set(11)]);
       final refs = f.setRefs();
-      // 动作甲 3 个计划组 + 1 个加练组
-      expect(refs.length, 7, reason: '加练的组要显示出来（2026-09-26 Arono）');
+      // 动作甲 3 个计划组 + 1 个已记加练组 + 1 个待练加练组（2026-10-18：
+      // 练满后待练加练也占一行，与休息页「第 N 组（加练）」口径一致）
+      expect(refs.length, 8, reason: '甲 5 行 + 乙 3 行');
       final extra = refs[3];
       expect(extra.setNumber, 4);
       expect(extra.extra, isTrue, reason: '第 4 组超出计划，带加练标记');
       expect(extra.done, isTrue, reason: '加练组已记录，划线锁定');
+      final pending = refs[4];
+      expect(pending.setNumber, 5);
+      expect(pending.extra, isTrue);
+      expect(pending.done, isFalse, reason: '待练的加练组可点直达');
       // 动作乙的计划组不受影响
-      expect(refs[4].exerciseIndex, 1);
-      expect(refs[4].extra, isFalse);
+      expect(refs[5].exerciseIndex, 1);
+      expect(refs[5].extra, isFalse);
     });
 
     test('计划组完成度统计不含加练（面板头部 X/N 仍按计划数）', () {
@@ -250,6 +255,77 @@ void main() {
       expect(r1.key, isNot(r2.key));
       expect(s.key, 'start');
       expect(sum.key, 'summary');
+    });
+  });
+
+  group('练满后的加练休息页组号（2026-10-18 Arono 报障：点「再来一组」仍显示第 4/4 组）', () {
+    /// 单动作 4 计划组（快照口径），已完成 [done] 组。
+    WorkoutFlow fourSets({required int done}) {
+      final a = _ex(21, '杠铃划船', 0, workingSets: 4, targetSets: 4);
+      final sets = <SetEntry>[for (var k = 0; k < done; k++) _set(21)];
+      return WorkoutFlow(exercises: [a], setsByEx: {21: sets});
+    }
+
+    test('练满 4/4 后点「再来一组」（仍在休息相位）：头部显示「第 5 组（加练）」', () {
+      final f = fourSets(done: 4);
+      final p = f.currentPage(resting: true, curExIdx: 0);
+      expect(p.kind, FlowPageKind.rest);
+      expect(p.extra, isTrue, reason: '练满动作上的休息 = 加练休息，不再 clamp 成 4/4');
+      expect(p.setNumber, 5, reason: '组号是即将做的加练组，不再被夹回 4');
+      expect(p.setLabel(), '第 5 组（加练）');
+    });
+
+    test('休息倒计时走完落到加练记录页：口径不变（回归锁）', () {
+      final f = fourSets(done: 4);
+      final p = f.currentPage(resting: false, curExIdx: 0);
+      expect(p.extra, isTrue);
+      expect(p.setNumber, 5);
+      expect(p.setLabel(), '第 5 组（加练）');
+    });
+
+    test('计划内休息（2/4 后）：仍显示「第 3/4 组」，不带加练标记', () {
+      final f = fourSets(done: 2);
+      final p = f.currentPage(resting: true, curExIdx: 0);
+      expect(p.extra, isFalse);
+      expect(p.setNumber, 3);
+      expect(p.setLabel(), '第 3/4 组');
+    });
+
+    test('撤销到计划数以内：加练休息语义自动消失（修改组数不残留）', () {
+      final f = fourSets(done: 4);
+      expect(f.currentPage(resting: true, curExIdx: 0).extra, isTrue);
+      f.setsByEx[21]!.removeLast();
+      final p = f.currentPage(resting: true, curExIdx: 0);
+      expect(p.extra, isFalse, reason: '回到 3/4，休息页是普通下一组');
+      expect(p.setLabel(), '第 4/4 组');
+    });
+
+    test('加练组的休息 key 与普通休息 key 不同（AnimatedSwitcher 换页）', () {
+      final done4 = fourSets(done: 4);
+      final done3 = fourSets(done: 3);
+      expect(
+        done4.currentPage(resting: true, curExIdx: 0).key,
+        isNot(done3.currentPage(resting: true, curExIdx: 0).key),
+      );
+    });
+
+    test('跳页面板：练满后列出待练的加练组（未完成、可点直达）', () {
+      final f = fourSets(done: 4);
+      final refs = f.setRefs();
+      expect(refs.length, 5, reason: '4 个已完成 + 1 个待练加练组');
+      expect(refs.last.extra, isTrue);
+      expect(refs.last.done, isFalse);
+      expect(refs.last.setNumber, 5);
+      // 撤销一组后面板同步缩回
+      f.setsByEx[21]!.removeLast();
+      expect(f.setRefs().length, 4);
+      expect(f.setRefs().last.extra, isFalse);
+    });
+
+    test('未练满时跳页面板不凭空多出加练行', () {
+      final f = fourSets(done: 2);
+      expect(f.setRefs().length, 4);
+      expect(f.setRefs().any((r) => r.extra), isFalse);
     });
   });
 }
