@@ -1368,29 +1368,63 @@ class SessionController extends ChangeNotifier {
         list.isNotEmpty ? list.last.weightKg : _recommendFor(target.name);
   }
 
-  void _advanceToNextExercise() {
-    curExIdx++;
-    curSetIdx = 0;
-    workingSetsDone = 0;
+  /// 「刚练完就切走」的判定窗口：最后一组正式组记录后 90 秒内切换动作，
+  /// 视为还没歇够就换动作，补起一段休息；超过就当用户已自行歇好。
+  static const int _justFinishedRestWindowMs = 90 * 1000;
+
+  /// 该动作是否刚记录完正式组：最近一组不能是热身组（热身不触发休息），
+  /// 且至少有一组正式组、最近一组在 [_justFinishedRestWindowMs] 内。
+  bool _justFinishedWorkingSet(SessionExercise ex) {
+    final list = setsByEx[ex.id] ?? const <SetEntry>[];
+    if (list.isEmpty) return false;
+    final last = list.last;
+    if (last.kind == SetKind.warmup) return false;
+    if (!list.any((e) => e.kind == SetKind.working)) return false;
+    return DateTime.now().millisecondsSinceEpoch - last.doneAt <=
+        _justFinishedRestWindowMs;
+  }
+
+  /// 跳过动作 / 跳页共用的切动作收口（2026-10-22）：
+  /// ① 正在休息：倒计时与精确闹钟一概不动，只换落点（休息页跟着显示
+  ///    新动作与它的推荐重量），到点自然进入新动作的记录页；
+  /// ② 不在休息、但当前动作刚记录过正式组：按刚完成那组的规则补起一段
+  ///    休息（_beginRestFor 同口径），切过去仍从休息页进；
+  /// ③ 其余（没组/只有热身/间隔超过 90 秒）：直接进动作态。
+  /// 落点重量沿用 _applyExerciseSwitch：有实际组接最后一组，否则推荐值。
+  Future<void> _switchExerciseForSkip(int exIdx) async {
+    final left = currentEx;
+    final wasResting = phase == WorkoutPhase.resting;
+    await _applyExerciseSwitch(exIdx);
+    // 已经离开旧动作：撤掉它的「再来一组」入口，否则休息页会把人带回去。
+    extraSetExerciseName = null;
+    if (wasResting) {
+      // 休息中切动作不改相位：剩余时间、暂停态、闹钟都保持原样。
+      notifyCard();
+      notifyListeners();
+      return;
+    }
+    if (left != null && _justFinishedWorkingSet(left)) {
+      _beginRestFor(left);
+    } else {
+      _setPhase(WorkoutPhase.lifting);
+    }
+    notifyCard();
+    notifyListeners();
   }
 
   /// 跳过当前动作（未完成的组不记录）。最后一个动作时跳过 = 结束训练的替代入口。
   Future<void> skipExercise() async {
     if (session == null || exercises.isEmpty) return;
     if (curExIdx < exercises.length - 1) {
-      _advanceToNextExercise();
-      await _loadContextForCurrent();
-      weightDraft = _recommendFor(currentEx!.name);
-      _setPhase(WorkoutPhase.lifting);
-      notifyCard();
+      await _switchExerciseForSkip(curExIdx + 1);
     }
   }
 
   /// 跳页（调研条目 8 页面流的"跳页走收起面板"）：把当前动作切到 [exIdx]，
   /// 该动作剩余的第一个未完成正式组成为当前记录页。已记的组原样保留。
   /// 只允许跳到未练满的动作（练满的加练走休息页「再来一组」，防误触打乱
-  /// 计数）；目标即当前动作时为幂等 no-op。休息中跳页会先结束本段休息
-  /// （取消精确闹钟，与跳过休息同口径）。
+  /// 计数）；目标即当前动作时为幂等 no-op。休息中跳页保留休息计时与闹钟
+  /// （2026-10-22，与跳过动作同一套语义，见 _switchExerciseForSkip）。
   Future<bool> jumpToExercise(int exIdx) async {
     if (session == null || exercises.isEmpty) return false;
     if (exIdx < 0 || exIdx >= exercises.length) return false;
@@ -1400,11 +1434,7 @@ class SessionController extends ChangeNotifier {
         .where((e) => e.kind == SetKind.working)
         .length;
     if (done >= plannedSetsOf(target)) return false; // 已练满：不可跳入
-    if (phase == WorkoutPhase.resting) _finishRest(cancelAlarm: true);
-    await _applyExerciseSwitch(exIdx);
-    _setPhase(WorkoutPhase.lifting);
-    notifyCard();
-    notifyListeners();
+    await _switchExerciseForSkip(exIdx);
     return true;
   }
 

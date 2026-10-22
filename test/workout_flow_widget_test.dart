@@ -648,6 +648,19 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('全程页面 · 点未完成组的行直接跳过去'), findsNothing,
           reason: '跳转后面板关闭');
+      // 刚记完一组（90 秒窗口内）就跳页：按新语义补起休息，休息页写明目标动作
+      expect(find.text('组间休息'), findsOneWidget,
+          reason: '刚练完就切走 → 补起休息，不直接进记录页');
+      expect(find.textContaining('划船'), findsOneWidget,
+          reason: '休息页的「下一组」指向切过去的目标动作');
+      expect(container.session.phase, WorkoutPhase.resting);
+
+      // 主动跳过休息 → 落到划船的记录页
+      await tester.runAsync(() async {
+        await tester.tap(find.text('跳过休息，直接开练'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('划船'), findsOneWidget, reason: '已跳到划船的记录页');
       expect(find.text('第 1/3 组'), findsOneWidget);
 
