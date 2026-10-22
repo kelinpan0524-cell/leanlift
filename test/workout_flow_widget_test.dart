@@ -122,6 +122,75 @@ void main() {
     if (err != null) fail('页面布局异常: $err');
   }
 
+  /// 把当前树上的文案抓出来，供轮询超时时定位「卡在哪一页」。
+  String visibleTexts(WidgetTester tester) {
+    final texts = find
+        .byType(Text)
+        .evaluate()
+        .map((e) {
+          final t = e.widget as Text;
+          return t.data ?? t.textSpan?.toPlainText() ?? '';
+        })
+        .where((t) => t.trim().isNotEmpty)
+        .toSet()
+        .take(30)
+        .join(' / ');
+    return texts.isEmpty ? '（屏上没有文字）' : texts;
+  }
+
+  /// 条件轮询：每 [step] 先 pump 一帧假时钟（推进动画/翻页），再让真实
+  /// 事件环跑 [step]。widget 测试的 pump 只推假时钟，等不到 sqflite 的
+  /// 真实回包和真实区定时器，必须把真实时间也交出去。超时按墙钟算，
+  /// 失败信息带上当前屏文案。
+  ///
+  /// 不用固定 sleep：本地快、CI runner 慢，固定 400/600ms 偶发不够，
+  /// 正是 PR #79 上找不到「训练完成 💪」的根因。轮询让等待时长由实际
+  /// 完成时刻决定，慢机器只是多跑几轮，断言本身不变。
+  Future<void> pumpUntil(
+    WidgetTester tester,
+    bool Function() condition, {
+    required String reason,
+    Duration timeout = const Duration(seconds: 10),
+    Duration step = const Duration(milliseconds: 100),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (true) {
+      await tester.pump(step);
+      if (condition()) return;
+      if (!DateTime.now().isBefore(deadline)) {
+        fail('$reason：等了 ${timeout.inSeconds} 秒仍未成立。'
+            '当前屏上的文字：${visibleTexts(tester)}');
+      }
+      await tester.runAsync(() => Future<void>.delayed(step));
+    }
+  }
+
+  /// 等某个 widget 出现（异步落库/翻页后才挂载的页面）。
+  Future<void> pumpUntilFound(
+    WidgetTester tester,
+    Finder finder, {
+    Duration timeout = const Duration(seconds: 10),
+    Duration step = const Duration(milliseconds: 100),
+    String? reason,
+  }) =>
+      pumpUntil(tester, () => finder.evaluate().isNotEmpty,
+          reason: reason ?? '等 ${finder.describeMatch(Plurality.one)} 出现',
+          timeout: timeout,
+          step: step);
+
+  /// 等某个 widget 消失（划线窗口、按钮入口消费这类定时器走完就撤的等待）。
+  Future<void> pumpUntilGone(
+    WidgetTester tester,
+    Finder finder, {
+    Duration timeout = const Duration(seconds: 10),
+    Duration step = const Duration(milliseconds: 100),
+    String? reason,
+  }) =>
+      pumpUntil(tester, () => finder.evaluate().isEmpty,
+          reason: reason ?? '等 ${finder.describeMatch(Plurality.zero)} 消失',
+          timeout: timeout,
+          step: step);
+
   Future<PlanDay> makeDay(String title) async {
     final plan = await container.db.insertPlan(Plan(
         name: '测试计划-$title',
@@ -1087,34 +1156,34 @@ void main() {
     }
 
     /// UI 记满唯一一组并等确认面板挂起（面板出现）。
-    Future<void> recordLastSetViaUi(WidgetTester tester) async {
+    Future<void> recordLastSetViaUi(WidgetTester tester,
+        {required String confirmText}) async {
       await tester.runAsync(() async {
         await pickRir2(tester);
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
+      // 落库在真实事件环上完成，确认面板挂起后 completeSet 才走到收尾
+      await pumpUntilFound(tester, find.text(confirmText),
+          reason: '记满最后一组后应弹收尾确认面板');
+      // 文案一挂上就在树里，但底部弹层还在入场动画中（按钮坐标还在屏外），
+      // 直接点会落空。settle 只推假时钟收动画，不等真实异步，确定性行为。
+      await tester.pumpAndSettle();
       expect(container.session.hasActive, isTrue,
           reason: '确认面板挂起：等用户拍板，不自动结束');
     }
 
     testWidgets('用例A 全部组完成：选「结束并保存」→ 落库 done 进总结页', (tester) async {
       await pumpSingleSetWorkout(tester);
-      await recordLastSetViaUi(tester);
+      await recordLastSetViaUi(tester, confirmText: '全部组完成，结束训练吗？');
       expect(find.text('全部组完成，结束训练吗？'), findsOneWidget);
 
       await tester.runAsync(() async {
         await tester.tap(find.text('结束并保存'));
-        await Future<void>.delayed(const Duration(milliseconds: 100));
       });
-      // 面板退场动画要出帧才走完 → confirm 才返回 true；随后 completeSet
-      // 的收尾（finish 落库）在真实事件环上跑，还需再给真实时间
-      await tester.pump(const Duration(milliseconds: 400));
-      await tester.runAsync(() async {
-        await Future<void>.delayed(const Duration(milliseconds: 600));
-      });
-      await tester.pumpAndSettle();
+      // 面板退场动画走完 confirm 才返回 true；随后 stats/verdicts/finish
+      // 的落库全在真实事件环上跑 → 轮询等总结页挂载，慢 runner 多等几轮
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '选「结束并保存」后应进总结页');
       expect(find.text('训练完成 💪'), findsOneWidget, reason: '收尾后进总结页');
       expect(container.session.hasActive, isFalse);
       expect(container.session.session!.status, 'done');
@@ -1122,15 +1191,15 @@ void main() {
 
     testWidgets('用例B 选「继续训练」：不结束落休息页；加练一组后面板再次出现', (tester) async {
       await pumpSingleSetWorkout(tester);
-      await recordLastSetViaUi(tester);
+      await recordLastSetViaUi(tester, confirmText: '全部组完成，结束训练吗？');
       expect(find.text('全部组完成，结束训练吗？'), findsOneWidget);
 
       await tester.runAsync(() async {
         await tester.tap(find.text('继续训练'));
-        await Future<void>.delayed(const Duration(milliseconds: 1000));
       });
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
+      // 面板退场 + 控制器进加练态休息都在真实异步里：等休息页接管
+      await pumpUntilFound(tester, find.text('跳过休息，直接开练'),
+          reason: '选「继续训练」应落加练态休息页');
       expect(container.session.hasActive, isTrue, reason: '继续训练：会话不清场');
       expect(container.session.phase, WorkoutPhase.resting,
           reason: '按原推进语义落加练态休息页');
@@ -1141,19 +1210,21 @@ void main() {
       // （2026-10-17 加练带休息计时），跳过休息后才进动作面板
       await tester.runAsync(() async {
         await tester.tap(find.textContaining('再来一组'));
-        await Future<void>.delayed(const Duration(milliseconds: 300));
       });
-      await tester.pump(const Duration(milliseconds: 400));
+      await pumpUntilGone(tester, find.textContaining('再来一组'),
+          reason: '入口即消费，按钮不残留');
       expect(container.session.phase, WorkoutPhase.resting,
           reason: '加练也带休息计时：不立即进动作态');
       expect(find.textContaining('再来一组'), findsNothing,
           reason: '入口即消费，按钮不残留');
       await tester.runAsync(() async {
         await tester.tap(find.text('跳过休息，直接开练'));
-        await Future<void>.delayed(const Duration(milliseconds: 300));
       });
-      await tester.pump(const Duration(milliseconds: 400));
-      await recordLastSetViaUi(tester);
+      await pumpUntilGone(tester, find.text('跳过休息，直接开练'),
+          reason: '跳过休息后休息页应退场');
+      await pumpUntilFound(tester, find.byKey(const Key('workoutCompleteSet')),
+          reason: '跳过休息后应落到加练组记录页');
+      await recordLastSetViaUi(tester, confirmText: '全部组完成，结束训练吗？');
       expect(find.text('全部组完成，结束训练吗？'), findsOneWidget,
           reason: '无「本次不再问」状态：每组最后一组都要再问');
     });
@@ -1172,18 +1243,22 @@ void main() {
       // 跳过首位动作（卧推一组不做），直接做末位动作
       await tester.runAsync(() async {
         await tester.tap(find.text('跳过动作'));
-        await Future<void>.delayed(const Duration(milliseconds: 150));
       });
       // 换动作是真实异步（DB 读上下文）→ notify 落帧 → AnimatedSwitcher
-      // 动画走完还要再出一帧才拆掉 outgoing 旧记录页（否则新旧两页同时
-      // 在树上，「完成本组」按钮歧义命中两个）。两轮 settle 夹真实等待。
-      await tester.pumpAndSettle();
-      await tester.runAsync(() async {
-        await Future<void>.delayed(const Duration(milliseconds: 200));
-      });
-      await tester.pumpAndSettle();
+      // 动画走完还要再出帧才拆掉 outgoing 旧记录页（否则新旧两页同时在
+      // 树上，「完成本组」按钮歧义命中两个）。等划船页挂载且旧页退场。
+      await pumpUntilFound(tester, find.text('划船'),
+          reason: '跳过卧推后应落到划船记录页');
+      await pumpUntil(
+          tester,
+          () => find
+                  .byKey(const Key('workoutCompleteSet'))
+                  .evaluate()
+                  .length ==
+              1,
+          reason: '旧记录页退场（「完成本组」只剩一个）');
 
-      await recordLastSetViaUi(tester);
+      await recordLastSetViaUi(tester, confirmText: '还剩 1 组没做，现在结束吗？');
       expect(find.text('还剩 1 组没做，现在结束吗？'), findsOneWidget,
           reason: '『跳着做』收尾前先看清还差谁');
       expect(find.textContaining('已完成 0/1'), findsOneWidget,
@@ -1191,13 +1266,9 @@ void main() {
 
       await tester.runAsync(() async {
         await tester.tap(find.text('结束并保存'));
-        await Future<void>.delayed(const Duration(milliseconds: 100));
       });
-      await tester.pump(const Duration(milliseconds: 400));
-      await tester.runAsync(() async {
-        await Future<void>.delayed(const Duration(milliseconds: 600));
-      });
-      await tester.pumpAndSettle();
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '选「结束并保存」后应进总结页');
       expect(find.text('训练完成 💪'), findsOneWidget);
       expect(container.session.hasActive, isFalse);
       expect(container.session.session!.status, 'done');
