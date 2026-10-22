@@ -17,7 +17,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     // 测试环境没有宿主插件：wakelock_plus 的 pigeon toggle 通道挂 mock 回包。
     // pigeon 对 null 回包一律抛 channel-error，void 方法的合法回包是
     // 编码后的 [null]（StandardMessageCodec：list 头 0x0C + 长度 0x01 + null 0x00）。

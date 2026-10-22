@@ -28,7 +28,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     // 测试环境无宿主插件：手动挂 Android 平台实现（NotifyService.init
     // 经 resolvePlatformSpecificImplementation 强转 Android 子类）。
     AndroidFlutterLocalNotificationsPlugin.registerWith();

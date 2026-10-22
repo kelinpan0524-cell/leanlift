@@ -21,7 +21,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     final binding = TestWidgetsFlutterBinding.instance;
     final pigeonNullReply = ByteData(3)
       ..setUint8(0, 12)

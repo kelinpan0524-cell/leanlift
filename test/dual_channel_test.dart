@@ -26,7 +26,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     // 测试环境无宿主插件注册流程：手动挂 Android 平台实现（容器初始化经
     // resolvePlatformSpecificImplementation 强转 Android 子类，必须挂它），
     // 让 NotifyService.init/_ready 走通（所有调用落在我们 mock 的通道上）

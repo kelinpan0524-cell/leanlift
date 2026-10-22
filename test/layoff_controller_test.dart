@@ -16,7 +16,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     // finish() 会调 WakelockPlus.disable：测试环境没有宿主插件，
     // 按 void 方法回 [null]（与 training_block_controller_test.dart 同口径）。
     final pigeonNullReply = ByteData(3)

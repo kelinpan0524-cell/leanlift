@@ -18,7 +18,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
   });
 
   tearDownAll(() async {

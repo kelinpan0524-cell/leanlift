@@ -155,7 +155,6 @@ void main() {
   group('buildAiData(planRepo:) 集成（ffi 真库）', () {
     setUpAll(() {
       sqfliteFfiInit();
-      databaseFactory = databaseFactoryFfi;
     });
 
     late Db db;

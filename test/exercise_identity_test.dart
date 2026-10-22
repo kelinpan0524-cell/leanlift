@@ -16,7 +16,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
   });
 
   group('exerciseKeyOf 归一', () {

@@ -161,7 +161,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     final pigeonNullReply = ByteData(3)
       ..setUint8(0, 12)
       ..setUint8(1, 1)

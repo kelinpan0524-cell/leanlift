@@ -227,7 +227,6 @@ Future<void> createV14Tables(Database db) async {
 void main() {
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
   });
 
   late String dbPath;

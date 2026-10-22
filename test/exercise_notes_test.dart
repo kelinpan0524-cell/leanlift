@@ -19,7 +19,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     // 训练页会碰到的平台通道：测试环境没有宿主插件，挂空实现。
     final binding = TestWidgetsFlutterBinding.instance;
     final pigeonNullReply = ByteData(3)
