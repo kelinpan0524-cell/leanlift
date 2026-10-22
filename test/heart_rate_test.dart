@@ -116,4 +116,75 @@ void main() {
       expect(svc.freshBpm, isNull);
     });
   });
+
+  group('采样落盘（按天分键，10 秒节流）', () {
+    late SharedPreferences prefs;
+    late HeartRateService svc;
+
+    setUp(() async {
+      SharedPreferences.setMockInitialValues({});
+      prefs = await SharedPreferences.getInstance();
+      svc = HeartRateService(prefs);
+    });
+
+    tearDown(() => svc.dispose());
+
+    test('掉线重连退避 1s/3s/8s，最多 3 次', () {
+      expect(kHrReconnectDelays.map((d) => d.inSeconds), [1, 3, 8]);
+    });
+
+    test('encode/decode 带场次指纹：同场可读、异场拒绝', () {
+      final pts = [const HrPoint(1000, 90), const HrPoint(2000, 120)];
+      final raw = encodeHrSamples(7, pts);
+      expect(decodeHrSamples(raw, sessionId: 7), pts);
+      expect(decodeHrSamples(raw, sessionId: 8), isNull);
+      expect(decodeHrSamples('not-json'), isNull);
+    });
+
+    test('startRecording 读回当天同场采样', () async {
+      final now = DateTime.now();
+      final pts = [
+        HrPoint(now.millisecondsSinceEpoch - 2000, 101),
+        HrPoint(now.millisecondsSinceEpoch - 1000, 103),
+      ];
+      await prefs.setString(
+          hrSamplesKeyForDate(now), encodeHrSamples(7, pts));
+      svc.startRecording(sessionId: 7);
+      expect(svc.samples, pts);
+    });
+
+    test('同一天不同场次的残留不读回，并清理', () async {
+      final now = DateTime.now();
+      await prefs.setString(
+        hrSamplesKeyForDate(now),
+        encodeHrSamples(6, [const HrPoint(1000, 90)]),
+      );
+      svc.startRecording(sessionId: 7);
+      expect(svc.samples, isEmpty);
+      // 不匹配的键由 startRecording 内部异步清掉
+      await Future<void>.delayed(Duration.zero);
+      expect(prefs.getString(hrSamplesKeyForDate(now)), isNull);
+    });
+
+    test('10 秒内最多写一次盘；进程重启后能恢复', () async {
+      svc.startRecording(sessionId: 9);
+      final key = hrSamplesKeyForDate(DateTime.now());
+      final t0 = DateTime.now().millisecondsSinceEpoch;
+      await svc.debugRecordSample(100, atMs: t0);
+      await svc.debugRecordSample(101, atMs: t0 + 5000);
+      final first = decodeHrSamples(prefs.getString(key)!, sessionId: 9)!;
+      expect(first.length, 1, reason: '5 秒内的第二个点还没到写盘窗口');
+
+      await svc.debugRecordSample(102, atMs: t0 + 10001);
+      final second = decodeHrSamples(prefs.getString(key)!, sessionId: 9)!;
+      expect(second.length, 3, reason: '到 10 秒窗口一次追加整段曲线');
+
+      // 模拟进程被杀后重新构造服务：按同一场次读回当天曲线
+      final restarted = HeartRateService(prefs);
+      addTearDown(restarted.dispose);
+      restarted.startRecording(sessionId: 9);
+      expect(restarted.samples.length, 3);
+      expect(restarted.samples.last.bpm, 102);
+    });
+  });
 }

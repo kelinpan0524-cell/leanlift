@@ -70,6 +70,16 @@ class MainActivity : FlutterActivity() {
                                 TrainingForegroundService.stop(this@MainActivity)
                                 result.success(null)
                             }
+                            // 心率记录前台服务（connectedDevice）：连接成功后
+                            // 拉起常驻通知，切后台/锁屏继续收 BLE 采样。
+                            "startHr" -> {
+                                TrainingForegroundService.startHr(this@MainActivity)
+                                result.success(null)
+                            }
+                            "stopHr" -> {
+                                TrainingForegroundService.stopHr(this@MainActivity)
+                                result.success(null)
+                            }
                             // 休息音效四层（条目 10）：ToneGenerator 按层选音调，
                             // 零新增依赖零音频资源；走媒体音量（STREAM_MUSIC），
                             // 与用户自己的音乐混音而不是抢通知音量。

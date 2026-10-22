@@ -176,6 +176,31 @@ class NotifyService {
     }
   }
 
+  /// 心率连接成功后拉起前台服务（connectedDevice 类型），让 App 切后台/
+  /// 锁屏时进程不被系统冻结，BLE 心率能继续采样。通知文案
+  /// 「LeanLift 正在记录心率」；训练中由训练卡接管，原生侧自动忽略。
+  Future<void> startHrForeground() async {
+    try {
+      await _trainingChannel.invokeMethod('startHr');
+    } on PlatformException {
+      // 原生侧异常不拖垮训练
+    } on MissingPluginException {
+      // 测试环境/非 Android 平台
+    }
+  }
+
+  /// 心率断开时由 App 容器调用：训练中由原生保留训练卡、只去掉
+  /// connectedDevice 类型；不在训练中才真正停掉心率前台服务。
+  Future<void> stopHrForeground() async {
+    try {
+      await _trainingChannel.invokeMethod('stopHr');
+    } on PlatformException {
+      // 同上
+    } on MissingPluginException {
+      // 同上
+    }
+  }
+
   // ---------- 休息音效四层（条目 10） ----------
 
   /// 播放一层休息提示音（开始/半程/3-2-1 倒数）。原生用 ToneGenerator
