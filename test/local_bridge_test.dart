@@ -21,7 +21,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     // TestWidgetsFlutterBinding 默认给 HttpClient 打桩（一切请求返回 400）。
     // 本套测试要的恰恰是**真 socket**（真服务器 + 真客户端），故解除打桩，
     // 否则测的就不是"局域网能不能连上"，而是一段假的 400。

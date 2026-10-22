@@ -24,7 +24,6 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 void main() {
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     // 本页开着窗会真起 socket；测试里用真实现才测得到"启动成功"这条路径。
     HttpOverrides.global = null;
   });

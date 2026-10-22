@@ -19,7 +19,6 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     // 测试环境没有宿主插件：wakelock_plus 的 pigeon toggle 通道挂 mock 回包
     //（编码后的 [null]，与 session_controller_test 同一套）。
     final binding = TestWidgetsFlutterBinding.instance;

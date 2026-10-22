@@ -34,7 +34,6 @@ void main() {
 
   setUpAll(() async {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     final binding = TestWidgetsFlutterBinding.instance;
     // 测试环境没有宿主插件：给会碰到的平台通道挂空实现
     binding.defaultBinaryMessenger.setMockMethodCallHandler(
