@@ -708,7 +708,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });
 
-  test('B3b：跳页——可跳到未练满动作并带上下文；练满/越界/原地不可跳；休息中跳页结束休息', () async {
+  test('B3b：跳页——可跳到未练满动作并带上下文；练满/越界/原地不可跳；休息中跳页保留休息', () async {
     final day = await makePlanDay('日');
     final a = await addPlanEx(day, '动作甲', 0, sets: 2, workingSets: 2);
     final b = await addPlanEx(day, '动作乙', 1, sets: 2, workingSets: 2);
@@ -724,21 +724,30 @@ void main() {
     expect(await c.jumpToExercise(99), isFalse);
     expect(c.curExIdx, 0);
 
-    // 动作甲记 1 组后跳到动作乙：上下文跟随（推荐重量/计数/相位）
+    // 动作甲记 1 组后跳到动作乙：上下文跟随（推荐重量/计数），休息继续走
     c.setWeightDraft(55);
     await c.completeSet(weight: 55, reps: 8, rir: 2, kind: SetKind.working);
     expect(c.phase, WorkoutPhase.resting);
     await Future<void>.delayed(const Duration(milliseconds: 100));
+    final restEndBefore = c.restEndAt;
 
     expect(await c.jumpToExercise(1), isTrue, reason: '跳到未练满的动作乙');
-    expect(c.phase, WorkoutPhase.lifting, reason: '休息中跳页先结束休息');
-    expect(alarmCalls.last, isNull, reason: '跳页取消精确闹钟（跳过休息同口径）');
+    expect(c.phase, WorkoutPhase.resting, reason: '休息中跳页保留休息，不掐断倒计时');
+    expect(c.restEndAt, restEndBefore, reason: '休息结束时刻不动');
+    expect(alarmCalls.last, restEndBefore, reason: '精确闹钟保持原时刻，不取消');
     expect(c.curExIdx, 1);
     expect(c.workingSetsDone, 0);
     expect(c.weightDraft, presetStartOf('动作乙'), reason: '无历史组用推荐值');
+    expect(c.extraSetExerciseName, isNull,
+        reason: '已离开的动作不再提供「再来一组」入口');
     // 甲的已记组原样保留
     final map = await db.setsOfSession(c.session!.id!);
     expect((map[c.exercises[0].id] ?? []).length, 1);
+
+    // 用户主动跳过休息：照常取消，落点已是乙
+    c.skipRest();
+    expect(c.phase, WorkoutPhase.lifting);
+    expect(alarmCalls.last, isNull, reason: '主动跳过休息取消精确闹钟');
 
     // 动作乙记满后：不可再跳入（防打乱计数），但可跳到未练满的丙
     await c.completeSet(weight: 40, reps: 8, rir: 2, kind: SetKind.working);
@@ -751,6 +760,116 @@ void main() {
     expect(c.curExIdx, 0);
     expect(c.workingSetsDone, 1);
     expect(c.weightDraft, 55, reason: '有实际组时重量继承最后一组实际值');
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('B10：休息中跳过动作——只换落点，休息倒计时与闹钟都不动', () async {
+    final day = await makePlanDay('日');
+    final a = await addPlanEx(day, '动作甲', 0, sets: 4, workingSets: 4);
+    final b = await addPlanEx(day, '动作乙', 1, sets: 3, workingSets: 3);
+
+    final c = makeController();
+    final alarmCalls = <int?>[];
+    c.onRestAlarmChanged = (endAtMs) async => alarmCalls.add(endAtMs);
+    await c.startFromDay(day: day, planExercises: [a, b]);
+
+    // 练完第三组（计划 4 组，未练满）→ 休息中，落点仍是甲
+    for (var i = 0; i < 3; i++) {
+      await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+    }
+    expect(c.phase, WorkoutPhase.resting);
+    expect(c.curExIdx, 0);
+    expect(c.extraSetExerciseName, '动作甲');
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    final restEndBefore = c.restEndAt;
+
+    await c.skipExercise();
+
+    expect(c.phase, WorkoutPhase.resting, reason: '跳过动作不掐断休息');
+    expect(c.restEndAt, restEndBefore, reason: '剩余时间与结束时刻原样保留');
+    expect(alarmCalls.last, restEndBefore, reason: '精确闹钟不被取消/重排');
+    expect(c.curExIdx, 1, reason: '落点已切到下一个动作');
+    expect(c.workingSetsDone, 0, reason: '新动作从第 1 组开始');
+    expect(c.weightDraft, presetStartOf('动作乙'), reason: '预载新动作的推荐重量');
+    expect(c.extraSetExerciseName, isNull,
+        reason: '被跳过的动作不该再有「再来一组」入口');
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('B11：不在休息但刚记录正式组就切走——按该组规则补起一段休息', () async {
+    final day = await makePlanDay('日');
+    final a = await addPlanEx(day, '动作甲', 0,
+        sets: 3, workingSets: 3, restSec: 120);
+    final b = await addPlanEx(day, '动作乙', 1, sets: 3, workingSets: 3);
+
+    final c = makeController();
+    await c.startFromDay(day: day, planExercises: [a, b]);
+    await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+    expect(c.phase, WorkoutPhase.resting);
+    c.skipRest(); // 用户先跳过休息 → 动作态，但刚记录的组仍在 90 秒窗口内
+    expect(c.phase, WorkoutPhase.lifting);
+
+    await c.skipExercise();
+
+    expect(c.phase, WorkoutPhase.resting, reason: '刚练完就切走：补起休息');
+    expect(c.curExIdx, 1);
+    expect(c.restTotalMs ~/ 1000, 120,
+        reason: '按动作级 restSec=120 与达标档起表（_beginRestFor 同口径）');
+    expect(
+      c.restEndAt - DateTime.now().millisecondsSinceEpoch,
+      closeTo(120000, 2000),
+    );
+    expect(c.extraSetExerciseName, isNull, reason: '补起的休息没有加练入口');
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('B12：只记了热身组就跳过动作——不补休息，直接进下一个动作', () async {
+    final day = await makePlanDay('日');
+    final a = await addPlanEx(day, '动作甲', 0, sets: 3, workingSets: 3);
+    final b = await addPlanEx(day, '动作乙', 1, sets: 3, workingSets: 3);
+
+    final c = makeController();
+    await c.startFromDay(day: day, planExercises: [a, b]);
+    await c.completeSet(weight: 20, reps: 12, rir: 4, kind: SetKind.warmup);
+    expect(c.phase, WorkoutPhase.lifting, reason: '热身组本身不触发休息');
+
+    await c.skipExercise();
+
+    expect(c.phase, WorkoutPhase.lifting, reason: '热身组不补休息');
+    expect(c.restRemainingMs.value, 0);
+    expect(c.curExIdx, 1);
+    expect(c.weightDraft, presetStartOf('动作乙'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('B13：休息中切动作后点「跳过休息」——照常取消并落到新动作', () async {
+    final day = await makePlanDay('日');
+    final a = await addPlanEx(day, '动作甲', 0, sets: 3, workingSets: 3);
+    final b = await addPlanEx(day, '动作乙', 1, sets: 3, workingSets: 3);
+
+    final c = makeController();
+    final alarmCalls = <int?>[];
+    c.onRestAlarmChanged = (endAtMs) async => alarmCalls.add(endAtMs);
+    await c.startFromDay(day: day, planExercises: [a, b]);
+    await c.completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
+    expect(c.phase, WorkoutPhase.resting);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    await c.skipExercise();
+    expect(c.phase, WorkoutPhase.resting);
+    expect(c.curExIdx, 1);
+
+    c.skipRest();
+
+    expect(c.phase, WorkoutPhase.lifting, reason: '主动跳过休息仍然能取消');
+    expect(c.restRemainingMs.value, 0);
+    expect(prefs.getInt('rest.endAt'), 0);
+    expect(alarmCalls.last, isNull, reason: '跳过休息取消精确闹钟');
+    // 落点保持在新动作：下一组记到乙名下
+    await c.completeSet(weight: 40, reps: 8, rir: 2, kind: SetKind.working);
+    final map = await db.setsOfSession(c.session!.id!);
+    expect((map[c.exercises[1].id] ?? []).length, 1,
+        reason: '跳过休息后记录的是切换后的动作');
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });
 

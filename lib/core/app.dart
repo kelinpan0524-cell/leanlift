@@ -9,6 +9,7 @@ import '../presets/exercise_library.dart';
 import '../services/ai_service.dart';
 import '../services/auto_shift.dart';
 import '../services/backup_service.dart';
+import '../services/diagnostic_log.dart';
 import '../services/export_service.dart';
 import '../services/focus_service.dart';
 import '../services/heart_rate_service.dart';
@@ -28,8 +29,10 @@ class AppContainer {
     AiService? aiOverride,
     LocalBridgeService? bridgeOverride,
     AutoBackupService? backupOverride,
+    DiagnosticLog? diagOverride,
   })  : settings = Settings(prefs),
         db = db ?? Db.instance,
+        diag = diagOverride ?? DiagnosticLog(prefs),
         notify = NotifyService() {
     // 本机偏好标记随备份走（2026-10-18）：全量导出/恢复把减载/停练标记
     // 与训练块锚点带上。挂到 Db 实例上，exportAllJson/restoreAll 读写。
@@ -58,6 +61,8 @@ class AppContainer {
           bodyWeightKg: () => settings.bodyWeightKg,
         );
     hr = HeartRateService(prefs);
+    hr.addListener(_onHrChanged);
+    diag.log('app', 'container created');
 
     // 训练开始/结束 → 专注模式动作
     session.onEnterFocus = _onEnterFocus;
@@ -67,6 +72,8 @@ class AppContainer {
     // 训练卡 → 前台服务常驻通知（会话进行中常驻，结束自动停）
     // + 心率直连窗口（2026-10-17）：卡出现 = 会话活跃，自动重连已存
     // 设备并开始采样；卡消失 = 会话关闭，采样落库 + 断连省电。
+    // 2026-10-22：startRecording 带上会话 id，采样按天落盘并能在进程
+    // 被杀后按同一场次读回；连接/断开由 _onHrChanged 联动前台服务。
     int? hrSessionId;
     Future<void>? hrFlush;
     session.onCardChanged = (card) {
@@ -74,7 +81,12 @@ class AppContainer {
         unawaited(notify.showTrainingCard(card));
         if (hrSessionId == null) {
           hrSessionId = session.session?.id;
-          hr.startRecording();
+          hr.startRecording(sessionId: hrSessionId);
+          diag.log(
+            'hr',
+            'recording start session=$hrSessionId '
+                'restored=${hr.samples.length}',
+          );
           unawaited(hr.connectSaved());
         }
       } else {
@@ -83,6 +95,10 @@ class AppContainer {
         if (sid != null) {
           hrSessionId = null;
           hr.stopRecording();
+          diag.log(
+            'hr',
+            'recording stop session=$sid samples=${hr.samples.length}',
+          );
           // quit 会话也落库（历史不展示但数据不丢）；失败静默不阻塞收工。
           // 自动快照会先等这个 Future，避免备份缺最后一截心率。
           hrFlush = hr.flushSamples(this.db, sid);
@@ -121,6 +137,7 @@ class AppContainer {
     // 结果留给首页弹一次提示（pendingAutoShiftDates）。
     autoShift = AutoShiftService(planRepo, prefs);
     session.onSessionClosed = () {
+      diag.log('session', 'closed');
       unawaited(trainReminders.reschedule());
       // 收工/放弃后补排周复盘提醒（训练中曾被抑制）。
       unawaited(rescheduleWeeklyRecap());
@@ -151,6 +168,7 @@ class AppContainer {
   final Settings settings;
   final Db db;
   final NotifyService notify;
+  final DiagnosticLog diag;
   late final FocusService focus;
   late final PlanRepository planRepo;
   late final SessionController session;
@@ -211,6 +229,30 @@ class AppContainer {
   }
 
   bool _inForeground = true;
+  HrLink _lastHrLink = HrLink.idle;
+  String _lastLifecycle = '';
+
+  /// 心率连接状态 → 前台服务（2026-10-22）：
+  /// - 连上：拉起「LeanLift 正在记录心率」常驻通知（训练中由训练卡接管，
+  ///   原生侧按模式保活，不会两张卡打架）；
+  /// - 断开：训练中由原生保留训练卡、只去掉 connectedDevice 类型；
+  ///   不在训练中才真正停服务，不留僵尸通知。
+  /// 用户主动断开的判断在 HeartRateService 内，这里只跟状态。
+  void _onHrChanged() {
+    final link = hr.link;
+    if (link == _lastHrLink) return;
+    final previous = _lastHrLink;
+    _lastHrLink = link;
+    final error = hr.lastError.isEmpty ? '' : ' · ${hr.lastError}';
+    diag.log('hr', 'link ${previous.name} -> ${link.name}$error');
+    if (link == HrLink.connected) {
+      unawaited(notify.startHrForeground());
+    } else if (link == HrLink.idle && previous != HrLink.idle) {
+      // 训练中由原生保留训练卡、只去掉 connectedDevice 类型；
+      // 不在训练中才真正停服务（判断在 Kotlin 侧）。
+      unawaited(notify.stopHrForeground());
+    }
+  }
 
   void _onNotifAction(String action) {
     final s = session;
@@ -228,6 +270,15 @@ class AppContainer {
   }
 
   void onAppLifecycleChanged(AppLifecycleState state) {
+    if (state.name != _lastLifecycle) {
+      _lastLifecycle = state.name;
+      diag.log('lifecycle', state.name);
+    }
+    // 回到前台：如果之前连过心率、现在断了，静默补连一次
+    // （用户主动断开过的不会补——判断在服务内部）。
+    if (state == AppLifecycleState.resumed) {
+      unawaited(hr.handleAppResumed());
+    }
     final fg = state == AppLifecycleState.resumed;
     if (fg == _inForeground) return;
     _inForeground = fg;
@@ -253,6 +304,12 @@ class AppContainer {
     await planRepo.reload();
     await _syncAiSedimentLibrary();
     await session.restore();
+    diag.log(
+      'session',
+      session.hasActive
+          ? 'restored active #${session.session?.id}'
+          : 'no active session',
+    );
     // 错过训练日自动顺延：扫描失败不挡启动（下次打开再补扫）。
     // 有跨天恢复中的会话先不扫：那天的会话还没定性（active 不算练过），
     // 等收工/放弃后下次打开再按最终状态判断。
@@ -344,6 +401,7 @@ class AppContainer {
 
   void dispose() {
     autoBackup.dispose();
+    hr.removeListener(_onHrChanged);
     hr.dispose();
     session.dispose();
     settings.dispose();

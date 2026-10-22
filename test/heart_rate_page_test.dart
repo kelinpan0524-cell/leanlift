@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:baoji_timer/core/app.dart';
 import 'package:baoji_timer/l10n/lang.dart';
+import 'package:baoji_timer/services/heart_rate_service.dart';
 import 'package:baoji_timer/ui/heart_rate_page.dart';
 import 'package:baoji_timer/ui/settings_page.dart';
 import 'package:baoji_timer/ui/theme.dart';
@@ -87,6 +88,27 @@ void main() {
         find.widgetWithText(OutlinedButton, '忘记设备'));
     expect(reconnect.onPressed, isNotNull);
     expect(forget.onPressed, isNotNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('掉线自动重连：状态与主按钮显示「重连中…」，不掉回未连接',
+      (tester) async {
+    await tester.runAsync(() => boot(prefsSeed: {
+          'set.hrId': 'AA:BB:CC:DD:EE:FF',
+          'set.hrName': 'WHOOP 4.0',
+        }));
+    Lang.setResolved(false);
+    container.hr.debugSetReading(link: HrLink.reconnecting);
+    await tester.pumpWidget(host(const HeartRatePage()));
+    await tester.pump();
+
+    expect(find.text('未连接'), findsNothing);
+    expect(find.text('重连中…'), findsNWidgets(2),
+        reason: '状态行 + 主按钮都明确显示正在重连');
+    // 自动重连期间仍可手动「重连已保存设备」立即再试
+    final reconnect = tester.widget<OutlinedButton>(
+        find.widgetWithText(OutlinedButton, '重连已保存设备'));
+    expect(reconnect.onPressed, isNotNull);
     expect(tester.takeException(), isNull);
   });
 

@@ -59,6 +59,15 @@ class SessionController extends ChangeNotifier {
   int restEndAt = 0;
   int restTotalMs = 0;
   double weightDraft = 0;
+  // 手调重量草稿（2026-10-22 Arono 报障）：重量改了没记组就切后台/被杀，
+  // 恢复时曾按处方值重算（深蹲手改 30kg → 回来弹回 60kg）。草稿按动作
+  // 稳定键落 SharedPreferences，会话结束统一清理；内存字段只在界面用。
+  // 落盘节流：300ms 内的连续点按合并，首个改动立即写；尾值由切后台、
+  // 心跳与 dispose 补写（不挂 Timer，少一处生命周期负担）。
+  static const _kDraftWeightPrefix = 'sess.draft.';
+  static const _kDraftFlushGapMs = 300;
+  final Map<String, double> _pendingDraftWeights = {};
+  int _lastDraftFlushMs = 0;
   // 切到自重前的草稿重量：切回来时优先恢复它，避免在减载周把上一场
   // 减载后的 54kg 再乘 0.9（双重减载），也避免丢掉平台期协议给的重量。
   double? _draftBeforeBodyweight;
@@ -450,7 +459,12 @@ class SessionController extends ChangeNotifier {
   /// 再走一遍就是双重打扰。
   bool inForeground = true;
 
-  void setForeground(bool fg) => inForeground = fg;
+  void setForeground(bool fg) {
+    inForeground = fg;
+    // 切后台立即把防抖中的草稿落盘：Android 可能随时回收进程，
+    // 不等计时器（用户改完重量就切 App 是本次报障的原始场景）。
+    if (!fg) _flushDraftWeights();
+  }
 
   /// 训练卡状态变化：App 容器接 NotifyService（active=false 时停前台服务）。
   void Function(TrainingCard card)? onCardChanged;
@@ -570,6 +584,9 @@ class SessionController extends ChangeNotifier {
     if (sid == null || session!.status != 'active') return;
     final since = _phaseSince;
     if (since == null) return;
+    // 顺带补写节流中的手调草稿（心跳 ≤2 秒一次）：用户连点后停手，
+    // 即使不切后台，下一次心跳也会把最终重量落盘。
+    _flushDraftWeights();
     final now = DateTime.now();
     if (!force &&
         _lastPersist != null &&
@@ -588,6 +605,8 @@ class SessionController extends ChangeNotifier {
     _lastPersist = null;
     _idleNotified = false;
     setupNotes.clear();
+    // 会话结束/无活跃会话：本场手调草稿全部作废，避免下一场串味。
+    _clearDraftWeights();
     _prefs.setInt('sess.sid', 0);
     _prefs.setInt('sess.since', 0);
     _prefs.setInt('sess.phase', 0);
@@ -769,14 +788,12 @@ class SessionController extends ChangeNotifier {
         .where((e) => e.kind == SetKind.working)
         .length;
     await _loadContextForCurrent();
-    // 恢复落点重量：本场已落库的处方（组行 target_weight_kg，上面已回灌
-    // 进 _sessionTargetWeight）优先。减载/平台期减载场的 54kg 组会把
-    // 60kg 的平台期回溯打断（plateauFor 把本场组接在历史后面算连续
-    // 同重量），此时重算 _recommendFor 会把建议从 54kg 弹回 60kg——
-    // 处方在第一组前已定档，恢复必须沿用；只有一组未做（无本场处方）
-    // 才用 _recommendFor 兜底重算（减载周快照仍会给出 90% 重量）。
+    // 恢复落点重量（2026-10-22）：手调草稿 > 本场该动作最后一组实际重量 >
+    // 本场处方（组行 target_weight_kg，上面已回灌进 _sessionTargetWeight）>
+    // _recommendFor 兜底重算。草稿让用户手改的重量扛住进程被杀；本场处方
+    // 保证减载/平台期减载场的 54kg 不在恢复时弹回 60kg。
     final cur = currentEx!;
-    weightDraft = _sessionTargetWeight[cur.id!] ?? _recommendFor(cur.name);
+    weightDraft = _weightForExercise(cur);
     _setPhase(WorkoutPhase.lifting, silent: true);
     return true;
   }
@@ -1106,6 +1123,12 @@ class SessionController extends ChangeNotifier {
       kindFilter: SetKind.working,
       excludeSessionIds: _deloadSessionIds,
     );
+    // 上下文切到该动作后，落点重量统一按四档优先级取（见 _weightForExercise）。
+    // 放在这里是为了让恢复/换动作/跳页/加练只有一套口径：草稿优先，
+    // 其次本场最后一组实际重量，最后才回处方/推荐值。
+    // 查询期间用户可能又切了动作：只在仍停在该动作时回填，避免旧请求
+    // 的异步结果覆盖新动作的重量。
+    if (currentEx?.id == ex.id) weightDraft = _weightForExercise(ex);
   }
 
   /// 从计划日开始训练（或继续）。已有进行中的会话时直接返回，防止双击产生孤儿会话。
@@ -1183,6 +1206,8 @@ class SessionController extends ChangeNotifier {
     await _persistSessionBlockState(s);
     setsByEx = {};
     _sessionTargetWeight.clear();
+    // 新会话不继承上一场的残留草稿（正常结束已清，这里兜底脏数据）。
+    _clearDraftWeights();
     curExIdx = 0;
     curSetIdx = 0;
     workingSetsDone = 0;
@@ -1190,7 +1215,7 @@ class SessionController extends ChangeNotifier {
     activeMs = 0;
     _phaseSince = DateTime.now(); // 时长统计从这里起表
     await _loadContextForCurrent();
-    weightDraft = _recommendFor(currentEx!.name);
+    weightDraft = _weightForExercise(currentEx!);
     _setPhase(WorkoutPhase.lifting);
     await _enterFocus();
   }
@@ -1286,6 +1311,10 @@ class SessionController extends ChangeNotifier {
     setsByEx
         .putIfAbsent(ex.id!, () => [])
         .add(SetEntry.fromMap({...entry.toMap(), 'id': id}));
+    // 记完一组，草稿同步成刚记的实际重量（热身组同规则）：下一组默认
+    // 接着这个重量，也保证此时被杀恢复不会弹回改之前的处方值。
+    weightDraft = weight;
+    _writeDraftWeight(ex, weight);
     curSetIdx++;
     var pr = false;
     if (kind == SetKind.working) {
@@ -1364,33 +1393,66 @@ class SessionController extends ChangeNotifier {
     workingSetsDone = list.where((e) => e.kind == SetKind.working).length;
     curSetIdx = list.length;
     await _loadContextForCurrent();
-    weightDraft =
-        list.isNotEmpty ? list.last.weightKg : _recommendFor(target.name);
+    weightDraft = _weightForExercise(target);
   }
 
-  void _advanceToNextExercise() {
-    curExIdx++;
-    curSetIdx = 0;
-    workingSetsDone = 0;
+  /// 「刚练完就切走」的判定窗口：最后一组正式组记录后 90 秒内切换动作，
+  /// 视为还没歇够就换动作，补起一段休息；超过就当用户已自行歇好。
+  static const int _justFinishedRestWindowMs = 90 * 1000;
+
+  /// 该动作是否刚记录完正式组：最近一组不能是热身组（热身不触发休息），
+  /// 且至少有一组正式组、最近一组在 [_justFinishedRestWindowMs] 内。
+  bool _justFinishedWorkingSet(SessionExercise ex) {
+    final list = setsByEx[ex.id] ?? const <SetEntry>[];
+    if (list.isEmpty) return false;
+    final last = list.last;
+    if (last.kind == SetKind.warmup) return false;
+    if (!list.any((e) => e.kind == SetKind.working)) return false;
+    return DateTime.now().millisecondsSinceEpoch - last.doneAt <=
+        _justFinishedRestWindowMs;
+  }
+
+  /// 跳过动作 / 跳页共用的切动作收口（2026-10-22）：
+  /// ① 正在休息：倒计时与精确闹钟一概不动，只换落点（休息页跟着显示
+  ///    新动作与它的推荐重量），到点自然进入新动作的记录页；
+  /// ② 不在休息、但当前动作刚记录过正式组：按刚完成那组的规则补起一段
+  ///    休息（_beginRestFor 同口径），切过去仍从休息页进；
+  /// ③ 其余（没组/只有热身/间隔超过 90 秒）：直接进动作态。
+  /// 落点重量沿用 _applyExerciseSwitch：有实际组接最后一组，否则推荐值。
+  Future<void> _switchExerciseForSkip(int exIdx) async {
+    final left = currentEx;
+    final wasResting = phase == WorkoutPhase.resting;
+    await _applyExerciseSwitch(exIdx);
+    // 已经离开旧动作：撤掉它的「再来一组」入口，否则休息页会把人带回去。
+    extraSetExerciseName = null;
+    if (wasResting) {
+      // 休息中切动作不改相位：剩余时间、暂停态、闹钟都保持原样。
+      notifyCard();
+      notifyListeners();
+      return;
+    }
+    if (left != null && _justFinishedWorkingSet(left)) {
+      _beginRestFor(left);
+    } else {
+      _setPhase(WorkoutPhase.lifting);
+    }
+    notifyCard();
+    notifyListeners();
   }
 
   /// 跳过当前动作（未完成的组不记录）。最后一个动作时跳过 = 结束训练的替代入口。
   Future<void> skipExercise() async {
     if (session == null || exercises.isEmpty) return;
     if (curExIdx < exercises.length - 1) {
-      _advanceToNextExercise();
-      await _loadContextForCurrent();
-      weightDraft = _recommendFor(currentEx!.name);
-      _setPhase(WorkoutPhase.lifting);
-      notifyCard();
+      await _switchExerciseForSkip(curExIdx + 1);
     }
   }
 
   /// 跳页（调研条目 8 页面流的"跳页走收起面板"）：把当前动作切到 [exIdx]，
   /// 该动作剩余的第一个未完成正式组成为当前记录页。已记的组原样保留。
   /// 只允许跳到未练满的动作（练满的加练走休息页「再来一组」，防误触打乱
-  /// 计数）；目标即当前动作时为幂等 no-op。休息中跳页会先结束本段休息
-  /// （取消精确闹钟，与跳过休息同口径）。
+  /// 计数）；目标即当前动作时为幂等 no-op。休息中跳页保留休息计时与闹钟
+  /// （2026-10-22，与跳过动作同一套语义，见 _switchExerciseForSkip）。
   Future<bool> jumpToExercise(int exIdx) async {
     if (session == null || exercises.isEmpty) return false;
     if (exIdx < 0 || exIdx >= exercises.length) return false;
@@ -1400,11 +1462,7 @@ class SessionController extends ChangeNotifier {
         .where((e) => e.kind == SetKind.working)
         .length;
     if (done >= plannedSetsOf(target)) return false; // 已练满：不可跳入
-    if (phase == WorkoutPhase.resting) _finishRest(cancelAlarm: true);
-    await _applyExerciseSwitch(exIdx);
-    _setPhase(WorkoutPhase.lifting);
-    notifyCard();
-    notifyListeners();
+    await _switchExerciseForSkip(exIdx);
     return true;
   }
 
@@ -1433,18 +1491,14 @@ class SessionController extends ChangeNotifier {
     // totalMs 直接用处方秒数：两次读真实时钟相减会随机差出 1ms
     //（119999ms → 119s），恢复/暂停路径不传则维持「按剩余重新起表」语义。
     _startRestAt(end, notifyUi: true, totalMs: sec * 1000);
-    // 预载（下一）动作上下文。重量只在换动作时刷新——同一动作继续时
-    // 保留用户手动调过的重量，不再每组被冲回推荐值。换动作时起点与
-    // _applyExerciseSwitch 同口径：该动作本会话已有实际组就接最后一组
-    // 的实际值（超级组 A2 接 A1），否则推荐值。
+    // 预载（下一）动作上下文。落点重量由 _loadContextForCurrent 统一按
+    // 四档优先级算好（草稿 > 本场最后一组 > 处方 > 推荐值）：同一动作
+    // 继续时草稿就是刚记的组，换动作时用下一个动作自己的草稿/末组，
+    // 互不污染。这里只负责换动作后通知界面刷新休息页文案。
     _loadContextForCurrent().then((_) {
       if (_disposed || !hasActive) return;
       final next = currentEx;
-      if (next == null || next.id != justFinished.id) {
-        final list = setsByEx[next?.id] ?? const <SetEntry>[];
-        weightDraft = list.isNotEmpty
-            ? list.last.weightKg
-            : _recommendFor(next?.name ?? '');
+      if (next != null && next.id != justFinished.id) {
         notifyListeners();
       }
     }).catchError((Object e) {
@@ -1549,8 +1603,8 @@ class SessionController extends ChangeNotifier {
   /// （2026-10-17：加练也带休息计时——剩余时间即备场时间，到点震动/
   /// 提示音提醒开练；±30s/暂停/跳过照常，「跳过休息」= 立即进入这一组）。
   /// 再完成的组按正式组记录（同样参与渐进判定与 PR）。
-  /// 重量继承该动作最后一组的实际重量（手调过的配重不从头再来），
-  /// 没有历史组才回落到推荐值。
+  /// 重量按四档优先级取（草稿 > 本场最后一组 > 处方 > 推荐值）：
+  /// 手调过的配重不从头再来。
   Future<void> startExtraSet() async {
     final name = extraSetExerciseName;
     if (name == null || !hasActive) return;
@@ -1561,7 +1615,7 @@ class SessionController extends ChangeNotifier {
     workingSetsDone = list.where((e) => e.kind == SetKind.working).length;
     curSetIdx = list.length;
     await _loadContextForCurrent();
-    weightDraft = list.isNotEmpty ? list.last.weightKg : _recommendFor(name);
+    weightDraft = _weightForExercise(exercises[idx]);
     // 不结束休息：落点改为该动作的加练组，倒计时自然走完再进动作态。
     // 入口即消费（清空后按钮消失，休息页由「下一组 · 加练」文案报状态）。
     extraSetExerciseName = null;
@@ -1643,8 +1697,8 @@ class SessionController extends ChangeNotifier {
   /// 时间找全局最后一组删除，再切回它所属的动作。超级组轮转下当前
   /// 动作未必是刚记录的动作（A1 后已切到 B），旧的 curExIdx-- 线性
   /// 回退会撤错对象；不配对时全局最后一组就是当前/上一动作的尾组，
-  /// 行为与旧实现一致。回退跨动作时重量 = 该动作剩余最后一组的实际
-  /// 重量（重记这组时手感不从头再来）。
+  /// 行为与旧实现一致。撤销后重量回落到该动作剩余最后一组的实际重量，
+  /// 一组不剩就回推荐值（被撤那组的旧草稿必须一起覆盖，否则重启会复活）。
   Future<void> undoLastSet() async {
     if (session == null || exercises.isEmpty) return;
     SessionExercise? ex;
@@ -1668,14 +1722,15 @@ class SessionController extends ChangeNotifier {
     final wasCurrent = ex.id == currentEx?.id;
     await _db.deleteSet(last.id!);
     list.removeLast();
+    // 草稿回落到剩余最后一组；没有剩余组就回推荐值（覆盖被撤组的草稿）。
+    final fallback =
+        list.isNotEmpty ? list.last.weightKg : _recommendFor(ex.name);
+    _writeDraftWeight(ex, fallback);
     if (!wasCurrent) {
       curExIdx = exercises.indexOf(ex);
       await _loadContextForCurrent();
-      // 回退动作的重量 = 它剩余最后一组的实际重量（重记这组时手感不从头再来）
-      weightDraft = list.isNotEmpty
-          ? list.last.weightKg
-          : _recommendFor(ex.name);
     }
+    weightDraft = fallback;
     curSetIdx = list.length;
     // 计数收敛到 DB 真值：同动作撤销与跨动作回退统一按剩余正式组重算。
     workingSetsDone = list.where((e) => e.kind == SetKind.working).length;
@@ -1692,12 +1747,82 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 草稿重量按动作稳定键存（与历史/备注同一口径）：改名不断草稿，
+  /// 两个动作各存各的；空名不持久化（无从归属）。
+  String _draftWeightKeyOf(SessionExercise ex) =>
+      exerciseIdentityKeyOf(ex.name, ex.exerciseKey);
+
+  /// 本动作已落盘的草稿重量；防抖窗口内还没写盘的值也算数。
+  double? _rememberedDraftWeight(SessionExercise ex) {
+    final key = _draftWeightKeyOf(ex);
+    if (key.isEmpty) return null;
+    return _pendingDraftWeights[key] ??
+        _prefs.getDouble('$_kDraftWeightPrefix$key');
+  }
+
+  /// 本动作该带回的重量，优先级（2026-10-22）：
+  /// 手调草稿 > 本场该动作最后一组实际重量 > 本场处方 > 推荐值。
+  /// 恢复/换动作/跳页/加练共用这一个入口，避免各处口径分裂。
+  double _weightForExercise(SessionExercise ex) {
+    final draft = _rememberedDraftWeight(ex);
+    if (draft != null) return draft;
+    final list = setsByEx[ex.id] ?? const <SetEntry>[];
+    if (list.isNotEmpty) return list.last.weightKg;
+    final target = _sessionTargetWeight[ex.id!];
+    if (target != null) return target;
+    return _recommendFor(ex.name);
+  }
+
+  /// 节流写草稿：300ms 内的连续 +/- 合并，首个改动立即落盘；
+  /// 两档之间的尾值由切后台/心跳/dispose 补写。
+  void _queueDraftWeight(SessionExercise ex, double weight) {
+    final key = _draftWeightKeyOf(ex);
+    if (key.isEmpty) return;
+    _pendingDraftWeights[key] = weight;
+    if (_draftFlushDue()) _flushDraftWeights();
+  }
+
+  /// 立即落盘（记组/撤销/切后台/退出时用）：节流窗口内被杀也不丢。
+  void _writeDraftWeight(SessionExercise ex, double weight) {
+    final key = _draftWeightKeyOf(ex);
+    if (key.isEmpty) return;
+    _pendingDraftWeights[key] = weight;
+    _flushDraftWeights();
+  }
+
+  bool _draftFlushDue() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    return now - _lastDraftFlushMs >= _kDraftFlushGapMs;
+  }
+
+  void _flushDraftWeights() {
+    if (_pendingDraftWeights.isEmpty) return;
+    for (final e in _pendingDraftWeights.entries) {
+      _prefs.setDouble('$_kDraftWeightPrefix${e.key}', e.value);
+    }
+    _pendingDraftWeights.clear();
+    _lastDraftFlushMs = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  void _clearDraftWeights() {
+    _pendingDraftWeights.clear();
+    _lastDraftFlushMs = 0;
+    final keys = _prefs.getKeys()
+        .where((k) => k.startsWith(_kDraftWeightPrefix))
+        .toList();
+    for (final key in keys) {
+      _prefs.remove(key);
+    }
+  }
+
   void setWeightDraft(double w) {
     weightDraft = (w * 100).round() / 100;
     // 允许负值 = 辅助器械配重（引体向上/双杠臂屈伸辅助机，配重越大负荷越轻）；
     // 下限 -300kg 防手抖连点把数值打到无意义区间。
     if (weightDraft < -300) weightDraft = -300;
     if (weightDraft > 1000) weightDraft = 1000;
+    final ex = currentEx;
+    if (hasActive && ex != null) _queueDraftWeight(ex, weightDraft);
     notifyCard();
     notifyListeners();
   }
@@ -1797,7 +1922,7 @@ class SessionController extends ChangeNotifier {
     await _loadContextForCurrent();
     // 替换成的新动作可能已有器械设置备注：重载一次，第一组前立即显示。
     await _loadSetupNotes();
-    weightDraft = _recommendFor(meta.name);
+    weightDraft = _weightForExercise(exercises[curExIdx]);
     notifyCard();
     notifyListeners();
     return true;
@@ -2143,6 +2268,8 @@ class SessionController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    // 退出前把防抖中的手调草稿落盘：下次 restore 还能用用户改过的重量。
+    _flushDraftWeights();
     _tick?.cancel();
     _hbTimer?.cancel();
     restRemainingMs.dispose();

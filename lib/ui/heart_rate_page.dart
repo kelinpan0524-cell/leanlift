@@ -28,7 +28,10 @@ class HrRestChip extends StatelessWidget {
     return ListenableBuilder(
       listenable: hr,
       builder: (context, _) {
-        if (hr.link != HrLink.connected) return const SizedBox.shrink();
+        final reconnecting = hr.link == HrLink.reconnecting;
+        if (hr.link != HrLink.connected && !reconnecting) {
+          return const SizedBox.shrink();
+        }
         final bpm = hr.bpm;
         return GestureDetector(
           key: const Key('hrRestChip'),
@@ -45,7 +48,9 @@ class HrRestChip extends StatelessWidget {
                 const Icon(Icons.favorite, size: 13, color: AppTheme.danger),
                 const SizedBox(width: 5),
                 Text(
-                  bpm == null ? '--' : '$bpm',
+                  reconnecting
+                      ? tx('重连中…', en: 'Reconnecting…')
+                      : (bpm == null ? '--' : '$bpm'),
                   style: const TextStyle(
                     color: AppTheme.textDim,
                     fontSize: 15,
@@ -53,12 +58,14 @@ class HrRestChip extends StatelessWidget {
                     fontFeatures: [FontFeature.tabularFigures()],
                   ),
                 ),
-                const SizedBox(width: 2),
-                Text(
-                  tx('bpm', en: 'bpm'),
-                  style: const TextStyle(
-                      color: AppTheme.textDim, fontSize: 11),
-                ),
+                if (!reconnecting) ...[
+                  const SizedBox(width: 2),
+                  Text(
+                    tx('bpm', en: 'bpm'),
+                    style: const TextStyle(
+                        color: AppTheme.textDim, fontSize: 11),
+                  ),
+                ],
               ],
             ),
           ),
@@ -214,6 +221,7 @@ class _HeartRatePageState extends State<HeartRatePage> {
         HrLink.idle => tx('未连接', en: 'Disconnected'),
         HrLink.scanning => tx('扫描中…', en: 'Scanning…'),
         HrLink.connecting => tx('连接中…', en: 'Connecting…'),
+        HrLink.reconnecting => tx('重连中…', en: 'Reconnecting…'),
         HrLink.connected => tx('已连接', en: 'Connected'),
       };
 
@@ -248,6 +256,7 @@ class _HeartRatePageState extends State<HeartRatePage> {
         builder: (context, _) {
           final connected = hr.link == HrLink.connected;
           final connecting = hr.link == HrLink.connecting;
+          final reconnecting = hr.link == HrLink.reconnecting;
           return ListView(
             padding: const EdgeInsets.all(16),
             children: [
@@ -298,7 +307,8 @@ class _HeartRatePageState extends State<HeartRatePage> {
                                         fontWeight: FontWeight.w700),
                                   ),
                                   if (hr.link == HrLink.scanning ||
-                                      connecting) ...[
+                                      connecting ||
+                                      reconnecting) ...[
                                     const SizedBox(width: 8),
                                     const SizedBox(
                                       width: 12,
@@ -388,12 +398,14 @@ class _HeartRatePageState extends State<HeartRatePage> {
                     ? tx('断开连接', en: 'Disconnect')
                     : connecting
                         ? tx('连接中…', en: 'Connecting…')
-                        : tx('扫描心率设备', en: 'Scan Devices'),
+                        : reconnecting
+                            ? tx('重连中…', en: 'Reconnecting…')
+                            : tx('扫描心率设备', en: 'Scan Devices'),
                 height: 64,
                 fontSize: 18,
                 onPressed: connected
                     ? () => hr.disconnect()
-                    : connecting
+                    : (connecting || reconnecting)
                         ? null
                         : _openScanSheet,
               ),

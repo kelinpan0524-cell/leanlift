@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/app.dart';
 import 'l10n/lang.dart';
+import 'services/diagnostic_log.dart';
 import 'services/update_service.dart';
 import 'ui/onboarding_page.dart';
 import 'ui/shell.dart';
@@ -16,7 +17,12 @@ import 'ui/weekly_recap_page.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
-  final container = AppContainer(prefs: prefs);
+  // 本地滚动诊断日志（200 条，不上传）：先装全局异常钩子再启动容器，
+  // 这样启动阶段/首帧的崩溃也能留下线索供下次打开排查。
+  final diag = DiagnosticLog(prefs);
+  diag.install();
+  diag.log('app', 'launch');
+  final container = AppContainer(prefs: prefs, diagOverride: diag);
   await container.init();
   runApp(BaojiApp(
       container: container,

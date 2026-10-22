@@ -9,6 +9,9 @@
     <!-- 训练态前台服务：锁屏/切后台计时不中断（调研条目 1/3） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <!-- 心率记录前台服务（connectedDevice 类型）：Android 14+ 启动该类型
+         前台服务必须声明权限，且运行时 BLUETOOTH_CONNECT 已授权 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
@@ -64,11 +67,13 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-        <!-- 训练态前台服务：无系统预设类型，用 specialUse（targetSdk 34+ 要求声明类型） -->
+        <!-- 训练态前台服务：无系统预设类型，用 specialUse（targetSdk 34+ 要求声明类型）；
+             心率记录复用同一服务，额外声明 connectedDevice（BLE 连接期间
+             保持进程优先级；Android 14+ 类型与权限必须同时声明） -->
         <service
             android:name=".TrainingForegroundService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|connectedDevice">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="workout_timer_notification" />

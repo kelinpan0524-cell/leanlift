@@ -4,11 +4,23 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../l10n/lang.dart';
 import '../services/heart_rate_service.dart';
 import '../services/settings.dart';
+import 'diagnostic_log_page.dart';
 import 'heart_rate_page.dart';
 import 'local_bridge_page.dart';
 import 'settings_subpages.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
+
+/// 版本读取失败（测试环境没有 package_info 插件/系统异常）返回 null：
+/// 设置页是 ListView，底部的 FutureBuilder 可能还没挂载，裸 Future 的
+/// 异常会变成未处理错误并让布局扫描假失败。
+Future<PackageInfo?> _safePackageInfo() async {
+  try {
+    return await PackageInfo.fromPlatform();
+  } catch (_) {
+    return null;
+  }
+}
 
 /// 设置主页：系统设置式分组行 + 子页面（2026-09-26 Arono 需求：
 /// 旧版把全部配置铺一页要一直滑，改为「一屏看全入口，点进对应子页」——
@@ -52,22 +64,28 @@ class SettingsPage extends StatelessWidget {
           // 训练开始自动重连；value 展示连接态（绿 = 已连接）。
           ListenableBuilder(
             listenable: c.hr,
-            builder: (context, _) => _SettingsRow(
-              icon: Icons.monitor_heart_outlined,
-              iconColor: AppTheme.danger,
-              title: tx('心率设备', en: 'Heart Rate Device'),
-              subtitle: tx('实时心率 · 练后分析',
-                  en: 'Live HR · post-workout analysis'),
-              value: c.hr.savedName ?? tx('未设置', en: 'Not set'),
-              valueColor:
-                  c.hr.link == HrLink.connected ? AppTheme.primary : null,
-              // 设备名长度会随连接结果变化：给值列固定槽位，避免首次连上
-              // WHOOP 后中文名变长、把副标题挤换行导致整行高度跳变
-              valueWidth: 92,
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const HeartRatePage()),
-              ),
-            ),
+            builder: (context, _) {
+              final reconnecting = c.hr.link == HrLink.reconnecting;
+              return _SettingsRow(
+                icon: Icons.monitor_heart_outlined,
+                iconColor: AppTheme.danger,
+                title: tx('心率设备', en: 'Heart Rate Device'),
+                subtitle: tx('实时心率 · 练后分析',
+                    en: 'Live HR · post-workout analysis'),
+                value: reconnecting
+                    ? tx('重连中…', en: 'Reconnecting…')
+                    : (c.hr.savedName ?? tx('未设置', en: 'Not set')),
+                valueColor: c.hr.link == HrLink.connected
+                    ? AppTheme.primary
+                    : (reconnecting ? AppTheme.warn : null),
+                // 设备名长度会随连接结果变化：给值列固定槽位，避免首次连上
+                // WHOOP 后中文名变长、把副标题挤换行导致整行高度跳变
+                valueWidth: 92,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const HeartRatePage()),
+                ),
+              );
+            },
           ),
         ]),
         const SizedBox(height: 20),
@@ -134,11 +152,12 @@ class SettingsPage extends StatelessWidget {
               icon: Icons.system_update_outlined,
               title: tx('应用更新', en: 'App Update'),
               subtitle: tx('当前版本', en: 'Version'),
-              subtitleWidget: FutureBuilder<PackageInfo>(
-                future: PackageInfo.fromPlatform(),
+              subtitleWidget: FutureBuilder<PackageInfo?>(
+                future: _safePackageInfo(),
                 builder: (context, snap) => Text(
-                  snap.hasData
-                      ? tx('当前 v${snap.data!.version}', en: 'Current v${snap.data!.version}')
+                  snap.data != null
+                      ? tx('当前 v${snap.data!.version}',
+                          en: 'Current v${snap.data!.version}')
                       : tx('当前版本', en: 'Version'),
                   style: const TextStyle(color: AppTheme.textDim, fontSize: 12),
                 ),
@@ -163,14 +182,25 @@ class SettingsPage extends StatelessWidget {
               MaterialPageRoute(builder: (_) => const DataBackupPage()),
             ),
           ),
+          _SettingsRow(
+            icon: Icons.bug_report_outlined,
+            title: tx('诊断日志', en: 'Diagnostic Log'),
+            subtitle: tx('最近的错误与前后台事件（仅本机）',
+                en: 'Recent errors & lifecycle events (local only)'),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => DiagnosticLogPage(log: c.diag),
+              ),
+            ),
+          ),
         ]),
         const SizedBox(height: 28),
-        FutureBuilder<PackageInfo>(
-          future: PackageInfo.fromPlatform(),
+        FutureBuilder<PackageInfo?>(
+          future: _safePackageInfo(),
           builder: (context, snap) => Column(
             children: [
               Text(
-                snap.hasData
+                snap.data != null
                     ? tx('薄肌训练计时器 v${snap.data!.version}',
                         en: 'Baoji Workout Timer v${snap.data!.version}')
                     : tx('薄肌训练计时器', en: 'Baoji Workout Timer'),
