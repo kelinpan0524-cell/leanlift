@@ -165,6 +165,33 @@ void main() {
         headers: {'content-type': 'application/json; charset=utf-8'},
       );
 
+  /// 条件轮询：每 [step] 推一帧假时钟，再让真实事件环跑 [step]，直到
+  /// [condition] 成立。固定 sleep 在慢 CI 上不够长、在快机器上白等；
+  /// 轮询让等待时长由实际完成时刻决定（沿用 abf810a 的先例）。
+  Future<void> pumpUntil(
+    WidgetTester tester,
+    bool Function() condition, {
+    required String reason,
+    Duration timeout = const Duration(seconds: 10),
+    Duration step = const Duration(milliseconds: 100),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (true) {
+      await tester.pump(step);
+      if (condition()) return;
+      if (!DateTime.now().isBefore(deadline)) {
+        fail('$reason：等了 ${timeout.inSeconds} 秒仍未成立');
+      }
+      await tester.runAsync(() => Future<void>.delayed(step));
+    }
+  }
+
+  Future<void> pumpUntilFound(WidgetTester tester, Finder finder,
+          {String? reason,
+          Duration timeout = const Duration(seconds: 10)}) =>
+      pumpUntil(tester, () => finder.evaluate().isNotEmpty,
+          reason: reason ?? '等 widget 出现', timeout: timeout);
+
   Future<void> pumpPage(WidgetTester tester) async {
     await tester.runAsync(() async {
       await tester.pumpWidget(
@@ -177,10 +204,10 @@ void main() {
         ),
       );
       await tester.pump();
-      // 真实 DB 查询走异步，给页面加载留出时间
-      await Future<void>.delayed(const Duration(milliseconds: 300));
     });
-    await tester.pump();
+    // 真实 DB 查询走异步：等本地周报主体挂载，不再赌固定 300ms
+    await pumpUntilFound(tester, find.text(tx('本周完成度', en: 'This Week')),
+        reason: '本周完成度加载完成');
   }
 
   /// 带路由观察者的宿主：验证 didPopNext（返回页面补算）必须注册
@@ -564,9 +591,8 @@ void main() {
     });
 
     await pumpPage(tester);
-    await tester.runAsync(() => Future<void>.delayed(
-        const Duration(milliseconds: 150)));
-    await tester.pump();
+    await pumpUntilFound(tester, find.byKey(const ValueKey('recap-ai-text')),
+        reason: 'AI 周报生成完成');
 
     expect(find.text('AI 周报'), findsOneWidget);
     expect(find.byKey(const ValueKey('recap-ai-text')), findsOneWidget);
@@ -593,9 +619,6 @@ void main() {
     });
 
     await pumpPage(tester);
-    await tester.runAsync(() => Future<void>.delayed(
-        const Duration(milliseconds: 150)));
-    await tester.pump();
 
     expect(find.text('AI 周报'), findsNothing);
     expect(calls, 0, reason: '默认关；用户没打开就不允许联网');
@@ -614,9 +637,6 @@ void main() {
     });
 
     await pumpPage(tester);
-    await tester.runAsync(() => Future<void>.delayed(
-        const Duration(milliseconds: 150)));
-    await tester.pump();
 
     expect(find.text('AI 周报'), findsNothing);
     expect(tester.takeException(), isNull);
@@ -646,20 +666,15 @@ void main() {
     });
 
     await pumpPage(tester);
-    await tester.runAsync(() => Future<void>.delayed(
-        const Duration(milliseconds: 150)));
-    await tester.pump();
     expect(find.byType(WeeklyRecapPage), findsOneWidget);
     expect(calls, 0, reason: 'App 非前台时页面打开不得发起 AI 请求');
 
     binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     expect(WidgetsBinding.instance.lifecycleState, AppLifecycleState.resumed);
     // 后台/非前台期间页面首帧的加载与 AI 请求要等回前台才跑：
-    // 多给一点真实时间让 DB 查询 + MockClient 落地。
-    await tester.runAsync(() => Future<void>.delayed(
-        const Duration(milliseconds: 600)));
-    await tester.pump();
-    await tester.pump();
+    // 轮询等 AI 结果落地，慢 runner 只是多转几圈。
+    await pumpUntilFound(tester, find.byKey(const ValueKey('recap-ai-text')),
+        reason: '回到前台后补生成 AI 周报');
 
     expect(calls, 1, reason: '回到前台且本页仍是当前路由，补一次');
     expect(find.byKey(const ValueKey('recap-ai-text')), findsOneWidget);
@@ -689,9 +704,8 @@ void main() {
     });
 
     await pumpPage(tester);
-    await tester.runAsync(() => Future<void>.delayed(
-        const Duration(milliseconds: 150)));
-    await tester.pump();
+    await pumpUntilFound(tester, find.byKey(const ValueKey('recap-ai-fallback')),
+        reason: 'AI 失败回退到本地版');
 
     expect(find.byKey(const ValueKey('recap-ai-fallback')), findsOneWidget);
     expect(find.textContaining('已显示下面的本地版'), findsOneWidget);
@@ -701,9 +715,8 @@ void main() {
 
     await tester.tap(find.text('重试'));
     await tester.pump();
-    await tester.runAsync(() => Future<void>.delayed(
-        const Duration(milliseconds: 150)));
-    await tester.pump();
+    await pumpUntilFound(tester, find.byKey(const ValueKey('recap-ai-text')),
+        reason: '重试成功出 AI 周报');
 
     expect(calls, 2);
     expect(find.byKey(const ValueKey('recap-ai-text')), findsOneWidget);
@@ -735,9 +748,8 @@ void main() {
     });
 
     await pumpPage(tester);
-    await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 150)));
-    await tester.pump();
+    await pumpUntilFound(tester, find.byKey(const ValueKey('recap-ai-pending')),
+        reason: '非前台停在待生成态');
     expect(calls, 0, reason: '非前台不自动请求');
     expect(find.byKey(const ValueKey('recap-ai-pending')), findsOneWidget,
         reason: '没请求过且没在加载 → 明确的待生成态');
@@ -749,9 +761,8 @@ void main() {
     binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.tap(find.text('生成 AI 周报'));
     await tester.pump();
-    await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 300)));
-    await tester.pump();
+    await pumpUntilFound(tester, find.byKey(const ValueKey('recap-ai-text')),
+        reason: '手动生成 AI 周报完成');
 
     expect(calls, 1);
     expect(find.byKey(const ValueKey('recap-ai-text')), findsOneWidget);
@@ -789,9 +800,15 @@ void main() {
           builder: (_) =>
               const Scaffold(body: Center(child: Text('盖住的页')))));
       await tester.pump(); // cover 进场
-      // _load 的真实 DB 查询在 runAsync 窗口内推进，于覆盖期间完成
-      await Future<void>.delayed(const Duration(milliseconds: 600));
     });
+    // 覆盖期间 _load 仍在跑：等主加载圈消失（页面可能是 offstage 的）
+    await pumpUntil(
+        tester,
+        () => find
+            .byType(CircularProgressIndicator, skipOffstage: false)
+            .evaluate()
+            .isEmpty,
+        reason: '覆盖期间本地周报加载完成');
     await tester.pump();
 
     expect(find.text('盖住的页'), findsOneWidget, reason: '覆盖页确实在顶层');
@@ -801,11 +818,8 @@ void main() {
     // 退场动画（AI 转圈开始后 pumpAndSettle 同样会超时）。
     nav.pop();
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
-    await tester.runAsync(() => Future<void>.delayed(
-        const Duration(milliseconds: 300)));
-    await tester.pump();
-    await tester.pump();
+    await pumpUntilFound(tester, find.byKey(const ValueKey('recap-ai-text')),
+        reason: 'didPopNext 返回页面后补生成完成');
 
     expect(calls, 1, reason: 'didPopNext 返回页面时补发一次生成');
     expect(find.byKey(const ValueKey('recap-ai-text')), findsOneWidget);
@@ -829,20 +843,22 @@ void main() {
     });
 
     await pumpPage(tester);
-    await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 150)));
-    await tester.pump();
+    await pumpUntilFound(tester, find.byKey(const ValueKey('recap-ai-text')),
+        reason: '首次生成 AI 周报完成');
     expect(calls, 1);
 
     // 下拉刷新本地数据：AI 已生成过（_aiRequested=true）→ 门控拦住
     await tester.runAsync(() async {
       await tester.drag(find.byType(ListView).first, const Offset(0, 200));
-      await Future<void>.delayed(const Duration(milliseconds: 400));
     });
     await tester.pump();
-    await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 300)));
-    await tester.pump();
+    await pumpUntil(
+        tester,
+        () => find
+            .byType(RefreshProgressIndicator, skipOffstage: false)
+            .evaluate()
+            .isEmpty,
+        reason: '下拉刷新完成');
 
     expect(calls, 1, reason: '刷新本地数据不为 AI 重复联网');
     expect(find.byKey(const ValueKey('recap-ai-text')), findsOneWidget);

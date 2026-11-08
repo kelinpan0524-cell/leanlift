@@ -1,3 +1,4 @@
+// TODO(2026-11-08): 本文件仍有固定 Future.delayed 等待（登记在 tool/check_test_sleeps.dart 白名单），待逐个改条件轮询。
 // P2-C 器械设置记忆：exercise_notes 表 DAO（按动作稳定键读写 setup_note）
 // 与展示条件（空备注不占空间；训练起始页/第一组前显示，记过组后收起）。
 import 'package:flutter/material.dart';

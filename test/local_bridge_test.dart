@@ -1,3 +1,4 @@
+// TODO(2026-11-08): 本文件仍有固定 Future.delayed 等待（登记在 tool/check_test_sleeps.dart 白名单），待逐个改条件轮询。
 // 局域网只读数据桥（方案 B，2026-10-17 Arono）的端到端测试。
 //
 // 这里跑的是**真 socket**：起真 HttpServer、用 HttpClient 发真请求，

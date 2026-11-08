@@ -1,3 +1,4 @@
+// TODO(2026-11-08): 本文件仍有固定 Future.delayed 等待（登记在 tool/check_test_sleeps.dart 白名单），待逐个改条件轮询。
 // P0-A 自动备份回归：全量快照、轮转口径（7 日内 + 4 周内）、
 // 启动 24 小时补档、以及「从最近自动备份恢复」的预览计数与恢复结果。
 import 'dart:async';
