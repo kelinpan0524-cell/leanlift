@@ -513,6 +513,41 @@ void main() {
       expect(v.action, 'hold');
       expect(v.reason, isNot(contains('余力未记录')));
     });
+
+    test('次数全达标、只有末组余力不足 → holdKind=rir_low，不是 target_miss', () {
+      // 三组都到 8 次目标，末组 RIR 0 < rirTarget(2)-1：这次是「余力低」，
+      // 不是「次数没做到」。旧实现落到 target_miss，平台期协议会据此
+      // 改写成减载/加重建议。
+      final v = evaluateChain(
+        rule: rule,
+        state: const ChainState(weightKg: 60, targetReps: 8),
+        workingSets: [
+          _set(60, 8, at: 1000),
+          _set(60, 8, at: 2000),
+          _set(60, 8, rir: 0, at: 3000),
+        ],
+      );
+      expect(v.action, 'hold');
+      expect(v.holdKind, 'rir_low');
+      expect(v.holdKind, isNot('target_miss'));
+      expect(v.reason, contains('余力'));
+      expect(v.reason, isNot(contains('未达 8 次目标')));
+    });
+
+    test('次数真的没到目标 → 仍是 target_miss（对照，不放松）', () {
+      final v = evaluateChain(
+        rule: rule,
+        state: const ChainState(weightKg: 60, targetReps: 8),
+        workingSets: [
+          _set(60, 7, at: 1000),
+          _set(60, 7, at: 2000),
+          _set(60, 7, at: 3000),
+        ],
+      );
+      expect(v.action, 'hold');
+      expect(v.holdKind, 'target_miss');
+      expect(v.reason, contains('未达 8 次目标'));
+    });
   });
 
   group('JSON 序列化与老数据兼容', () {

@@ -373,6 +373,19 @@ ChainVerdict evaluateChain({
           en: 'Some sets missed the ${enRepPhrase(rule.repsMin, logging)} floor → reduce ~5% ($cut kg) and re-groove the form'),
     );
   }
+  // 次数全达标、只有末组余力不足：单独一类 holdKind（rir_low）。
+  // 不能与真正的「次数没做到」（target_miss）混用——平台期协议只认
+  // target_miss，混用会把「余力低」改写成减载 10% 或加重建议。
+  if (allMetTarget) {
+    return ChainVerdict(
+      'hold',
+      state,
+      tx(
+          '${near.length} 组都达到 ${state.targetReps} $unit目标，但末组余力只剩 ${lastSet.rir}（低于 ${rule.rirTarget - 1}）→ 重量与$unit目标保持，先把余力养回来',
+          en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target, but last-set RIR was ${lastSet.rir} (below ${rule.rirTarget - 1}) — hold weight and target, rebuild your reserve'),
+      holdKind: 'rir_low',
+    );
+  }
   return ChainVerdict(
       'hold',
       state,
