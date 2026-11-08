@@ -328,6 +328,32 @@ void main() {
       expect(f.setRefs().any((r) => r.extra), isFalse);
     });
   });
+
+  group('脏数据：负数计划组数不能让 clamp 抛错（2026-11-08 复核）', () {
+    final broken = _ex(21, '脏动作', 0, workingSets: -1);
+
+    test('plannedSetsOf 把负数钳到 0', () {
+      expect(plannedSetsOf(broken), 0);
+    });
+
+    test('整条页面流仍可计算，不抛 ArgumentError', () {
+      final flow = WorkoutFlow(exercises: [broken], setsByEx: {21: []});
+      // 旧实现 clamp(0, -1) 就在这里抛 ArgumentError（上界 < 下界）
+      final page = flow.currentPage(resting: false, curExIdx: 0);
+      expect(page.kind, FlowPageKind.record);
+      expect(flow.totalPlannedSets, 0);
+      expect(flow.donePlannedSets, 0);
+      expect(flow.ratioCompleted, 0);
+      // 0 计划组的脏动作会呈现为一个「加练」页，关键是算得出来、不抛
+      expect(() => flow.setRefs(), returnsNormally);
+    });
+
+    test('ProgressionRule.fromJson 把 working_sets=-1 钳到 0', () {
+      final r = ProgressionRule.fromJson(
+          {'reps_min': 5, 'reps_max': 8, 'working_sets': -1});
+      expect(r.workingSets, 0);
+    });
+  });
 }
 
 /// 测试辅助：按字段替换构造新页（FlowPage 本体是 const 不可变）。
