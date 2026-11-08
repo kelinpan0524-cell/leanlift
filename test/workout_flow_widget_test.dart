@@ -1323,6 +1323,53 @@ void main() {
     });
   });
 
+  // ---------- 手动收尾时长（2026-11-08 复核）----------
+  // 旧实现先读 durationMin 再 finish()：active 会话 ended_at 为空 → 恒 0，
+  // 总结页只显示「训练完成」，训练/休息分桶与飞书摘要也写 0 分钟。
+  group('手动「结束并保存」时长', () {
+    testWidgets('总结页显示真实总时长与训练/休息分桶', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await startLifting(tester);
+      await pumpWorkout(tester);
+
+      // 先记一组（带上休息时长），跳过休息回到记录页：此刻顶栏才在树上，
+      // 且训练/休息两个桶都有值
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      });
+      await pumpUntilFound(tester, find.text('跳过休息，直接开练'));
+      await tester.tap(find.text('跳过休息，直接开练'));
+      await pumpUntilGone(tester, find.text('跳过休息，直接开练'),
+          reason: '跳过休息应回到记录页');
+      await pumpUntilFound(tester, find.byKey(const Key('workoutCompleteSet')));
+
+      // 长按顶栏：识别器 500ms + 按住 2000ms = 2500ms 起
+      final gesture = await tester
+          .startGesture(tester.getCenter(find.byType(HoldToEndButton)));
+      await tester.pump(const Duration(milliseconds: 2700));
+      await gesture.up();
+      await tester.pump();
+      await pumpUntilFound(tester, find.text('结束并保存'),
+          reason: '长按 2 秒应弹「继续/放弃/结束并保存」三选');
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('结束并保存'));
+      });
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '手动结束应进总结页');
+
+      expect(find.textContaining('总时长'), findsOneWidget,
+          reason: '时长必须 finish 之后读，不能恒 0');
+      expect(find.text('训练完成'), findsNothing,
+          reason: '「训练完成」是 durationMin=0 的占位文案');
+      // 长按手势会留一个 3-5s 的 UI 自动收起定时器，跑掉再收工，
+      // 免得 framework 报「Timer is still pending」。
+      await tester.pump(const Duration(seconds: 6));
+    });
+  });
+
   // ---------- 忘停表守护：必须在自动收尾落库之前 ----------
   // 旧实现把守护放在页面收尾（_finishFlow），而自动收尾在 completeSet 内部
   // 已经 finish() 落库 done：选「不留记录」quit 空转、「截断」只改内存。
