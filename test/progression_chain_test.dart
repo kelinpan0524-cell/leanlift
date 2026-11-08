@@ -293,6 +293,35 @@ void main() {
       expect(old.deltaKg, 2.5);
     });
 
+    test('0kg 有组低于下限 → hold（没有重量可减，不给 -0.0kg）', () {
+      // 目标 6 次，做到 3 次（< reps_min 5）：旧实现返回 decrease，
+      // 建议「减重 5%（-0.0 kg）」——自重动作没有重量轴，这是空建议。
+      final v = evaluateChain(
+        rule: rule,
+        state: const ChainState(weightKg: 0, targetReps: 6),
+        workingSets: _session(0, 3),
+      );
+      expect(v.action, 'hold');
+      expect(v.next.weightKg, 0);
+      expect(v.next.targetReps, 6);
+      expect(v.reason, isNot(contains('-0.0')));
+      expect(v.reason, isNot(contains('减重')));
+    });
+
+    test('0kg 计时动作未达下限 → hold，文案用秒且不提减重', () {
+      // 计时自重（平板支撑）：下限 30 秒只做了 20 秒，旧文案混用「减重」与「秒」。
+      final v = evaluateChain(
+        rule: const ProgressionRule(repsMin: 30, repsMax: 60),
+        state: const ChainState(weightKg: 0, targetReps: 45),
+        workingSets: _session(0, 20),
+        logging: LoggingMode.time,
+      );
+      expect(v.action, 'hold');
+      expect(v.next.weightKg, 0);
+      expect(v.reason, contains('秒'));
+      expect(v.reason, isNot(contains('减重')));
+    });
+
     test('0kg 到达链尽头 → 文案用「自重档位」而非「重量 0kg 触顶」', () {
       const rule2 = ProgressionRule(
         repsMin: 5,
