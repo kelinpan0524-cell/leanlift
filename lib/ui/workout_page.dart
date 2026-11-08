@@ -86,6 +86,9 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
       final s = app(context).session;
       _sc = s;
       s.confirmAutoFinish = _confirmAutoFinish;
+      // 忘停表守护挂在 finish 落库之前：自动收尾也会先问，
+      // 「不留记录 / 截断」不会因为会话已 done 而静默失效。
+      s.preFinishGuard = () => _forgottenStopGuard(s);
     });
     _distractTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _checkDistractingApp();
@@ -138,6 +141,7 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     _sc?.confirmAutoFinish = null; // 成对解绑：页面卸载后不再拦截自动结束
+    _sc?.preFinishGuard = null; // 成对解绑：守护面板依赖本页 context
     _distractTimer?.cancel();
     _markTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -204,9 +208,8 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
     final c = app(context);
     final s = c.session;
     if (s.session == null) return;
-    // 忘停表守护（2026-09-26）：可疑长会话保存前先问一句再落库；
-    // 只在用户主动收尾 / 最后一组自动结束的时点出现，不碰训练中禁弹窗。
-    if (!await _forgottenStopGuard(s)) return;
+    // 忘停表守护已挪进 SessionController.finish() 的 preFinishGuard：
+    // 自动收尾（completeSet 内先 finish）也会在落库前问到。
     _finishing = true;
     try {
       final stats = await s.stats();
@@ -216,6 +219,8 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
       final prNames = s.prHit.toList();
       final durationMin = s.session?.durationMin ?? 0;
       await s.finish();
+      // 守护里选「不留记录」→ quit 后 session 为空：不建总结页（页面已退出）
+      if (s.session == null) return;
       c.notify.cancelRest();
       // 净时长（训练/休息分桶）在 finish 落库后回读
       final restMin = ((s.session?.restMs ?? 0) / 60000).ceil();

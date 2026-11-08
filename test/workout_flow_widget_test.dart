@@ -1323,6 +1323,117 @@ void main() {
     });
   });
 
+  // ---------- 忘停表守护：必须在自动收尾落库之前 ----------
+  // 旧实现把守护放在页面收尾（_finishFlow），而自动收尾在 completeSet 内部
+  // 已经 finish() 落库 done：选「不留记录」quit 空转、「截断」只改内存。
+  group('忘停表守护（自动收尾前生效）', () {
+    /// 单动作 1 组会话 + 把 started_at 拨到 5 小时前（组均已超 15 分钟）。
+    Future<void> pumpForgottenWorkout(WidgetTester tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('忘停日');
+        final a = await addEx(day, '卧推', 0, workingSets: 1);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+        final startedAt =
+            DateTime.now().millisecondsSinceEpoch - 5 * 3600 * 1000;
+        container.session.session = Session.fromMap({
+          ...container.session.session!.toMap(),
+          'started_at': startedAt,
+        });
+        await container.db.updateSession(
+            container.session.session!.id!, {'started_at': startedAt});
+      });
+      await pumpWorkout(tester);
+    }
+
+    /// 记满唯一一组 → 「结束并保存」→ 等忘停表守护面板挂起。
+    Future<void> reachForgottenGuard(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+      });
+      await pumpUntilFound(tester, find.text('全部组完成，结束训练吗？'),
+          reason: '最后一组完成先弹收尾确认');
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('结束并保存'));
+      });
+      await pumpUntilFound(tester, find.textContaining('是不是忘停表了'),
+          reason: '结束并保存后、落库前应弹忘停表守护');
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('照原样保存：结束落 done，时长保留整场', (tester) async {
+      await pumpForgottenWorkout(tester);
+      await reachForgottenGuard(tester);
+      expect(container.session.hasActive, isTrue,
+          reason: '守护面板挂起时会话仍未落库（旧实现此时已 done）');
+
+      await tester.runAsync(() async {
+        await tester.tap(find.text('照原样保存'));
+      });
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '照原样保存后进总结页');
+
+      final saved = await tester
+          .runAsync(() => container.db.sessionById(container.session.session!.id!));
+      expect(saved!.status, 'done');
+      expect(saved.endedAt! - saved.startedAt, greaterThan(4 * 3600 * 1000),
+          reason: '照原样 = 不截断，整场时长保留');
+    });
+
+    testWidgets('截到最后一条记录：done 行的 ended_at 真的被截断', (tester) async {
+      await pumpForgottenWorkout(tester);
+      await reachForgottenGuard(tester);
+
+      // 造出「最后一条记录在 2 小时前」：真机上这就是挂机场景。
+      // 守护面板挂在 finish 落库之前，此时改内存里的 done_at 才有意义；
+      // 旧实现已经先 done 落库，改内存改不动历史。
+      final lastDoneAt =
+          DateTime.now().millisecondsSinceEpoch - 2 * 3600 * 1000;
+      await tester.runAsync(() async {
+        final s = container.session;
+        final exId = s.exercises.first.id!;
+        s.setsByEx[exId] = [
+          for (final e in s.setsByEx[exId]!)
+            SetEntry.fromMap({...e.toMap(), 'done_at': lastDoneAt}),
+        ];
+      });
+
+      await tester.runAsync(() async {
+        await tester.tap(find.text('截到最后一条记录保存（推荐）'));
+      });
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '截断保存后进总结页');
+
+      final saved = await tester
+          .runAsync(() => container.db.sessionById(container.session.session!.id!));
+      expect(saved!.status, 'done');
+      expect(saved.endedAt, lastDoneAt + 2 * 60000,
+          reason: '截断必须落库（旧实现只改内存，库里仍是挂机时长）');
+    });
+
+    testWidgets('不留记录：会话不落 done（quit），历史不可见', (tester) async {
+      await pumpForgottenWorkout(tester);
+      final id = container.session.session!.id!;
+      await reachForgottenGuard(tester);
+
+      await tester.runAsync(() async {
+        await tester.tap(find.text('不留记录'));
+      });
+      await pumpUntilGone(tester, find.textContaining('是不是忘停表了'),
+          reason: '选不留记录后面板收起、退出训练页');
+
+      expect(container.session.session, isNull, reason: 'quit 后无活动会话');
+      final history = await tester.runAsync(() =>
+          container.db.sessionsBetween('2000-01-01', '2999-12-31'));
+      expect(history, isEmpty, reason: '不留记录不能进历史（历史只认 done）');
+      final row =
+          await tester.runAsync(() => container.db.sessionById(id));
+      expect(row!.status, 'quit', reason: '旧实现已落 done，quit 空转');
+    });
+  });
+
   group('记录形态（v14）：计时页 / 自重页', () {
     testWidgets('计时动作：大号工作计时 + 完成/跳过，无重量步进无次数点选',
         (tester) async {

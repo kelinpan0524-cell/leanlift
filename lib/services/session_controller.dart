@@ -1349,6 +1349,9 @@ class SessionController extends ChangeNotifier {
       // 仍 active（训练卡/常亮/心跳照常）。
       final confirm = confirmAutoFinish;
       if (confirm != null && !await confirm()) {
+        // 确认回调里可能已经 quit（忘停表守护选「不留记录」）：
+        // 会话不再 active 时不能继续起休息页。
+        if (!hasActive) return pr;
         extraSetExerciseName = ex.name;
         _beginRestFor(ex);
         return pr;
@@ -1972,6 +1975,12 @@ class SessionController extends ChangeNotifier {
   Future<void> finish() async {
     if (session == null) return;
     if (session!.status != 'active') return; // 幂等：自动结束+手动结束不重复
+    // 忘停表守护（2026-11-08 复核）：必须跑在落库之前——自动收尾时
+    // completeSet 会先调用本方法再通知页面，若把守护留在页面收尾里，
+    // 「不留记录 / 截断」面对已 done 的会话会静默失效。
+    // 返回 false = 用户选了「不留记录」，回调内部已 quit，这里不再落库。
+    final guard = preFinishGuard;
+    if (guard != null && !await guard()) return;
     _finishRest();
     onRestAlarmChanged?.call(null); // 会话结束：精确提醒一并取消
     await _db.updateSession(session!.id!, {
@@ -2191,6 +2200,10 @@ class SessionController extends ChangeNotifier {
   /// 会话关闭（结束/放弃）后回调：App 容器接练前提醒重排——
   /// 今天已练完，当天未到的练前提醒随即取消。
   void Function()? onSessionClosed;
+
+  /// finish() 落库前的最后一道确认（忘停表守护，由训练页接线）。
+  /// 返回 false = 用户选了「不留记录」，回调内部已 quit，本场不落 done。
+  Future<bool> Function()? preFinishGuard;
 
   /// 训练自评（impression）写入后回调：App 容器据此再补一份自动快照
   /// （收工时先写的那份还不包含这条自评）。
