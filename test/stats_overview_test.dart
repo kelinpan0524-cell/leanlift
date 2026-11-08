@@ -119,6 +119,45 @@ void main() {
     }
   }
 
+  testWidgets('自重动作（0kg）不让概览崩：页面照常渲染', (tester) async {
+    // 引体向上等自重动作落库 weight_kg = 0；1RM 估值为 0，
+    // 旧实现 bestRm[name] 从未写入却用 `!` 读取 → 概览 Future 抛空断言，
+    // FutureBuilder 永远 hasData=false，整页停在加载圈。
+    await tester.runAsync(() async {
+      final when = DateTime.now().subtract(const Duration(days: 1));
+      final ses = await container.db.insertSession(Session(
+        date: fmtDate(when),
+        planDayTitle: '拉日',
+        startedAt: when.millisecondsSinceEpoch - 3600000,
+        endedAt: when.millisecondsSinceEpoch,
+        status: 'done',
+      ));
+      final seId = await container.db.insertSessionExercise(SessionExercise(
+        sessionId: ses.id!,
+        name: '引体向上',
+        orderIdx: 0,
+        kind: 'compound',
+        rule: ProgressionRule(repsMin: 5, repsMax: 8, workingSets: 3),
+      ));
+      for (var i = 0; i < 3; i++) {
+        await container.db.insertSet(SetEntry(
+          sessionExerciseId: seId,
+          weightKg: 0,
+          reps: 8,
+          rir: 2,
+          kind: SetKind.working,
+          doneAt: when.millisecondsSinceEpoch,
+        ));
+      }
+    });
+    await pumpStats(tester);
+
+    expect(find.text('训练趋势'), findsOneWidget,
+        reason: '0kg 自重组不该让概览 Future 抛空断言（整页永远转圈）');
+    expect(find.byType(CircularProgressIndicator), findsNothing,
+        reason: '加载已结束（异常也不能变现为永久加载）');
+  });
+
   testWidgets('筛选统一为下拉：无 chips / 分段按钮混排', (tester) async {
     await tester.runAsync(seed);
     await pumpStats(tester);

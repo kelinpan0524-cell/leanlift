@@ -251,6 +251,28 @@ class _OverviewTabState extends State<_OverviewTab> {
     return FutureBuilder<_OverviewData>(
       future: _future,
       builder: (context, snap) {
+        // 异常必须显式收口：否则 hasData 永远为 false，页面看起来像一直在加载。
+        if (snap.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.error_outline,
+                      size: 48, color: AppTheme.textDim),
+                  const SizedBox(height: 12),
+                  Text(
+                    tx('数据加载失败，请返回后重试',
+                        en: 'Failed to load stats. Go back and retry.'),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: AppTheme.textDim),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
         if (!snap.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
@@ -1338,8 +1360,10 @@ class _OverviewTabState extends State<_OverviewTab> {
         if (rm > (bestRm[name] ?? 0)) bestRm[name] = rm;
         dailyBest.add(name, d, rm);
         dailyTop.add(name, d, weight);
-        // 强度 = 组重量 ÷ 该动作截至当时的最佳 1RM（自重/辅助配重无意义不计）
-        final best = bestRm[name]!;
+        // 强度 = 组重量 ÷ 该动作截至当时的最佳 1RM（自重/辅助配重无意义不计）。
+        // 0kg 自重组的 1RM 估值为 0，bestRm 不会被写入，这里必须用 ?? 0——
+        // 空断言会让整个概览 Future 失败、页面永久停在加载圈。
+        final best = bestRm[name] ?? 0;
         final intensity = weight > 0 && best > 0 ? weight / best : null;
         if (inYear) {
           weekT
