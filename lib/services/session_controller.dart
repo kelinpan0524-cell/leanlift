@@ -1466,7 +1466,10 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 跳过当前动作（未完成的组不记录）。最后一个动作时跳过 = 结束训练的替代入口。
+  /// 跳过当前动作（未完成的组不记录），切到下一个动作。
+  /// 只在「还有下一个动作」时生效；已经是最后一个动作时是**空操作**——
+  /// 结束训练的入口是顶栏长按「结束训练」（UI 对最后一个动作已把该入口
+  /// 压暗并写明「已是最后一个」，不会让人以为按了能收尾）。
   Future<void> skipExercise() async {
     if (session == null || exercises.isEmpty) return;
     if (curExIdx < exercises.length - 1) {
