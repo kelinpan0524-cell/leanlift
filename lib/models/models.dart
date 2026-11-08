@@ -117,12 +117,15 @@ class ProgressionRule {
 
   factory ProgressionRule.fromJson(Map<String, dynamic> j) {
     final chainRaw = j['chain'] as List?;
+    final workingSets = (j['working_sets'] as num?)?.toInt() ?? 3;
     return ProgressionRule(
       repsMin: (j['reps_min'] as num?)?.toInt() ?? 5,
       repsMax: (j['reps_max'] as num?)?.toInt() ?? 8,
       incrementKg: (j['increment_kg'] as num?)?.toDouble() ?? 2.5,
       rirTarget: (j['rir_target'] as num?)?.toInt() ?? 2,
-      workingSets: (j['working_sets'] as num?)?.toInt() ?? 3,
+      // 负数组数是脏数据（备份手改/老版本写坏）：钳到 0，别把
+      // clamp(0, 负数) 的 ArgumentError 留到训练页构建时。
+      workingSets: workingSets < 0 ? 0 : workingSets,
       desc: (j['desc'] as String?) ?? '全部正式组达到次数上限且末组余力达标则加重',
       chain: chainRaw == null
           ? null

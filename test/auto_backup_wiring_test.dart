@@ -1,3 +1,4 @@
+// TODO(2026-11-08): 本文件仍有固定 Future.delayed 等待（登记在 tool/check_test_sleeps.dart 白名单），待逐个改条件轮询。
 // P0-A 接线回归：AppContainer 的 finish/quit/自评 → 自动快照，
 // 以及 init 的 24 小时启动补档。这里跑真容器 + 临时备份目录，
 // 平台通道按其它 widget 测试同款打桩。

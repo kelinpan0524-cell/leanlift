@@ -36,6 +36,8 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter analyze
+      # 测试规范检查：禁止「固定睡一段 → 直接断言」（CI 偶发失败的根因）
+      - run: dart tool/check_test_sleeps.dart
       - run: flutter test
 
   release:

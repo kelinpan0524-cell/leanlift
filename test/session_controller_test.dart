@@ -1,3 +1,4 @@
+// TODO(2026-11-08): 本文件仍有固定 Future.delayed 等待（登记在 tool/check_test_sleeps.dart 白名单），待逐个改条件轮询。
 // 批次1 修复回归：会话状态机（A1-1 撤销计数 / A1-2 零动作脏会话 / A1-5 双击竞态）、
 // 休息时间源与闹钟回调（A1-4 controller 半边）、数据层正确性（A5-2 截断方向 / A5-3 导出）。
 import 'dart:typed_data';
@@ -1037,6 +1038,80 @@ void main() {
     expect(c.phase, WorkoutPhase.resting, reason: 'restEndAt 未到期，还原休息');
     expect(c.restMs, inInclusiveRange(30000 + 117000, 30000 + 123000));
     expect(c.activeMs, 120000);
+  });
+
+  test('T-N2b：休息中被杀 2 小时——休息桶只补到原休息结束点', () async {
+    final day = await makePlanDay('推日');
+    final sid = await seedActiveSession(day, '卧推');
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final hbSince = now - 2 * 3600 * 1000;
+    await prefs.setInt('sess.sid', sid);
+    await prefs.setInt('sess.since', hbSince);
+    await prefs.setInt('sess.phase', 1);
+    await prefs.setInt('sess.restMs', 30000);
+    await prefs.setInt('sess.activeMs', 120000);
+    // 心跳时休息还剩 90 秒 → 2 小时挂机最多只该补 90 秒
+    await prefs.setInt('rest.endAt', hbSince + 90000);
+    await prefs.setInt('rest.sessionId', sid);
+
+    final c = makeController();
+    await c.restore();
+    expect(c.restMs, inInclusiveRange(30000 + 87000, 30000 + 93000),
+        reason: '休息桶只补到原结束点（旧实现把整 2 小时全算休息）');
+    expect(c.activeMs, 120000);
+  });
+
+  test('T-N1b：训练中被杀 2 小时——最后记录早于心跳，整段不补', () async {
+    final day = await makePlanDay('腿日');
+    final sid = await seedActiveSession(day, '深蹲');
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final hbSince = now - 2 * 3600 * 1000;
+    final exId = (await db.sessionExercises(sid)).first.id!;
+    // 最后一条记录在心跳前 10 分钟：+2 分钟缓冲也够不到心跳点
+    await db.insertSet(SetEntry(
+      sessionExerciseId: exId,
+      weightKg: 60,
+      reps: 5,
+      rir: 2,
+      kind: SetKind.working,
+      doneAt: hbSince - 10 * 60000,
+    ));
+    await prefs.setInt('sess.sid', sid);
+    await prefs.setInt('sess.since', hbSince);
+    await prefs.setInt('sess.phase', 0);
+    await prefs.setInt('sess.restMs', 0);
+    await prefs.setInt('sess.activeMs', 120000);
+
+    final c = makeController();
+    await c.restore();
+    expect(c.activeMs, 120000,
+        reason: '挂机段没有训练证据（最后记录 + 2 分钟都不到心跳点）');
+  });
+
+  test('T-N1c：训练中被杀 2 小时——最后记录在心跳后 1 分钟，只补 3 分钟', () async {
+    final day = await makePlanDay('腿日');
+    final sid = await seedActiveSession(day, '深蹲');
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final hbSince = now - 2 * 3600 * 1000;
+    final exId = (await db.sessionExercises(sid)).first.id!;
+    await db.insertSet(SetEntry(
+      sessionExerciseId: exId,
+      weightKg: 60,
+      reps: 5,
+      rir: 2,
+      kind: SetKind.working,
+      doneAt: hbSince + 60000,
+    ));
+    await prefs.setInt('sess.sid', sid);
+    await prefs.setInt('sess.since', hbSince);
+    await prefs.setInt('sess.phase', 0);
+    await prefs.setInt('sess.restMs', 0);
+    await prefs.setInt('sess.activeMs', 120000);
+
+    final c = makeController();
+    await c.restore();
+    expect(c.activeMs, inInclusiveRange(120000 + 177000, 120000 + 183000),
+        reason: '只补到「最后记录 + 2 分钟」= 3 分钟，不是整 2 小时');
   });
 
   test('T-N3：无心跳数据（老版本升级）维持旧行为从零起表', () async {

@@ -1,3 +1,4 @@
+// TODO(2026-11-08): 本文件仍有固定 Future.delayed 等待（登记在 tool/check_test_sleeps.dart 白名单），待逐个改条件轮询。
 // 评审修复验证：提醒双通道互斥（人在屏上不挂系统闹钟）的容器级行为测试。
 // mock flutter_local_notifications 的插件通道，捕获 zonedSchedule/cancel 调用，
 // 验证 _onRestAlarmChanged 的前台/后台分支与生命周期切换语义闭环。

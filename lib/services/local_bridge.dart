@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data' show BytesBuilder;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -131,7 +132,7 @@ class LocalBridgeService extends ChangeNotifier {
   /// 用户是否开了常驻（落盘，App 重启后仍在）。
   bool get persistentEnabled => prefs.getBool(_persistentKey) ?? false;
 
-  /// 记住的局域网签名（如 `192.168.1`；没开过常驻时为 null）。
+  /// 记住的局域网签名（完整 IPv4，如 `192.168.1.5`；没开过常驻时为 null）。
   String? get rememberedLan => prefs.getString(_lanKey);
 
   /// 常驻此刻是否生效：开了常驻 **且** 当前就在记住的局域网里。
@@ -288,15 +289,36 @@ class LocalBridgeService extends ChangeNotifier {
     return _lanOfIps(ips);
   }
 
-  /// 签名 = 首个 IPv4 地址的前 3 段。测试注入的 loopback 也会走到这
-  /// （生产探测不含 loopback），不影响正确性。
+  /// 签名 = 一个完整的私有 IPv4（如 `192.168.1.5`）。
+  ///
+  /// 只用前三段会把「同样 192.168.1.x 的别家网络」误判成家里，常驻就在陌生
+  /// 网络里自动亮着（报告 2026-11-08 第 14 条）。完整地址更严格：换了网
+  /// （哪怕同一个 /24）一律不自启，用户手动开一次即可——宁可少方便一步，
+  /// 也不在陌生网络里自动开放。
+  ///
+  /// 优先取 10/8、172.16/12、192.168/16 的私有地址，避开 VPN/CGNAT
+  /// （如 Tailscale 的 100.64/10）等附加网卡；没有私有地址时退回首个 IPv4
+  /// （测试注入的 loopback 走这条）。
   static String? _lanOfIps(List<String> ips) {
+    String? fallback;
     for (final ip in ips) {
       if (ip.contains(':')) continue; // 跳过 IPv6
-      final parts = ip.split('.');
-      if (parts.length == 4) return parts.take(3).join('.');
+      if (ip.split('.').length != 4) continue;
+      fallback ??= ip;
+      if (_isPrivateIpv4(ip)) return ip;
     }
-    return null;
+    return fallback;
+  }
+
+  static bool _isPrivateIpv4(String ip) {
+    final parts = ip.split('.').map(int.tryParse).toList();
+    if (parts.length != 4 || parts.any((v) => v == null)) return false;
+    final a = parts[0]!;
+    final b = parts[1]!;
+    if (a == 10) return true;
+    if (a == 172 && b >= 16 && b <= 31) return true;
+    if (a == 192 && b == 168) return true;
+    return false;
   }
 
   /// 主动断开某台已配对设备（撤销其令牌，并从落盘里删掉摘要）。
@@ -714,11 +736,36 @@ class LocalBridgeService extends ChangeNotifier {
     return (alt == null || alt.isEmpty) ? null : alt;
   }
 
+  /// 配对请求体上限（字节）。配对 body 只有一个 6 位数字，1KB 足够。
+  static const int _maxPairBodyBytes = 1024;
+
+  /// 读取配对请求体，最多保留 [_maxPairBodyBytes] 字节。
+  ///
+  /// 安全边界：同网段任意设备可匿名 POST /v1/pair，先把整包读进内存再判长度
+  /// 等于给对方一个「几百 MB 就能把 App 内存打爆」的开关（训练中心跳/前台
+  /// 服务会一起断）。所以：
+  /// - 声明了 Content-Length 且超限：直接 drain 丢弃，不缓存一个字节；
+  /// - chunked（无长度）：边读边累计，一超限就清空缓存、剩下的只丢不存；
+  /// - 两种情况都在 drain 完之后才抛 FormatException（连接正常收尾，
+  ///   不因拒绝而让对端写阻塞）。
   Future<String> _readBody(HttpRequest req) async {
-    final text = await utf8.decodeStream(req);
-    // 配对请求体极小；超长直接按格式错误处理，避免被人塞大包
-    if (text.length > 1024) throw const FormatException('请求体过大');
-    return text;
+    if (req.contentLength > _maxPairBodyBytes) {
+      await req.drain<void>();
+      throw const FormatException('请求体过大');
+    }
+    final buf = BytesBuilder(copy: false);
+    var tooLarge = false;
+    await for (final chunk in req) {
+      if (tooLarge) continue; // 已超限：只 drain，不再缓存
+      if (buf.length + chunk.length > _maxPairBodyBytes) {
+        tooLarge = true;
+        buf.clear();
+        continue;
+      }
+      buf.add(chunk);
+    }
+    if (tooLarge) throw const FormatException('请求体过大');
+    return utf8.decode(buf.takeBytes());
   }
 
   int _intParam(HttpRequest req, String key,

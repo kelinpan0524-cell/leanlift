@@ -1,3 +1,4 @@
+// TODO(2026-11-08): 本文件仍有固定 Future.delayed 等待（登记在 tool/check_test_sleeps.dart 白名单），待逐个改条件轮询。
 // 每周复盘提醒（P1-E2）：
 // - nextWeeklyRecapFires 纯函数：默认周日 20:00、当天已过点顺延下周、
 //   未来工作日当天照排、跨周/跨月递增；

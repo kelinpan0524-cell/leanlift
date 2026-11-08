@@ -1,3 +1,4 @@
+// TODO(2026-11-08): 本文件仍有固定 Future.delayed 等待（登记在 tool/check_test_sleeps.dart 白名单），待逐个改条件轮询。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 

@@ -1,3 +1,4 @@
+// TODO(2026-11-08): 本文件仍有固定 Future.delayed 等待（登记在 tool/check_test_sleeps.dart 白名单），待逐个改条件轮询。
 // 局域网只读数据桥（方案 B，2026-10-17 Arono）的端到端测试。
 //
 // 这里跑的是**真 socket**：起真 HttpServer、用 HttpClient 发真请求，
@@ -145,6 +146,51 @@ void main() {
     expect(res.status, 200);
     return (jsonDecode(res.body) as Map<String, dynamic>)['token'] as String;
   }
+
+  /// 发原始字节 body（造超大包用）：[chunked] = 不声明长度，走分块传输。
+  Future<({int status, String body})> postRaw(List<int> bytes,
+      {bool chunked = false}) async {
+    final client = HttpClient();
+    try {
+      final req = await client.openUrl(
+          'POST', Uri.parse('http://127.0.0.1:${bridge.actualPort}/v1/pair'));
+      req.headers.contentType = ContentType.json;
+      // 不设 contentLength（默认 -1）时 dart:io 用分块传输，服务端拿不到长度
+      if (!chunked) req.contentLength = bytes.length;
+      req.add(bytes);
+      final res = await req.close();
+      return (status: res.statusCode, body: await utf8.decodeStream(res));
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  test('配对 body 上限按字节算：700 个汉字（2.1KB）直接判超限', () async {
+    expect(await bridge.start(), isTrue);
+    // 旧实现先解码再按 1024 个「字符」判：700 字 < 1024 → 放进去继续解析；
+    // 新实现按字节判（1KB 上限），2100 字节直接拒绝，不把整包读进内存。
+    final r = await postRaw(utf8.encode('汉' * 700));
+    expect(r.status, 400);
+    expect(r.body, contains('请求体过大'));
+  });
+
+  test('2MB 声明长度的大包：拒绝后连接被 drain，服务照常可用', () async {
+    expect(await bridge.start(), isTrue);
+    final r = await postRaw(List<int>.filled(2 * 1024 * 1024, 0x61));
+    expect(r.status, 400);
+    expect(r.body, contains('请求体过大'));
+    // 同一个服务实例紧跟着正常配对：说明大包被读干净、没有半开连接卡住
+    final ok = await call('POST', '/v1/pair', body: {'code': bridge.pairingCode});
+    expect(ok.status, 200, reason: '大包之后服务必须还能正常响应');
+  });
+
+  test('2MB chunked 大包（无 Content-Length）：边读边丢，同样拒绝', () async {
+    expect(await bridge.start(), isTrue);
+    final r = await postRaw(List<int>.filled(2 * 1024 * 1024, 0x61),
+        chunked: true);
+    expect(r.status, 400);
+    expect(r.body, contains('请求体过大'));
+  });
 
   test('探不到局域网地址时拒绝启动（免得开了没人连得上）', () async {
     final lone = LocalBridgeService(
@@ -501,8 +547,8 @@ void main() {
     expect(await bridge.start(), isTrue);
     expect(await bridge.enablePersistent(), isTrue);
     expect(bridge.persistentEnabled, isTrue);
-    // 测试注入的 ipProbe 是 127.0.0.1 → 签名取前三段
-    expect(bridge.rememberedLan, '127.0.0');
+    // 测试注入的 ipProbe 是 127.0.0.1 → 签名取完整地址
+    expect(bridge.rememberedLan, '127.0.0.1');
     expect(bridge.persistentActive, isTrue);
     await bridge.stop();
 
@@ -526,7 +572,36 @@ void main() {
     await other.stop();
   });
 
+  test('常驻签名按完整 IP：同 /24 换了 host 不当作同一个局域网', () async {
+    final home = LocalBridgeService(
+      db: db,
+      prefs: prefs,
+      port: 0,
+      ipProbe: () async => const ['192.168.1.5'],
+    );
+    expect(await home.start(), isTrue);
+    expect(await home.enablePersistent(), isTrue);
+    await home.stop();
+
+    // 同一个 /24 的另一张网（咖啡馆常见的 192.168.1.x）：不能自动常驻
+    final stranger = LocalBridgeService(
+      db: db,
+      prefs: prefs,
+      port: 0,
+      ipProbe: () async => const ['192.168.1.77'],
+    );
+    expect(await stranger.maybeAutoStart(), isFalse,
+        reason: '旧实现只比前三段，会把 192.168.1.77 当成家里的网自动开');
+    expect(stranger.running, isFalse);
+    expect(stranger.persistentMismatch, isTrue);
+    await stranger.stop();
+    // 签名本身也确认是完整地址（自启判定的依据）
+    expect(home.rememberedLan, '192.168.1.5',
+        reason: '签名记完整地址，不是前三段');
+  });
+
   test('常驻生效时不空闲自动关；关掉常驻后恢复空闲自动关', () async {
+
     Future<LocalBridgeService> quick() async => LocalBridgeService(
           db: db,
           prefs: prefs,

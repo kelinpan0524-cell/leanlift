@@ -1,3 +1,4 @@
+// TODO(2026-11-08): 本文件仍有固定 Future.delayed 等待（登记在 tool/check_test_sleeps.dart 白名单），待逐个改条件轮询。
 // 批次4：多屏适配与防移位的 widget 测试矩阵（项目首个 widget 测试）。
 // 真库（ffi）+ AppContainer 注入 + 多尺寸驱动关键页面：
 //   - 动作态 WorkoutPage：A8-1 单栏滚动兜底 / compact 600dp 断点

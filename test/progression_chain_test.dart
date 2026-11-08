@@ -293,6 +293,35 @@ void main() {
       expect(old.deltaKg, 2.5);
     });
 
+    test('0kg 有组低于下限 → hold（没有重量可减，不给 -0.0kg）', () {
+      // 目标 6 次，做到 3 次（< reps_min 5）：旧实现返回 decrease，
+      // 建议「减重 5%（-0.0 kg）」——自重动作没有重量轴，这是空建议。
+      final v = evaluateChain(
+        rule: rule,
+        state: const ChainState(weightKg: 0, targetReps: 6),
+        workingSets: _session(0, 3),
+      );
+      expect(v.action, 'hold');
+      expect(v.next.weightKg, 0);
+      expect(v.next.targetReps, 6);
+      expect(v.reason, isNot(contains('-0.0')));
+      expect(v.reason, isNot(contains('减重')));
+    });
+
+    test('0kg 计时动作未达下限 → hold，文案用秒且不提减重', () {
+      // 计时自重（平板支撑）：下限 30 秒只做了 20 秒，旧文案混用「减重」与「秒」。
+      final v = evaluateChain(
+        rule: const ProgressionRule(repsMin: 30, repsMax: 60),
+        state: const ChainState(weightKg: 0, targetReps: 45),
+        workingSets: _session(0, 20),
+        logging: LoggingMode.time,
+      );
+      expect(v.action, 'hold');
+      expect(v.next.weightKg, 0);
+      expect(v.reason, contains('秒'));
+      expect(v.reason, isNot(contains('减重')));
+    });
+
     test('0kg 到达链尽头 → 文案用「自重档位」而非「重量 0kg 触顶」', () {
       const rule2 = ProgressionRule(
         repsMin: 5,
@@ -483,6 +512,41 @@ void main() {
       );
       expect(v.action, 'hold');
       expect(v.reason, isNot(contains('余力未记录')));
+    });
+
+    test('次数全达标、只有末组余力不足 → holdKind=rir_low，不是 target_miss', () {
+      // 三组都到 8 次目标，末组 RIR 0 < rirTarget(2)-1：这次是「余力低」，
+      // 不是「次数没做到」。旧实现落到 target_miss，平台期协议会据此
+      // 改写成减载/加重建议。
+      final v = evaluateChain(
+        rule: rule,
+        state: const ChainState(weightKg: 60, targetReps: 8),
+        workingSets: [
+          _set(60, 8, at: 1000),
+          _set(60, 8, at: 2000),
+          _set(60, 8, rir: 0, at: 3000),
+        ],
+      );
+      expect(v.action, 'hold');
+      expect(v.holdKind, 'rir_low');
+      expect(v.holdKind, isNot('target_miss'));
+      expect(v.reason, contains('余力'));
+      expect(v.reason, isNot(contains('未达 8 次目标')));
+    });
+
+    test('次数真的没到目标 → 仍是 target_miss（对照，不放松）', () {
+      final v = evaluateChain(
+        rule: rule,
+        state: const ChainState(weightKg: 60, targetReps: 8),
+        workingSets: [
+          _set(60, 7, at: 1000),
+          _set(60, 7, at: 2000),
+          _set(60, 7, at: 3000),
+        ],
+      );
+      expect(v.action, 'hold');
+      expect(v.holdKind, 'target_miss');
+      expect(v.reason, contains('未达 8 次目标'));
     });
   });
 

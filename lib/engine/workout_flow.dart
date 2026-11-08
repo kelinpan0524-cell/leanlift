@@ -20,8 +20,14 @@ enum FlowPageKind { start, record, rest, summary }
 /// 计划组数统一口径（P0-B）：会话快照 target_sets 优先（老记录为 0），
 /// 回退规则参数 workingSets。控制器、页面流、跳页与 UI 文案共用——
 /// 「快照 4 组、规则 3 组」时各层必须显示/推进同一组数。
-int plannedSetsOf(SessionExercise e) =>
-    e.targetSets > 0 ? e.targetSets : e.rule.workingSets;
+///
+/// 负数一律按 0 处理：备份 JSON / 老规则里的脏数据（working_sets < 0）
+/// 会让下游 `clamp(0, planned)` 抛 ArgumentError（上界小于下界），
+/// 训练页直接构建失败。模型层 fromJson 已钳一次，这里是所有消费方的兜底。
+int plannedSetsOf(SessionExercise e) {
+  final planned = e.targetSets > 0 ? e.targetSets : e.rule.workingSets;
+  return planned < 0 ? 0 : planned;
+}
 
 /// 页面流里的一页。字段级判等（==/hashCode）供 UI 的 AnimatedSwitcher
 /// 判断"是否换了页"——同页重建不触发翻页动画，换页才触发。

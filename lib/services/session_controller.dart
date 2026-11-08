@@ -78,6 +78,10 @@ class SessionController extends ChangeNotifier {
   int workingSetsDone = 0; // 当前动作正式组完成数
   final Set<String> prHit = {};
 
+  /// 上一场 finish 时的 PR 快照：finish() 会清空 [prHit]，而自动收尾的
+  /// 总结页在 finish 之后才取列表；页面改读这份快照才能看到 PR 卡片。
+  List<String> finishedPrNames = const [];
+
   // ---------- 训练块与减载（P1-C） ----------
   // 块起点 = 当前计划第一次 done 训练；块内第 N 周为减载周。
   // 只在新会话启动/恢复时计算，训练中不随日期翻周变化（处方稳定）。
@@ -677,11 +681,30 @@ class SessionController extends ChangeNotifier {
         // 先取回心跳里已入桶的累计值（新实例内存桶从 0 起），再补被杀段
         restMs = _prefs.getInt('sess.restMs') ?? 0;
         activeMs = _prefs.getInt('sess.activeMs') ?? 0;
-        final extra = DateTime.now().millisecondsSinceEpoch - hbSince;
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        var extra = nowMs - hbSince;
         if (extra > 0) {
           if (hbPhase == 1) {
+            // 休息中被杀：最多补到原休息结束点。休息早就结束了还隔几小时
+            // 重开，多出来的时间不是休息（否则历史里的休息桶全是虚假值）。
+            final restEnd = _prefs.getInt('rest.endAt') ?? 0;
+            if (restEnd > hbSince) {
+              final allowed = restEnd - hbSince;
+              if (extra > allowed) extra = allowed;
+            } else {
+              extra = 0; // 没有结束点 / 心跳时就已经该结束：不补
+            }
             restMs += extra;
           } else {
+            // 训练中被杀：最多补到「最后一条记录 + 2 分钟」；没有记录时
+            // 以 30 分钟（忘停表守护的可疑阈值）封顶——挂机几小时不能
+            // 整段算成训练时长，尤其用户在守护里选「照原样保存」时。
+            final last = lastSetDoneAtMs;
+            final cap =
+                last != null ? last + 2 * 60000 : hbSince + 30 * 60000;
+            final allowed = cap - hbSince;
+            if (extra > allowed) extra = allowed;
+            if (extra < 0) extra = 0;
             activeMs += extra;
           }
         }
@@ -1349,6 +1372,9 @@ class SessionController extends ChangeNotifier {
       // 仍 active（训练卡/常亮/心跳照常）。
       final confirm = confirmAutoFinish;
       if (confirm != null && !await confirm()) {
+        // 确认回调里可能已经 quit（忘停表守护选「不留记录」）：
+        // 会话不再 active 时不能继续起休息页。
+        if (!hasActive) return pr;
         extraSetExerciseName = ex.name;
         _beginRestFor(ex);
         return pr;
@@ -1440,7 +1466,10 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 跳过当前动作（未完成的组不记录）。最后一个动作时跳过 = 结束训练的替代入口。
+  /// 跳过当前动作（未完成的组不记录），切到下一个动作。
+  /// 只在「还有下一个动作」时生效；已经是最后一个动作时是**空操作**——
+  /// 结束训练的入口是顶栏长按「结束训练」（UI 对最后一个动作已把该入口
+  /// 压暗并写明「已是最后一个」，不会让人以为按了能收尾）。
   Future<void> skipExercise() async {
     if (session == null || exercises.isEmpty) return;
     if (curExIdx < exercises.length - 1) {
@@ -1972,6 +2001,12 @@ class SessionController extends ChangeNotifier {
   Future<void> finish() async {
     if (session == null) return;
     if (session!.status != 'active') return; // 幂等：自动结束+手动结束不重复
+    // 忘停表守护（2026-11-08 复核）：必须跑在落库之前——自动收尾时
+    // completeSet 会先调用本方法再通知页面，若把守护留在页面收尾里，
+    // 「不留记录 / 截断」面对已 done 的会话会静默失效。
+    // 返回 false = 用户选了「不留记录」，回调内部已 quit，这里不再落库。
+    final guard = preFinishGuard;
+    if (guard != null && !await guard()) return;
     _finishRest();
     onRestAlarmChanged?.call(null); // 会话结束：精确提醒一并取消
     await _db.updateSession(session!.id!, {
@@ -1988,6 +2023,8 @@ class SessionController extends ChangeNotifier {
     await _exitFocus();
     session = await _db.sessionById(session!.id!);
     WakelockPlus.disable();
+    // 先快照再清空：自动收尾的总结页在 finish 之后才取 PR 列表
+    finishedPrNames = prHit.toList();
     prHit.clear();
     _setPhase(WorkoutPhase.idle);
     onSessionClosed?.call();
@@ -2009,6 +2046,7 @@ class SessionController extends ChangeNotifier {
     WakelockPlus.disable();
     session = null;
     prHit.clear();
+    finishedPrNames = const [];
     truncatedEndAtMs = null;
     _blockWeek = null;
     _blockWeeks = 0;
@@ -2191,6 +2229,10 @@ class SessionController extends ChangeNotifier {
   /// 会话关闭（结束/放弃）后回调：App 容器接练前提醒重排——
   /// 今天已练完，当天未到的练前提醒随即取消。
   void Function()? onSessionClosed;
+
+  /// finish() 落库前的最后一道确认（忘停表守护，由训练页接线）。
+  /// 返回 false = 用户选了「不留记录」，回调内部已 quit，本场不落 done。
+  Future<bool> Function()? preFinishGuard;
 
   /// 训练自评（impression）写入后回调：App 容器据此再补一份自动快照
   /// （收工时先写的那份还不包含这条自评）。

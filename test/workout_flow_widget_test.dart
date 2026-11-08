@@ -500,12 +500,10 @@ void main() {
       await tester.runAsync(() async {
         await pickRir2(tester);
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      await tester.pump(const Duration(milliseconds: 50));
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 950)));
-      await tester.pump();
+      await pumpUntilFound(tester, find.text('组间休息'),
+          reason: '等落库 + 划线窗口走完并翻到休息页');
+      // 翻页动画 280ms 走完，旧页子树才会退场（否则同屏两份横幅文案）
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('组间休息'), findsOneWidget, reason: '确实进了休息页');
       expect(find.textContaining('本周减载'), findsOneWidget,
@@ -583,12 +581,10 @@ void main() {
       await tester.runAsync(() async {
         await pickRir2(tester);
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      await tester.pump(const Duration(milliseconds: 50));
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 950)));
-      await tester.pump();
+      await pumpUntilFound(tester, find.text('组间休息'),
+          reason: '等落库 + 划线窗口走完并翻到休息页');
+      // 翻页动画 280ms 走完，旧页子树才会退场（否则同屏两份横幅文案）
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('组间休息'), findsOneWidget, reason: '确实进了休息页');
       expect(find.textContaining('停练 20 天'), findsOneWidget,
@@ -604,10 +600,10 @@ void main() {
         await container.session
             .completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
         container.session.skipRest();
-        await Future<void>.delayed(const Duration(milliseconds: 150));
       });
       await tester.pumpWidget(host(container, const WorkoutPage()));
-      await tester.pump(const Duration(milliseconds: 400));
+      await pumpUntilFound(tester, find.text('第 2/3 组'),
+          reason: '已记 1 组应落到第 2/3 组记录页');
       expect(find.text('开始训练'), findsNothing, reason: '有记录不显示起始页');
       expect(find.byKey(const Key('workoutCompleteSet')), findsOneWidget);
       expect(find.text('第 2/3 组'), findsOneWidget, reason: '顶部 N/M 对齐已记 1 组');
@@ -626,21 +622,15 @@ void main() {
       await tester.runAsync(() async {
         await pickRir2(tester);
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        // DB 写组 + 控制器进休息的链路在真实 isolate：给回包时间
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      await tester.pump(const Duration(milliseconds: 50));
-      expect(find.text('已记录'), findsOneWidget, reason: '划线标记：盖「已记录」章');
+      await pumpUntilFound(tester, find.text('已记录'),
+          reason: '划线标记：盖「已记录」章');
       expect(find.textContaining('kg × '), findsOneWidget,
           reason: '刚存的组带划线展示（默认重量 20kg × 默认次数 5）');
 
-      // 划线窗口（900ms 定时器在 runAsync 的真实区创建）：真实延时等它走完，
-      // 再 pump 应用状态机算出的下一页（休息页插队）
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 1000)));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.text('组间休息'), findsOneWidget, reason: '自动翻到休息页');
+      // 划线窗口走完才应用状态机算出的下一页（休息页插队）
+      await pumpUntilFound(tester, find.text('组间休息'),
+          reason: '自动翻到休息页');
       expect(find.text('已记录'), findsNothing);
       expect(find.text('第 2/3 组'), findsOneWidget, reason: '休息页顶部也是下一组 N/M');
       expect(progressBar(tester).value, closeTo(1 / 6, 1e-6),
@@ -654,6 +644,54 @@ void main() {
       expect(progressBar(tester).value, closeTo(1 / 6, 1e-6));
     });
 
+    testWidgets('划线窗口内再点「完成本组」被遮罩吃掉，不多记一组', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await startLifting(tester);
+      await pumpWorkout(tester);
+      final exId = container.session.exercises.first.id!;
+
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+      });
+      await pumpUntilFound(tester, find.text('已记录'),
+          reason: '划线章已盖上');
+
+      // 划线窗口内再点一次同一位置：遮罩必须真的吃掉手势，不能穿透到
+      // 下面已推进到「下一组 / 下一动作」的操作面板（穿透会换动作记组）。
+      await tester.runAsync(() async {
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')),
+            warnIfMissed: false);
+      });
+      await tester.pump();
+
+      final saved =
+          await tester.runAsync(() => container.db.setsOfExercise(exId));
+      expect(saved!.length, 1, reason: '划线期间再点一次不能多记一组');
+      expect(find.textContaining('再按一次「完成本组」'), findsNothing,
+          reason: '点击没有穿透到面板（穿透会触发余力提醒）');
+    });
+
+    testWidgets('快速连按两次「完成本组」只落一组（_saving 拦重入）', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await startLifting(tester);
+      await pumpWorkout(tester);
+      final exId = container.session.exercises.first.id!;
+
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        // 同一帧内连按两次：第一次的 await 还没回来，第二次就进了函数
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+      });
+      await pumpUntilFound(tester, find.text('已记录'),
+          reason: '第一次保存完成并盖划线章');
+
+      final saved =
+          await tester.runAsync(() => container.db.setsOfExercise(exId));
+      expect(saved!.length, 1, reason: '重入必须被 _saving 拦住');
+    });
+
     testWidgets('热身/力竭组不推进页面（与控制器语义一致）', (tester) async {
       setSurface(tester, const Size(360, 800));
       await startLifting(tester);
@@ -663,12 +701,10 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
       await tester.runAsync(() async {
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      await tester.pump(const Duration(milliseconds: 50));
-      expect(find.text('已记录'), findsOneWidget, reason: '热身组也盖划线章');
-      await tester.pump(const Duration(milliseconds: 1000));
-      await tester.pump(const Duration(milliseconds: 400));
+      await pumpUntilFound(tester, find.text('已记录'), reason: '热身组也盖划线章');
+      // 等划线窗口走完（章消失）再断言没有休息页
+      await pumpUntilGone(tester, find.text('已记录'), reason: '划线窗口结束');
       expect(find.text('组间休息'), findsNothing,
           reason: '热身组不触发休息计时（调研条目 9 规则）');
       expect(find.byKey(const Key('workoutCompleteSet')), findsOneWidget,
@@ -687,10 +723,9 @@ void main() {
         await container.session
             .completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
         container.session.skipRest();
-        await Future<void>.delayed(const Duration(milliseconds: 150));
       });
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.text('第 2/3 组'), findsOneWidget);
+      await pumpUntilFound(tester, find.text('第 2/3 组'),
+          reason: '记一组后顶部组号推进');
 
       // 顶部『第 N/M 组』chip 打开跳页面板（弹层动画：先 pump() 起帧再推进）
       await tester.tap(find.text('第 2/3 组'));
@@ -710,11 +745,8 @@ void main() {
       // 与 tap 一起包进 runAsync（本文件头部已知坑）
       await tester.runAsync(() async {
         await tester.tap(find.text('第 1 组').last);
-        await Future<void>.delayed(const Duration(milliseconds: 300));
       });
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.text('全程页面 · 点未完成组的行直接跳过去'), findsNothing,
+      await pumpUntilGone(tester, find.text('全程页面 · 点未完成组的行直接跳过去'),
           reason: '跳转后面板关闭');
       // 刚记完一组（90 秒窗口内）就跳页：按新语义补起休息，休息页写明目标动作
       expect(find.text('组间休息'), findsOneWidget,
@@ -726,10 +758,9 @@ void main() {
       // 主动跳过休息 → 落到划船的记录页
       await tester.runAsync(() async {
         await tester.tap(find.text('跳过休息，直接开练'));
-        await Future<void>.delayed(const Duration(milliseconds: 200));
       });
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.text('划船'), findsOneWidget, reason: '已跳到划船的记录页');
+      await pumpUntilFound(tester, find.text('划船'),
+          reason: '已跳到划船的记录页');
       expect(find.text('第 1/3 组'), findsOneWidget);
 
       // 红线：全程没有弹窗（Dialog），菜单/跳页全走收起面板
@@ -769,7 +800,6 @@ void main() {
               weight: 60, reps: 8, rir: 2, kind: SetKind.working);
           if (s.phase == WorkoutPhase.resting) s.skipRest();
         }
-        await Future<void>.delayed(const Duration(milliseconds: 150));
       });
       await tester.tap(find.text('去训练'));
       await tester.pumpAndSettle();
@@ -785,8 +815,9 @@ void main() {
         await tester.tap(find.text('8'));
         await tester.pump(const Duration(milliseconds: 50));
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 600));
       });
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '总结页是页面流最后一页');
       await tester.pumpAndSettle();
 
       expect(find.text('训练完成 💪'), findsOneWidget, reason: '总结页是页面流最后一页');
@@ -827,9 +858,8 @@ void main() {
 
       await tester.runAsync(() async {
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      await tester.pump(const Duration(milliseconds: 100));
+      await pumpUntilFound(tester, find.text('已记录'), reason: '本组已落库');
       final sets = container.session.setsByEx[container.session.currentEx!.id]!;
       expect(sets.last.reps, 15, reason: '自定义次数落库为真实记录值');
     });
@@ -876,13 +906,9 @@ void main() {
       await tester.runAsync(() async {
         await pickRir2(tester);
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      // 划线 900ms 定时器在真实时区：runAsync 等它走完再 pump 翻页
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 1000)));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
+      await pumpUntilFound(tester, find.textContaining('下一组 · 卧推 第 2/3 组'),
+          reason: '划线窗口走完翻到休息页');
       expect(find.textContaining('下一组 · 卧推 第 2/3 组'), findsOneWidget,
           reason: '休息页能看到接下来的动作、组号、次数');
       expect(find.textContaining('× 5-8 次'), findsOneWidget,
@@ -895,28 +921,31 @@ void main() {
       await tester.runAsync(() async {
         final day = await makeDay('加练日');
         final a = await addEx(day, '卧推', 0, workingSets: 1);
-        await container.session.startFromDay(day: day, planExercises: [a]);
+        // 第二个动作只是别让会话在第一组后就自动结束——加练入口靠
+        // startExtraSet 回到刚练满的动作，不需要会话真的收尾。
+        final b = await addEx(day, '划船', 1, workingSets: 1);
+        await container.session.startFromDay(day: day, planExercises: [a, b]);
       });
       await tester.pumpWidget(host(container, const WorkoutPage()));
       await tester.pump(const Duration(milliseconds: 20));
       await tester.tap(find.text('开始训练'));
       await tester.pump(const Duration(milliseconds: 400));
-      // 测试闸门（2026-10-07 结束确认弹窗）：本用例只验加练态组号文案，
-      // 置 null 放行原自动结束语义（确认面板行为由专测覆盖）。
-      container.session.confirmAutoFinish = null;
       await tester.runAsync(() async {
         await pickRir2(tester);
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
-        container.session.startExtraSet();
-        await Future<void>.delayed(const Duration(milliseconds: 200));
       });
-      await tester.pump(const Duration(milliseconds: 300));
+      await pumpUntilFound(tester, find.text('已记录'), reason: '本组已落库');
+      await tester.runAsync(() async { container.session.startExtraSet(); });
+      await pumpUntilFound(tester, find.textContaining('第 2 组（加练）'),
+          reason: '加练页接管');
+      // 翻页动画走完，旧「第 1/1 组」页才退场
+      await tester.pump(const Duration(milliseconds: 400));
       // 2026-10-08 口径统一：绝对组号 doneRaw+1（planned=1、已完成 1 → 第 2 组）
+      // 划线窗口（900ms）走完前顶部还冻结在旧页：等它自己消失再断言
+      await pumpUntilGone(tester, find.textContaining('第 1/1 组'),
+          reason: '划线窗口结束，顶部切到加练组号');
       expect(find.textContaining('第 2 组（加练）'), findsWidgets,
           reason: '加练的这一组按绝对组号显性显示（旧 bug：永远显示 1/1）');
-      expect(find.textContaining('第 1/1 组'), findsNothing,
-          reason: '不再被夹回计划组数');
     });
   });
 
@@ -968,9 +997,8 @@ void main() {
       await tester.ensureVisible(find.byKey(const Key('workoutCompleteSet')));
       await tester.runAsync(() async {
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      await tester.pump(const Duration(milliseconds: 100));
+      await pumpUntilFound(tester, find.text('已记录'), reason: '本组已落库');
       final sets = container.session.setsByEx.values.expand((l) => l).toList();
       expect(sets, isNotEmpty, reason: '带入后无需余力提醒即可记录');
       expect(sets.last.weightKg, 60, reason: '重量按上次预填');
@@ -1004,9 +1032,8 @@ void main() {
       await tester.ensureVisible(find.byKey(const Key('workoutCompleteSet')));
       await tester.runAsync(() async {
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      await tester.pump(const Duration(milliseconds: 100));
+      await pumpUntilFound(tester, find.text('已记录'), reason: '本组已落库');
       final sets = container.session.setsByEx.values.expand((l) => l).toList();
       expect(sets.last.rir, 1);
       expect(sets.last.rirRecorded, isTrue, reason: '亲手点过余力 = 真实记录');
@@ -1022,10 +1049,8 @@ void main() {
       // 第一按：出现提醒、组不落库
       await tester.runAsync(() async {
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 200));
       });
-      await tester.pump(const Duration(milliseconds: 100));
-      expect(find.textContaining('余力没填写'), findsWidgets,
+      await pumpUntilFound(tester, find.textContaining('余力没填写'),
           reason: '余力行高亮提示');
       expect(find.textContaining('按计划默认记'), findsOneWidget,
           reason: '提示里给「再按一次用默认」的出路');
@@ -1041,9 +1066,8 @@ void main() {
       // 第二按：带所选余力正常记录
       await tester.runAsync(() async {
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      await tester.pump(const Duration(milliseconds: 100));
+      await pumpUntilFound(tester, find.text('已记录'), reason: '本组已落库');
       final sets = container.session.setsByEx.values.expand((l) => l).toList();
       expect(sets, isNotEmpty, reason: '第二按落库');
       expect(sets.last.rir, 1, reason: '余力取所选值');
@@ -1056,11 +1080,9 @@ void main() {
       await pumpWorkout(tester);
       await tester.runAsync(() async {
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 200));
         await tester.tap(find.byKey(const Key('workoutCompleteSet')));
-        await Future<void>.delayed(const Duration(milliseconds: 400));
       });
-      await tester.pump(const Duration(milliseconds: 100));
+      await pumpUntilFound(tester, find.text('已记录'), reason: '第二按已落库');
       final sets = container.session.setsByEx.values.expand((l) => l).toList();
       expect(sets, isNotEmpty, reason: '第二按放行');
       expect(sets.last.rir, 2, reason: '未填时按计划默认 RIR 2 记');
@@ -1084,10 +1106,8 @@ void main() {
       await tester.runAsync(() async {
         await container.session
             .completeSet(weight: 60, reps: 8, rir: 2, kind: SetKind.working);
-        await Future<void>.delayed(const Duration(milliseconds: 150));
       });
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.text('组间休息'), findsOneWidget, reason: '到达休息页');
+      await pumpUntilFound(tester, find.text('组间休息'), reason: '到达休息页');
       expectNoLayoutError(tester);
 
       // 倒计时数字（mm:ss，随秒走动不锁具体值）：单行 + FittedBox 兜底
@@ -1122,16 +1142,13 @@ void main() {
               weight: 60, reps: 8, rir: 2, kind: SetKind.working);
           if (s.phase == WorkoutPhase.resting) s.skipRest();
         }
-        await Future<void>.delayed(const Duration(milliseconds: 150));
       });
       expect(container.session.hasActive, isFalse, reason: '状态机已自动结束');
 
       await tester.pumpWidget(host(container, const WorkoutPage()));
       // 占位分支调度兜底收尾 → _finishFlow 走真实 isolate DB → 总结页入流
-      await tester.pump();
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 400)));
-      await tester.pump(const Duration(milliseconds: 400));
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '兜底收尾把总结页接进页面流');
       expect(find.text('本次训练已结束'), findsNothing,
           reason: '不允许停在占位页');
       expect(find.text('训练完成 💪'), findsOneWidget,
@@ -1271,6 +1288,224 @@ void main() {
       expect(find.text('训练完成 💪'), findsOneWidget);
       expect(container.session.hasActive, isFalse);
       expect(container.session.session!.status, 'done');
+    });
+  });
+
+  // ---------- 自动收尾 PR 卡片（2026-11-08 复核）----------
+  // finish() 会清空 prHit；自动收尾在 completeSet 内先 finish，页面随后才
+  // 取 prHit → 永远是空列表，最常规的结束方式反而看不到 PR 卡片。
+  group('自动收尾的总结页 PR', () {
+    testWidgets('最后一组破 PR：自动收尾后总结页有「PR 突破」卡片', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        // 历史：3 天前卧推 60kg×5（done），本次 65kg 即 PR
+        final prevWhen = DateTime.now().subtract(const Duration(days: 3));
+        final prev = await container.db.insertSession(Session(
+          date: fmtDate(prevWhen),
+          planDayTitle: '推日',
+          startedAt: prevWhen.millisecondsSinceEpoch - 1800000,
+          endedAt: prevWhen.millisecondsSinceEpoch,
+          status: 'done',
+        ));
+        final prevSeId =
+            await container.db.insertSessionExercise(SessionExercise(
+          sessionId: prev.id!,
+          name: '卧推',
+          orderIdx: 0,
+          kind: 'compound',
+          rule: const ProgressionRule(
+              repsMin: 5, repsMax: 8, workingSets: 3),
+        ));
+        await container.db.insertSet(SetEntry(
+          sessionExerciseId: prevSeId,
+          weightKg: 60,
+          reps: 5,
+          rir: 2,
+          kind: SetKind.working,
+          doneAt: prevWhen.millisecondsSinceEpoch,
+        ));
+
+        final day = await makeDay('PR日');
+        final a = await addEx(day, '卧推', 0, workingSets: 1);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+        container.session.setWeightDraft(65);
+      });
+      await pumpWorkout(tester);
+
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+      });
+      await pumpUntilFound(tester, find.text('全部组完成，结束训练吗？'),
+          reason: '最后一组完成先弹收尾确认');
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('结束并保存'));
+      });
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '自动收尾进总结页');
+
+      expect(find.textContaining('PR 突破'), findsOneWidget,
+          reason: 'prHit 必须在 finish 清空前快照（自动收尾也能看到 PR）');
+      expect(find.textContaining('卧推'), findsWidgets);
+      await tester.pump(const Duration(seconds: 6));
+    });
+  });
+
+  // ---------- 手动收尾时长（2026-11-08 复核）----------
+  // 旧实现先读 durationMin 再 finish()：active 会话 ended_at 为空 → 恒 0，
+  // 总结页只显示「训练完成」，训练/休息分桶与飞书摘要也写 0 分钟。
+  group('手动「结束并保存」时长', () {
+    testWidgets('总结页显示真实总时长与训练/休息分桶', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await startLifting(tester);
+      await pumpWorkout(tester);
+
+      // 先记一组（带上休息时长），跳过休息回到记录页：此刻顶栏才在树上，
+      // 且训练/休息两个桶都有值
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+      });
+      await pumpUntilFound(tester, find.text('跳过休息，直接开练'));
+      await tester.tap(find.text('跳过休息，直接开练'));
+      await pumpUntilGone(tester, find.text('跳过休息，直接开练'),
+          reason: '跳过休息应回到记录页');
+      await pumpUntilFound(tester, find.byKey(const Key('workoutCompleteSet')));
+
+      // 长按顶栏：识别器 500ms + 按住 2000ms = 2500ms 起
+      final gesture = await tester
+          .startGesture(tester.getCenter(find.byType(HoldToEndButton)));
+      await tester.pump(const Duration(milliseconds: 2700));
+      await gesture.up();
+      await tester.pump();
+      await pumpUntilFound(tester, find.text('结束并保存'),
+          reason: '长按 2 秒应弹「继续/放弃/结束并保存」三选');
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('结束并保存'));
+      });
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '手动结束应进总结页');
+
+      expect(find.textContaining('总时长'), findsOneWidget,
+          reason: '时长必须 finish 之后读，不能恒 0');
+      expect(find.text('训练完成'), findsNothing,
+          reason: '「训练完成」是 durationMin=0 的占位文案');
+      // 长按手势会留一个 3-5s 的 UI 自动收起定时器，跑掉再收工，
+      // 免得 framework 报「Timer is still pending」。
+      await tester.pump(const Duration(seconds: 6));
+    });
+  });
+
+  // ---------- 忘停表守护：必须在自动收尾落库之前 ----------
+  // 旧实现把守护放在页面收尾（_finishFlow），而自动收尾在 completeSet 内部
+  // 已经 finish() 落库 done：选「不留记录」quit 空转、「截断」只改内存。
+  group('忘停表守护（自动收尾前生效）', () {
+    /// 单动作 1 组会话 + 把 started_at 拨到 5 小时前（组均已超 15 分钟）。
+    Future<void> pumpForgottenWorkout(WidgetTester tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        final day = await makeDay('忘停日');
+        final a = await addEx(day, '卧推', 0, workingSets: 1);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+        final startedAt =
+            DateTime.now().millisecondsSinceEpoch - 5 * 3600 * 1000;
+        container.session.session = Session.fromMap({
+          ...container.session.session!.toMap(),
+          'started_at': startedAt,
+        });
+        await container.db.updateSession(
+            container.session.session!.id!, {'started_at': startedAt});
+      });
+      await pumpWorkout(tester);
+    }
+
+    /// 记满唯一一组 → 「结束并保存」→ 等忘停表守护面板挂起。
+    Future<void> reachForgottenGuard(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+      });
+      await pumpUntilFound(tester, find.text('全部组完成，结束训练吗？'),
+          reason: '最后一组完成先弹收尾确认');
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('结束并保存'));
+      });
+      await pumpUntilFound(tester, find.textContaining('是不是忘停表了'),
+          reason: '结束并保存后、落库前应弹忘停表守护');
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('照原样保存：结束落 done，时长保留整场', (tester) async {
+      await pumpForgottenWorkout(tester);
+      await reachForgottenGuard(tester);
+      expect(container.session.hasActive, isTrue,
+          reason: '守护面板挂起时会话仍未落库（旧实现此时已 done）');
+
+      await tester.runAsync(() async {
+        await tester.tap(find.text('照原样保存'));
+      });
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '照原样保存后进总结页');
+
+      final saved = await tester
+          .runAsync(() => container.db.sessionById(container.session.session!.id!));
+      expect(saved!.status, 'done');
+      expect(saved.endedAt! - saved.startedAt, greaterThan(4 * 3600 * 1000),
+          reason: '照原样 = 不截断，整场时长保留');
+    });
+
+    testWidgets('截到最后一条记录：done 行的 ended_at 真的被截断', (tester) async {
+      await pumpForgottenWorkout(tester);
+      await reachForgottenGuard(tester);
+
+      // 造出「最后一条记录在 2 小时前」：真机上这就是挂机场景。
+      // 守护面板挂在 finish 落库之前，此时改内存里的 done_at 才有意义；
+      // 旧实现已经先 done 落库，改内存改不动历史。
+      final lastDoneAt =
+          DateTime.now().millisecondsSinceEpoch - 2 * 3600 * 1000;
+      await tester.runAsync(() async {
+        final s = container.session;
+        final exId = s.exercises.first.id!;
+        s.setsByEx[exId] = [
+          for (final e in s.setsByEx[exId]!)
+            SetEntry.fromMap({...e.toMap(), 'done_at': lastDoneAt}),
+        ];
+      });
+
+      await tester.runAsync(() async {
+        await tester.tap(find.text('截到最后一条记录保存（推荐）'));
+      });
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '截断保存后进总结页');
+
+      final saved = await tester
+          .runAsync(() => container.db.sessionById(container.session.session!.id!));
+      expect(saved!.status, 'done');
+      expect(saved.endedAt, lastDoneAt + 2 * 60000,
+          reason: '截断必须落库（旧实现只改内存，库里仍是挂机时长）');
+    });
+
+    testWidgets('不留记录：会话不落 done（quit），历史不可见', (tester) async {
+      await pumpForgottenWorkout(tester);
+      final id = container.session.session!.id!;
+      await reachForgottenGuard(tester);
+
+      await tester.runAsync(() async {
+        await tester.tap(find.text('不留记录'));
+      });
+      await pumpUntilGone(tester, find.textContaining('是不是忘停表了'),
+          reason: '选不留记录后面板收起、退出训练页');
+
+      expect(container.session.session, isNull, reason: 'quit 后无活动会话');
+      final history = await tester.runAsync(() =>
+          container.db.sessionsBetween('2000-01-01', '2999-12-31'));
+      expect(history, isEmpty, reason: '不留记录不能进历史（历史只认 done）');
+      final row =
+          await tester.runAsync(() => container.db.sessionById(id));
+      expect(row!.status, 'quit', reason: '旧实现已落 done，quit 空转');
     });
   });
 
@@ -1438,7 +1673,6 @@ void main() {
       await tester.runAsync(() async {
         await container.session
             .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
-        await Future<void>.delayed(const Duration(milliseconds: 150));
       });
       await tester.pump(const Duration(milliseconds: 400));
     }
@@ -1456,13 +1690,12 @@ void main() {
         container.session.skipRest();
         await container.session
             .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
-        await Future<void>.delayed(const Duration(milliseconds: 150));
         container.session.skipRest();
         await container.session
             .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
-        await Future<void>.delayed(const Duration(milliseconds: 200));
       });
-      await tester.pump(const Duration(milliseconds: 400));
+      await pumpUntilFound(tester, find.textContaining('试试负重引体向上'),
+          reason: '练满顶格后给下一档建议');
       expect(find.textContaining('试试负重引体向上'), findsOneWidget,
           reason: '计划组全部练满、顶格且余力达标 → 给下一档建议');
       expect(find.byType(AlertDialog), findsNothing, reason: '训练中禁止弹窗');
@@ -1477,9 +1710,8 @@ void main() {
         container.session.skipRest();
         await container.session
             .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
-        await Future<void>.delayed(const Duration(milliseconds: 200));
       });
-      await tester.pump(const Duration(milliseconds: 400));
+      await pumpUntilFound(tester, find.text('组间休息'), reason: '练满进休息页');
       expect(container.session.inLayoff, isTrue, reason: '20 天没练 → 回归场');
       expect(find.textContaining('试试负重引体向上'), findsNothing,
           reason: '恢复处方优先，不叠加升级建议');
@@ -1494,9 +1726,8 @@ void main() {
         container.session.skipRest();
         await container.session
             .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
-        await Future<void>.delayed(const Duration(milliseconds: 200));
       });
-      await tester.pump(const Duration(milliseconds: 400));
+      await pumpUntilFound(tester, find.text('组间休息'), reason: '练满进休息页');
       expect(container.session.inDeloadWeek, isTrue, reason: '块第 2/2 周');
       expect(find.textContaining('试试负重引体向上'), findsNothing,
           reason: '减载周的处方是恢复，不叠加升级建议');
@@ -1516,15 +1747,11 @@ void main() {
       await tester.runAsync(() async {
         await container.session
             .completeSet(weight: 0, reps: 8, rir: 2, kind: SetKind.working);
-        await Future<void>.delayed(const Duration(milliseconds: 150));
       });
       expect(container.session.hasActive, isFalse, reason: '控制器记满自动结束');
       await tester.pumpWidget(host(container, const WorkoutPage()));
-      await tester.pump();
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 400)));
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.text('训练完成 💪'), findsOneWidget, reason: '收尾进总结页');
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '收尾进总结页');
       expect(find.textContaining('次数到顶，下次建议加练一组'), findsOneWidget,
           reason: '总结页加组建议');
       expect(find.textContaining('也可以试试负重引体向上'), findsOneWidget,

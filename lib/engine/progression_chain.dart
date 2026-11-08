@@ -338,6 +338,32 @@ ChainVerdict evaluateChain({
   if (anyBelowMin) {
     // 减重方向对负重量同样成立：delta 为负 = 正重量更轻 / 辅助配重更多
     final cut = -round05(state.weightKg.abs() * 0.05);
+    // 自重（0kg）没有重量轴；小重量档的 5% 被 0.5kg 步长吃掉（cut == 0）
+    // 也无处可减——两种情况都保持，不能给出「减重 5%（-0.0 kg）」的空建议。
+    if (state.weightKg == 0) {
+      return ChainVerdict(
+        'hold',
+        state,
+        tx(
+            logging == LoggingMode.time
+                ? '有组未达到下限 ${rule.repsMin} 秒 → 自重动作没有重量可减：先缩短保持或换更容易的变式，稳了再冲 $unit目标'
+                : '有组未达到下限 ${rule.repsMin} 次 → 自重动作没有重量可减：先加组或换更容易的变式，稳了再冲 $unit目标',
+            en: logging == LoggingMode.time
+                ? 'Some sets missed the ${rule.repsMin}s floor → bodyweight has no weight to cut: shorten the hold or use an easier variation, then chase more seconds'
+                : 'Some sets missed the ${enRepPhrase(rule.repsMin, logging)} floor → bodyweight has no weight to cut: add sets or use an easier variation, then chase more reps'),
+        holdKind: 'bodyweight_hold',
+      );
+    }
+    if (cut == 0) {
+      return ChainVerdict(
+        'hold',
+        state,
+        tx(
+            '有组未达到下限 ${rule.repsMin} $unit，但当前重量档减 5% 不足 0.5kg——先保持重量稳动作',
+            en: 'Some sets missed the ${enRepPhrase(rule.repsMin, logging)} floor, but 5% of the current weight is under 0.5kg — hold the weight and re-groove the form'),
+        holdKind: 'min_weight',
+      );
+    }
     return ChainVerdict(
       'decrease',
       ChainState(
@@ -345,6 +371,19 @@ ChainVerdict evaluateChain({
           targetReps: state.targetReps),
       tx('有组未达到下限 ${rule.repsMin} $unit → 建议减重约 5%（$cut kg），先稳动作',
           en: 'Some sets missed the ${enRepPhrase(rule.repsMin, logging)} floor → reduce ~5% ($cut kg) and re-groove the form'),
+    );
+  }
+  // 次数全达标、只有末组余力不足：单独一类 holdKind（rir_low）。
+  // 不能与真正的「次数没做到」（target_miss）混用——平台期协议只认
+  // target_miss，混用会把「余力低」改写成减载 10% 或加重建议。
+  if (allMetTarget) {
+    return ChainVerdict(
+      'hold',
+      state,
+      tx(
+          '${near.length} 组都达到 ${state.targetReps} $unit目标，但末组余力只剩 ${lastSet.rir}（低于 ${rule.rirTarget - 1}）→ 重量与$unit目标保持，先把余力养回来',
+          en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target, but last-set RIR was ${lastSet.rir} (below ${rule.rirTarget - 1}) — hold weight and target, rebuild your reserve'),
+      holdKind: 'rir_low',
     );
   }
   return ChainVerdict(
