@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data' show BytesBuilder;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -714,11 +715,36 @@ class LocalBridgeService extends ChangeNotifier {
     return (alt == null || alt.isEmpty) ? null : alt;
   }
 
+  /// 配对请求体上限（字节）。配对 body 只有一个 6 位数字，1KB 足够。
+  static const int _maxPairBodyBytes = 1024;
+
+  /// 读取配对请求体，最多保留 [_maxPairBodyBytes] 字节。
+  ///
+  /// 安全边界：同网段任意设备可匿名 POST /v1/pair，先把整包读进内存再判长度
+  /// 等于给对方一个「几百 MB 就能把 App 内存打爆」的开关（训练中心跳/前台
+  /// 服务会一起断）。所以：
+  /// - 声明了 Content-Length 且超限：直接 drain 丢弃，不缓存一个字节；
+  /// - chunked（无长度）：边读边累计，一超限就清空缓存、剩下的只丢不存；
+  /// - 两种情况都在 drain 完之后才抛 FormatException（连接正常收尾，
+  ///   不因拒绝而让对端写阻塞）。
   Future<String> _readBody(HttpRequest req) async {
-    final text = await utf8.decodeStream(req);
-    // 配对请求体极小；超长直接按格式错误处理，避免被人塞大包
-    if (text.length > 1024) throw const FormatException('请求体过大');
-    return text;
+    if (req.contentLength > _maxPairBodyBytes) {
+      await req.drain<void>();
+      throw const FormatException('请求体过大');
+    }
+    final buf = BytesBuilder(copy: false);
+    var tooLarge = false;
+    await for (final chunk in req) {
+      if (tooLarge) continue; // 已超限：只 drain，不再缓存
+      if (buf.length + chunk.length > _maxPairBodyBytes) {
+        tooLarge = true;
+        buf.clear();
+        continue;
+      }
+      buf.add(chunk);
+    }
+    if (tooLarge) throw const FormatException('请求体过大');
+    return utf8.decode(buf.takeBytes());
   }
 
   int _intParam(HttpRequest req, String key,

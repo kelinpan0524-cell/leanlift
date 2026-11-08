@@ -146,6 +146,51 @@ void main() {
     return (jsonDecode(res.body) as Map<String, dynamic>)['token'] as String;
   }
 
+  /// 发原始字节 body（造超大包用）：[chunked] = 不声明长度，走分块传输。
+  Future<({int status, String body})> postRaw(List<int> bytes,
+      {bool chunked = false}) async {
+    final client = HttpClient();
+    try {
+      final req = await client.openUrl(
+          'POST', Uri.parse('http://127.0.0.1:${bridge.actualPort}/v1/pair'));
+      req.headers.contentType = ContentType.json;
+      // 不设 contentLength（默认 -1）时 dart:io 用分块传输，服务端拿不到长度
+      if (!chunked) req.contentLength = bytes.length;
+      req.add(bytes);
+      final res = await req.close();
+      return (status: res.statusCode, body: await utf8.decodeStream(res));
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  test('配对 body 上限按字节算：700 个汉字（2.1KB）直接判超限', () async {
+    expect(await bridge.start(), isTrue);
+    // 旧实现先解码再按 1024 个「字符」判：700 字 < 1024 → 放进去继续解析；
+    // 新实现按字节判（1KB 上限），2100 字节直接拒绝，不把整包读进内存。
+    final r = await postRaw(utf8.encode('汉' * 700));
+    expect(r.status, 400);
+    expect(r.body, contains('请求体过大'));
+  });
+
+  test('2MB 声明长度的大包：拒绝后连接被 drain，服务照常可用', () async {
+    expect(await bridge.start(), isTrue);
+    final r = await postRaw(List<int>.filled(2 * 1024 * 1024, 0x61));
+    expect(r.status, 400);
+    expect(r.body, contains('请求体过大'));
+    // 同一个服务实例紧跟着正常配对：说明大包被读干净、没有半开连接卡住
+    final ok = await call('POST', '/v1/pair', body: {'code': bridge.pairingCode});
+    expect(ok.status, 200, reason: '大包之后服务必须还能正常响应');
+  });
+
+  test('2MB chunked 大包（无 Content-Length）：边读边丢，同样拒绝', () async {
+    expect(await bridge.start(), isTrue);
+    final r = await postRaw(List<int>.filled(2 * 1024 * 1024, 0x61),
+        chunked: true);
+    expect(r.status, 400);
+    expect(r.body, contains('请求体过大'));
+  });
+
   test('探不到局域网地址时拒绝启动（免得开了没人连得上）', () async {
     final lone = LocalBridgeService(
       db: db,
