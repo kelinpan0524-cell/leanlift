@@ -78,6 +78,10 @@ class SessionController extends ChangeNotifier {
   int workingSetsDone = 0; // 当前动作正式组完成数
   final Set<String> prHit = {};
 
+  /// 上一场 finish 时的 PR 快照：finish() 会清空 [prHit]，而自动收尾的
+  /// 总结页在 finish 之后才取列表；页面改读这份快照才能看到 PR 卡片。
+  List<String> finishedPrNames = const [];
+
   // ---------- 训练块与减载（P1-C） ----------
   // 块起点 = 当前计划第一次 done 训练；块内第 N 周为减载周。
   // 只在新会话启动/恢复时计算，训练中不随日期翻周变化（处方稳定）。
@@ -1997,6 +2001,8 @@ class SessionController extends ChangeNotifier {
     await _exitFocus();
     session = await _db.sessionById(session!.id!);
     WakelockPlus.disable();
+    // 先快照再清空：自动收尾的总结页在 finish 之后才取 PR 列表
+    finishedPrNames = prHit.toList();
     prHit.clear();
     _setPhase(WorkoutPhase.idle);
     onSessionClosed?.call();
@@ -2018,6 +2024,7 @@ class SessionController extends ChangeNotifier {
     WakelockPlus.disable();
     session = null;
     prHit.clear();
+    finishedPrNames = const [];
     truncatedEndAtMs = null;
     _blockWeek = null;
     _blockWeeks = 0;

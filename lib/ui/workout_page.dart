@@ -216,10 +216,11 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
       final verdicts = await s.verdicts();
       final date = s.session?.date ?? fmtDate(DateTime.now());
       final title = s.session?.planDayTitle ?? '';
-      final prNames = s.prHit.toList();
       await s.finish();
       // 守护里选「不留记录」→ quit 后 session 为空：不建总结页（页面已退出）
       if (s.session == null) return;
+      // PR 列表在 finish 里已清空，读快照（自动收尾与手动收尾同一口径）
+      final prNames = s.finishedPrNames;
       // 时长必须在 finish 落库后读：active 会话 ended_at 为空，durationMin 恒 0
       final durationMin = s.session?.durationMin ?? 0;
       c.notify.cancelRest();

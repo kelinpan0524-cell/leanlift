@@ -1323,6 +1323,67 @@ void main() {
     });
   });
 
+  // ---------- 自动收尾 PR 卡片（2026-11-08 复核）----------
+  // finish() 会清空 prHit；自动收尾在 completeSet 内先 finish，页面随后才
+  // 取 prHit → 永远是空列表，最常规的结束方式反而看不到 PR 卡片。
+  group('自动收尾的总结页 PR', () {
+    testWidgets('最后一组破 PR：自动收尾后总结页有「PR 突破」卡片', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await tester.runAsync(() async {
+        // 历史：3 天前卧推 60kg×5（done），本次 65kg 即 PR
+        final prevWhen = DateTime.now().subtract(const Duration(days: 3));
+        final prev = await container.db.insertSession(Session(
+          date: fmtDate(prevWhen),
+          planDayTitle: '推日',
+          startedAt: prevWhen.millisecondsSinceEpoch - 1800000,
+          endedAt: prevWhen.millisecondsSinceEpoch,
+          status: 'done',
+        ));
+        final prevSeId =
+            await container.db.insertSessionExercise(SessionExercise(
+          sessionId: prev.id!,
+          name: '卧推',
+          orderIdx: 0,
+          kind: 'compound',
+          rule: const ProgressionRule(
+              repsMin: 5, repsMax: 8, workingSets: 3),
+        ));
+        await container.db.insertSet(SetEntry(
+          sessionExerciseId: prevSeId,
+          weightKg: 60,
+          reps: 5,
+          rir: 2,
+          kind: SetKind.working,
+          doneAt: prevWhen.millisecondsSinceEpoch,
+        ));
+
+        final day = await makeDay('PR日');
+        final a = await addEx(day, '卧推', 0, workingSets: 1);
+        await container.session.startFromDay(day: day, planExercises: [a]);
+        container.session.setWeightDraft(65);
+      });
+      await pumpWorkout(tester);
+
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+      });
+      await pumpUntilFound(tester, find.text('全部组完成，结束训练吗？'),
+          reason: '最后一组完成先弹收尾确认');
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('结束并保存'));
+      });
+      await pumpUntilFound(tester, find.text('训练完成 💪'),
+          reason: '自动收尾进总结页');
+
+      expect(find.textContaining('PR 突破'), findsOneWidget,
+          reason: 'prHit 必须在 finish 清空前快照（自动收尾也能看到 PR）');
+      expect(find.textContaining('卧推'), findsWidgets);
+      await tester.pump(const Duration(seconds: 6));
+    });
+  });
+
   // ---------- 手动收尾时长（2026-11-08 复核）----------
   // 旧实现先读 durationMin 再 finish()：active 会话 ended_at 为空 → 恒 0，
   // 总结页只显示「训练完成」，训练/休息分桶与飞书摘要也写 0 分钟。
