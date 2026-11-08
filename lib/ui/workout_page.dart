@@ -741,6 +741,7 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
         return _LiftView(
           s: s,
           compact: compact,
+          holdMark: _holdMark,
           onRecorded: _onSetRecorded,
           onSessionEnded: _finishFlow,
         );
@@ -767,9 +768,11 @@ class _WorkoutPageState extends State<WorkoutPage> with WidgetsBindingObserver {
 
   /// 保存划线确认（wger 的"保存→划线→翻页"里的划线步）：
   /// 半透明遮罩上盖「已记录」章，刚存的组带删除线展示，不打断计时。
+  /// 必须 AbsorbPointer：IgnorePointer 会让点击穿透到下面已推进到下一动作的
+  /// 操作面板，等于替下一个动作凭空记一组。
   Widget _buildMarkOverlay() {
     return Positioned.fill(
-      child: IgnorePointer(
+      child: AbsorbPointer(
         child: ColoredBox(
           color: AppTheme.bg.withValues(alpha: 0.55),
           child: Center(
@@ -1302,6 +1305,7 @@ class _LiftView extends StatelessWidget {
   const _LiftView({
     required this.s,
     this.compact = false,
+    this.holdMark = false,
     this.onRecorded,
     this.onSessionEnded,
   });
@@ -1310,6 +1314,10 @@ class _LiftView extends StatelessWidget {
 
   /// <600dp 窄屏：压缩面板（大数字字号降档、隐藏备注行）。
   final bool compact;
+
+  /// 「已记录」划线窗口进行中：此时页面冻结但控制器已推进到下一组/下一动作，
+  /// 必须屏蔽本页的记录回调，不能把第二下点击算到新动作头上。
+  final bool holdMark;
 
   /// 保存一组成功后的划线标记回调（宿主盖「已记录」章并自动翻页）。
   final void Function(String mark)? onRecorded;
@@ -1344,6 +1352,7 @@ class _LiftView extends StatelessWidget {
                           child: _ActionPanel(
                             s: s,
                             ex: ex,
+                            holdMark: holdMark,
                             key: ValueKey(ex.id),
                             onRecorded: onRecorded,
                             onSessionEnded: onSessionEnded,
@@ -1382,6 +1391,7 @@ class _LiftView extends StatelessWidget {
                           _ActionPanel(
                             s: s,
                             ex: ex,
+                            holdMark: holdMark,
                             key: ValueKey(ex.id),
                             compact: compact,
                             onRecorded: onRecorded,
@@ -2081,6 +2091,7 @@ class _ActionPanel extends StatefulWidget {
     required this.s,
     required this.ex,
     this.compact = false,
+    this.holdMark = false,
     this.onRecorded,
     this.onSessionEnded,
   });
@@ -2091,6 +2102,9 @@ class _ActionPanel extends StatefulWidget {
   /// <600dp 窄屏压缩：重量大数字 84→56、收起备注行；
   /// 步进按钮与「完成本组」高度不动（冻结基线）。
   final bool compact;
+
+  /// 「已记录」划线窗口进行中：忽略记录回调（宿主另有遮罩吃掉手势）。
+  final bool holdMark;
 
   /// 保存一组成功（会话未结束）：宿主盖「已记录」章并自动翻到下一页。
   final void Function(String mark)? onRecorded;
@@ -2890,13 +2904,14 @@ class _ActionPanelState extends State<_ActionPanel> {
                         : tx('完成', en: 'Done'),
                     color:
                         _kind == SetKind.failure ? AppTheme.warn : AppTheme.primary,
-                    onPressed:
-                        _saving ? null : () => _saveCurrentSet(context),
+                    onPressed: (_saving || widget.holdMark)
+                        ? null
+                        : () => _saveCurrentSet(context),
                   ),
                 ),
                 const SizedBox(width: 12),
                 TextButton(
-                  onPressed: _saving
+                  onPressed: (_saving || widget.holdMark)
                       ? null
                       : () {
                           HapticFeedback.selectionClick();
@@ -2918,7 +2933,9 @@ class _ActionPanelState extends State<_ActionPanel> {
                   ? tx('加练一组（正式组）', en: 'Extra Set (Working)')
                   : tx('完成本组', en: 'Done'),
               color: _kind == SetKind.failure ? AppTheme.warn : AppTheme.primary,
-              onPressed: _saving ? null : () => _saveCurrentSet(context),
+              onPressed: (_saving || widget.holdMark)
+                  ? null
+                  : () => _saveCurrentSet(context),
             ),
         ],
       ),
@@ -2931,6 +2948,10 @@ class _ActionPanelState extends State<_ActionPanel> {
   /// - 单侧：保存值就近取偶（每边均分口径，奇数输入自动归一）；
   /// - 常规负重：重量取当前草稿、次数取点选值（原行为不变）。
   Future<void> _saveCurrentSet(BuildContext context) async {
+    // 防重入：await 落库期间按钮还没重建置灰，同一帧连按两次会记两组。
+    // 划线窗口内同样不许记录——此时控制器已推进到下一组/下一动作，
+    // 记下去会算到新动作头上。
+    if (_saving || widget.holdMark) return;
     final s = widget.s;
     final ex = widget.ex;
     final timed = isTimedLogging(ex.logging);

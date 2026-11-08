@@ -654,6 +654,55 @@ void main() {
       expect(progressBar(tester).value, closeTo(1 / 6, 1e-6));
     });
 
+    testWidgets('划线窗口内再点「完成本组」被遮罩吃掉，不多记一组', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await startLifting(tester);
+      await pumpWorkout(tester);
+      final exId = container.session.exercises.first.id!;
+
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      });
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(find.text('已记录'), findsOneWidget, reason: '划线章已盖上');
+
+      // 划线窗口内再点一次同一位置：遮罩必须真的吃掉手势，不能穿透到
+      // 下面已推进到「下一组 / 下一动作」的操作面板（穿透会换动作记组）。
+      await tester.runAsync(() async {
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')),
+            warnIfMissed: false);
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      });
+      await tester.pump(const Duration(milliseconds: 50));
+
+      final saved =
+          await tester.runAsync(() => container.db.setsOfExercise(exId));
+      expect(saved!.length, 1, reason: '划线期间再点一次不能多记一组');
+      expect(find.textContaining('再按一次「完成本组」'), findsNothing,
+          reason: '点击没有穿透到面板（穿透会触发余力提醒）');
+    });
+
+    testWidgets('快速连按两次「完成本组」只落一组（_saving 拦重入）', (tester) async {
+      setSurface(tester, const Size(360, 800));
+      await startLifting(tester);
+      await pumpWorkout(tester);
+      final exId = container.session.exercises.first.id!;
+
+      await tester.runAsync(() async {
+        await pickRir2(tester);
+        // 同一帧内连按两次：第一次的 await 还没回来，第二次就进了函数
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+        await tester.tap(find.byKey(const Key('workoutCompleteSet')));
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+      });
+
+      final saved =
+          await tester.runAsync(() => container.db.setsOfExercise(exId));
+      expect(saved!.length, 1, reason: '重入必须被 _saving 拦住');
+    });
+
     testWidgets('热身/力竭组不推进页面（与控制器语义一致）', (tester) async {
       setSurface(tester, const Size(360, 800));
       await startLifting(tester);
