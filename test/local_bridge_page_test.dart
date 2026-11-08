@@ -84,6 +84,68 @@ void main() {
         matching: find.byType(Switch),
       );
 
+  /// 条件轮询：假时钟推一帧 + 真实事件环跑一步，直到 [condition] 成立。
+  /// 真 socket 启动是真实 I/O，固定 sleep 在慢机器上会偶发不够。
+  Future<void> pumpUntil(
+    WidgetTester tester,
+    bool Function() condition, {
+    required String reason,
+    Duration timeout = const Duration(seconds: 10),
+    Duration step = const Duration(milliseconds: 100),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (true) {
+      await tester.pump(step);
+      if (condition()) return;
+      if (!DateTime.now().isBefore(deadline)) {
+        fail('$reason：等了 ${timeout.inSeconds} 秒仍未成立');
+      }
+      await tester.runAsync(() => Future<void>.delayed(step));
+    }
+  }
+
+  testWidgets('开启前必须显式确认明文风险：取消不启动，确认才启动', (tester) async {
+    await pumpPage(tester);
+    expect(container.bridge.running, isFalse);
+
+    await tester.tap(switchOf('开启局域网连接'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('只在家里 / 可信的 Wi-Fi 开启'), findsOneWidget);
+    expect(
+        find.descendant(
+            of: find.byType(AlertDialog),
+            matching: find.textContaining('明文 HTTP')),
+        findsOneWidget,
+        reason: '确认框必须写明明文传输');
+    expect(
+        find.descendant(
+            of: find.byType(AlertDialog),
+            matching: find.textContaining('令牌不过期')),
+        findsOneWidget,
+        reason: '确认框必须写清令牌不过期');
+
+    await tester.tap(find.text('取消'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(container.bridge.running, isFalse, reason: '取消不能启动服务');
+
+    await tester.tap(switchOf('开启局域网连接'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('我知道，仍要开启'));
+    await pumpUntil(tester, () => container.bridge.running,
+        reason: '确认后服务应启动');
+    expect(container.bridge.running, isTrue);
+
+    // 收尾：停服务 + 卸载页面，清掉真实/周期定时器再结束用例
+    await tester.runAsync(() async {
+      await container.bridge.stop();
+    });
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
   testWidgets('设置页有「局域网连接」入口，点开进本页', (tester) async {
     tallSurface(tester);
     await tester.pumpWidget(AppScope(

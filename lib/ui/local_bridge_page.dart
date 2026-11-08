@@ -59,8 +59,21 @@ class _LocalBridgePageState extends State<LocalBridgePage> {
       await b.stop();
       return;
     }
-    final ok = await b.start();
-    if (!ok && mounted) {
+    // 明文 HTTP + 令牌不过期：开启前必须显式确认（2026-11-08 复核）。
+    // 这是设计取舍不是 bug——不换 HTTPS，只把风险从「说明文字」升级成
+    // 「必须点一次『我知道，仍要开启』」，避免在公共 Wi-Fi 上顺手打开。
+    final ok = await confirmDialog(
+      context,
+      tx('只在家里 / 可信的 Wi-Fi 开启', en: 'Enable only on home or trusted Wi-Fi'),
+      tx('这个连接在局域网内走明文 HTTP：配对码和令牌都不加密，令牌不过期（只有在这里「断开设备」才作废）。'
+          '在咖啡馆、健身房、酒店等公共 Wi-Fi 上，同网段的人拿到令牌就能一直读你的全部训练数据。'
+          '请只在自家或完全可信的 Wi-Fi 下使用。',
+          en: 'This bridge uses plain HTTP inside your LAN: the pairing code and token are not encrypted, and the token never expires until you revoke the device here. On public Wi-Fi (cafés, gyms, hotels) someone on the same network could capture the token and read all your workout data. Use it only on your home or trusted Wi-Fi.'),
+      okLabel: tx('我知道，仍要开启', en: 'I understand — enable'),
+    );
+    if (!ok) return;
+    final ok2 = await b.start();
+    if (!ok2 && mounted) {
       toast(context, b.lastError ?? tx('启动失败', en: 'Failed to start'));
     }
   }
@@ -148,6 +161,8 @@ class _LocalBridgePageState extends State<LocalBridgePage> {
               en: 'Read-only: nothing can be written back — plans and records stay untouched.')),
           _bullet(tx('不经过任何服务器：数据始终留在手机和局域网内。',
               en: 'No server involved: data never leaves the phone and your local network.')),
+          _bullet(tx('⚠️ 局域网内是明文 HTTP，令牌不过期：只在家里/可信的 Wi-Fi 开启；公共 Wi-Fi 上同网段的人可能抓到令牌读走全部训练数据。',
+              en: '⚠️ Plain HTTP inside the LAN and the token never expires: use home/trusted Wi-Fi only. On public Wi-Fi, someone on the same network could capture the token and read all your data.')),
           _bullet(tx('默认不常驻：每次都要在这里手动开启；无请求 10 分钟自动关闭。',
               en: 'Not persistent by default: you turn it on here each time, and it stops itself after 10 idle minutes.')),
           _bullet(tx('可选「常驻」：只在你记住的局域网（建议家里 Wi-Fi）内自动开启、不自动关；换网不生效。',
