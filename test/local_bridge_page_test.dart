@@ -325,9 +325,10 @@ void main() {
     await tester.pump();
 
     expect(b.persistentEnabled, isTrue);
-    expect(b.rememberedLan, '10.0.0', reason: '注入的 ipProbe 是 10.0.0.5，取前三段');
+    expect(b.rememberedLan, '10.0.0.5',
+        reason: '注入的 ipProbe 是 10.0.0.5，签名记完整地址');
     expect(b.running, isTrue, reason: '开常驻时用户多半当下就要用，顺手拉起');
-    expect(find.text('已记住这个局域网（10.0.0.x）'), findsOneWidget);
+    expect(find.text('已记住这个局域网（10.0.0.5）'), findsOneWidget);
     expect(find.text('常驻生效中：不会自动关闭（App 划掉即停）'), findsOneWidget);
 
     // start 是在 tap 链（假异步区）里执行的，它武装的周期 Timer 会让
@@ -344,7 +345,7 @@ void main() {
       expect(await b.start(), isTrue);
     });
     await tester.pump();
-    expect(find.text('已记住这个局域网（10.0.0.x）'), findsOneWidget);
+    expect(find.text('已记住这个局域网（10.0.0.5）'), findsOneWidget);
 
     await tester.tap(switchOf('常驻模式'));
     await tester.pump();

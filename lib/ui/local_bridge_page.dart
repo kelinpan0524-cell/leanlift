@@ -239,8 +239,10 @@ class _LocalBridgePageState extends State<LocalBridgePage> {
             ),
             subtitle: Text(
               enabled
-                  ? tx('已记住这个局域网（$lan.x）',
-                      en: 'Remembered network: $lan.x')
+                  // 签名叫完整 IP（同 /24 的不同网络不再算同一个），
+                  // 不再补 `.x` 后缀——补了反而显示成 10.0.0.5.x
+                  ? tx('已记住这个局域网（$lan）',
+                      en: 'Remembered network: $lan')
                   : tx('关闭 · 开启后在这个局域网内自动连接、不自动关',
                       en: 'Off · auto-connects inside this network, never idle-stops'),
               style: TextStyle(
