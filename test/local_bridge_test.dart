@@ -547,8 +547,8 @@ void main() {
     expect(await bridge.start(), isTrue);
     expect(await bridge.enablePersistent(), isTrue);
     expect(bridge.persistentEnabled, isTrue);
-    // 测试注入的 ipProbe 是 127.0.0.1 → 签名取前三段
-    expect(bridge.rememberedLan, '127.0.0');
+    // 测试注入的 ipProbe 是 127.0.0.1 → 签名取完整地址
+    expect(bridge.rememberedLan, '127.0.0.1');
     expect(bridge.persistentActive, isTrue);
     await bridge.stop();
 
@@ -572,7 +572,36 @@ void main() {
     await other.stop();
   });
 
+  test('常驻签名按完整 IP：同 /24 换了 host 不当作同一个局域网', () async {
+    final home = LocalBridgeService(
+      db: db,
+      prefs: prefs,
+      port: 0,
+      ipProbe: () async => const ['192.168.1.5'],
+    );
+    expect(await home.start(), isTrue);
+    expect(await home.enablePersistent(), isTrue);
+    await home.stop();
+
+    // 同一个 /24 的另一张网（咖啡馆常见的 192.168.1.x）：不能自动常驻
+    final stranger = LocalBridgeService(
+      db: db,
+      prefs: prefs,
+      port: 0,
+      ipProbe: () async => const ['192.168.1.77'],
+    );
+    expect(await stranger.maybeAutoStart(), isFalse,
+        reason: '旧实现只比前三段，会把 192.168.1.77 当成家里的网自动开');
+    expect(stranger.running, isFalse);
+    expect(stranger.persistentMismatch, isTrue);
+    await stranger.stop();
+    // 签名本身也确认是完整地址（自启判定的依据）
+    expect(home.rememberedLan, '192.168.1.5',
+        reason: '签名记完整地址，不是前三段');
+  });
+
   test('常驻生效时不空闲自动关；关掉常驻后恢复空闲自动关', () async {
+
     Future<LocalBridgeService> quick() async => LocalBridgeService(
           db: db,
           prefs: prefs,

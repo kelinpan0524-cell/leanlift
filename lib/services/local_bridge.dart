@@ -132,7 +132,7 @@ class LocalBridgeService extends ChangeNotifier {
   /// 用户是否开了常驻（落盘，App 重启后仍在）。
   bool get persistentEnabled => prefs.getBool(_persistentKey) ?? false;
 
-  /// 记住的局域网签名（如 `192.168.1`；没开过常驻时为 null）。
+  /// 记住的局域网签名（完整 IPv4，如 `192.168.1.5`；没开过常驻时为 null）。
   String? get rememberedLan => prefs.getString(_lanKey);
 
   /// 常驻此刻是否生效：开了常驻 **且** 当前就在记住的局域网里。
@@ -289,15 +289,36 @@ class LocalBridgeService extends ChangeNotifier {
     return _lanOfIps(ips);
   }
 
-  /// 签名 = 首个 IPv4 地址的前 3 段。测试注入的 loopback 也会走到这
-  /// （生产探测不含 loopback），不影响正确性。
+  /// 签名 = 一个完整的私有 IPv4（如 `192.168.1.5`）。
+  ///
+  /// 只用前三段会把「同样 192.168.1.x 的别家网络」误判成家里，常驻就在陌生
+  /// 网络里自动亮着（报告 2026-11-08 第 14 条）。完整地址更严格：换了网
+  /// （哪怕同一个 /24）一律不自启，用户手动开一次即可——宁可少方便一步，
+  /// 也不在陌生网络里自动开放。
+  ///
+  /// 优先取 10/8、172.16/12、192.168/16 的私有地址，避开 VPN/CGNAT
+  /// （如 Tailscale 的 100.64/10）等附加网卡；没有私有地址时退回首个 IPv4
+  /// （测试注入的 loopback 走这条）。
   static String? _lanOfIps(List<String> ips) {
+    String? fallback;
     for (final ip in ips) {
       if (ip.contains(':')) continue; // 跳过 IPv6
-      final parts = ip.split('.');
-      if (parts.length == 4) return parts.take(3).join('.');
+      if (ip.split('.').length != 4) continue;
+      fallback ??= ip;
+      if (_isPrivateIpv4(ip)) return ip;
     }
-    return null;
+    return fallback;
+  }
+
+  static bool _isPrivateIpv4(String ip) {
+    final parts = ip.split('.').map(int.tryParse).toList();
+    if (parts.length != 4 || parts.any((v) => v == null)) return false;
+    final a = parts[0]!;
+    final b = parts[1]!;
+    if (a == 10) return true;
+    if (a == 172 && b >= 16 && b <= 31) return true;
+    if (a == 192 && b == 168) return true;
+    return false;
   }
 
   /// 主动断开某台已配对设备（撤销其令牌，并从落盘里删掉摘要）。
