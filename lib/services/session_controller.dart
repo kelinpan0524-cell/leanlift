@@ -681,11 +681,30 @@ class SessionController extends ChangeNotifier {
         // 先取回心跳里已入桶的累计值（新实例内存桶从 0 起），再补被杀段
         restMs = _prefs.getInt('sess.restMs') ?? 0;
         activeMs = _prefs.getInt('sess.activeMs') ?? 0;
-        final extra = DateTime.now().millisecondsSinceEpoch - hbSince;
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        var extra = nowMs - hbSince;
         if (extra > 0) {
           if (hbPhase == 1) {
+            // 休息中被杀：最多补到原休息结束点。休息早就结束了还隔几小时
+            // 重开，多出来的时间不是休息（否则历史里的休息桶全是虚假值）。
+            final restEnd = _prefs.getInt('rest.endAt') ?? 0;
+            if (restEnd > hbSince) {
+              final allowed = restEnd - hbSince;
+              if (extra > allowed) extra = allowed;
+            } else {
+              extra = 0; // 没有结束点 / 心跳时就已经该结束：不补
+            }
             restMs += extra;
           } else {
+            // 训练中被杀：最多补到「最后一条记录 + 2 分钟」；没有记录时
+            // 以 30 分钟（忘停表守护的可疑阈值）封顶——挂机几小时不能
+            // 整段算成训练时长，尤其用户在守护里选「照原样保存」时。
+            final last = lastSetDoneAtMs;
+            final cap =
+                last != null ? last + 2 * 60000 : hbSince + 30 * 60000;
+            final allowed = cap - hbSince;
+            if (extra > allowed) extra = allowed;
+            if (extra < 0) extra = 0;
             activeMs += extra;
           }
         }
