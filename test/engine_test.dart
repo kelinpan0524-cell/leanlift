@@ -121,7 +121,7 @@ void main() {
       expect(estimate1RM(80, 3), closeTo(88.0, 0.001));
     });
 
-    test('1RM 分公式：6 次及以上取 Epley 与 Brzycki 平均的保守口径', () {
+    test('1RM 分公式：6-12 次取 Epley 与 Brzycki 平均的保守口径', () {
       // 100×6：Epley 120，Brzycki 100×36/31≈116.129 → 平均 ≈118.0645
       expect(estimate1RM(100, 6), closeTo(118.0645, 0.001));
       // 100×10：两公式恰好相等（Epley 133.33、Brzycki 360/27=133.33）→ 133.33
@@ -130,7 +130,22 @@ void main() {
       expect(estimate1RM(100, 12), closeTo(142.0, 0.001));
     });
 
-    test('1RM 分公式：37 次以上 Brzycki 分母非正，退回 Epley', () {
+    test('1RM 分公式：13 次起不再混入发散的 Brzycki', () {
+      // 旧口径 100×30 ≈ 357kg（3.57 倍）、100×36 ≈ 1910kg（19 倍），
+      // 且 37 次断崖掉回 223；新口径只用 Epley：20/30/36 次 = 166.7/200/220
+      expect(estimate1RM(100, 20), closeTo(166.6667, 0.001));
+      expect(estimate1RM(100, 30), closeTo(200.0, 0.001));
+      expect(estimate1RM(100, 36), closeTo(220.0, 0.001));
+      // 单调性：13→40 次估值不下降（旧口径在 36→37 处断崖）
+      var prev = 0.0;
+      for (var r = 13; r <= 40; r++) {
+        final v = estimate1RM(100, r);
+        expect(v, greaterThan(prev), reason: '$r 次估值不该低于更低次数');
+        prev = v;
+      }
+    });
+
+    test('1RM 分公式：37 次以上沿用 Epley（高次数段只剩它）', () {
       // Epley 100×(1+37/30) = 223.33
       expect(estimate1RM(100, 37), closeTo(223.3333, 0.001));
     });
