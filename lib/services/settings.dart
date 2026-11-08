@@ -243,6 +243,13 @@ class Settings extends ChangeNotifier {
   }
 
   Future<void> save() async {
+    // TODO(2026-11-08): 密钥类字段（aiApiKey / larkAppSecret / larkRefreshToken /
+    // ghUpdateToken / larkAccessToken）明文存 SharedPreferences。现状风险：
+    // AndroidManifest 的 allowBackup="false" 挡住了云备份 / adb backup 这条
+    // 最现实的外泄路径，设备被 root 或拿到应用私有目录仍可直接读。
+    // 迁移到 Android Keystore 需要把 Settings 的同步 getter 改成「异步引导 +
+    // 同步缓存」，牵动 AI / 飞书 / 更新检查三处的构造时机；本次不擅自新增
+    // 依赖（flutter_secure_storage），也不做半套迁移以免丢凭证。
     // 撤销 AI 配置即收回「自动写周报」授权（与 _load 同一不变量）：
     // 重新配置后开关必须是关闭状态，用户要再点一次才联网。
     if (!aiConfigured) aiWeeklyRecapOn = false;

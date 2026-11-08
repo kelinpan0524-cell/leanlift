@@ -147,6 +147,7 @@
 - **联网只有三件事**（全部可选）：飞书日历读写、AI 功能（你的 Key 直连你的服务商）、检查更新（GitHub Releases）
 - 局域网 MCP 桥**不额外联网**：只在你自己的 Wi-Fi 内应答，不经任何云端（教程见 [docs/MCP_GUIDE.md](docs/MCP_GUIDE.md)）
 - AI Key / 飞书凭证只存手机本地，永不上传、永不进仓库
+- **凭证存储的已知取舍**：以上凭证存本地 `SharedPreferences`（未用系统 Keystore 加密）。`android:allowBackup="false"` 已挡住云备份 / `adb backup` 这条最现实的外泄路径；设备被 root 或能直接读应用私有目录时才可获取。迁到 Keystore 需要把设置读取改成异步引导，属独立改造（见 `lib/services/settings.dart` 的 TODO）。
 - 无广告、无统计 SDK、无崩溃上报
 
 ## 🛠️ 开发
