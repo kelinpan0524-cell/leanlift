@@ -1,3 +1,4 @@
+import '../engine/exercise_identity.dart' show canonicalExerciseNameOf;
 import 'lang.dart';
 
 /// 数据名词的显示层英译表。
@@ -474,11 +475,24 @@ const _kCueEn = <String, String>{
   '哑铃交替平举': 'With a dumbbell in each hand, raise one arm forward to shoulder height while the other goes out to the side, alternating; keep the torso still. Common mistakes: swinging the weights up, shrugging.',
 };
 
-/// 动作名显示（动作库/训练/历史/统计等处）。
-String exname(String zh) => Lang.isEn ? (_kExerciseEn[zh] ?? zh) : zh;
+/// 动作名显示（动作库/训练/历史/统计等处）；英文界面支持别名归并后查英译。
+String exname(String zh) {
+  if (!Lang.isEn) return zh;
+  return _kExerciseEn[zh] ?? _kExerciseEn[canonicalExerciseNameOf(zh)] ?? zh;
+}
 
-/// 库内置名词（模板名/训练日标题等）显示。
-String dname(String zh) => Lang.isEn ? (_kPresetNounEn[zh] ?? zh) : zh;
+/// 库内置名词（模板名/训练日标题等）显示；含本地计划生成的「第 N 练 · 肌群」。
+String dname(String zh) {
+  if (!Lang.isEn) return zh;
+  final direct = _kPresetNounEn[zh];
+  if (direct != null) return direct;
+  final m = RegExp(r'^第\s*(\d+)\s*练\s*·\s*(.+)$').firstMatch(zh.trim());
+  if (m != null) {
+    final region = m.group(2)!.trim();
+    return 'Workout ${m.group(1)} · ${mname(region)}';
+  }
+  return zh;
+}
 
 /// 肌群名显示。
 String mname(String zh) => Lang.isEn ? (_kMuscleEn[zh] ?? zh) : zh;
@@ -489,8 +503,11 @@ String eqname(String zh) => Lang.isEn ? (_kEquipmentEn[zh] ?? zh) : zh;
 /// 细分器械显示（ExerciseMeta.gear）。
 String gearname(String zh) => Lang.isEn ? (_kGearEn[zh] ?? zh) : zh;
 
-/// 动作要点显示（按动作名映射英译，映射不到回落中文）。
-String cuen(String name, String zh) => Lang.isEn ? (_kCueEn[name] ?? zh) : zh;
+/// 动作要点显示（按动作名映射英译，支持别名归并兜底，映射不到回落中文）。
+String cuen(String name, String zh) {
+  if (!Lang.isEn) return zh;
+  return _kCueEn[name] ?? _kCueEn[canonicalExerciseNameOf(name)] ?? zh;
+}
 
 /// 疼痛部位显示（P2-B）：数据键是中文（PainArea.*），英文界面译成英文。
 /// 映射不到的自定义部位原样显示中文（与动作名同一策略）。

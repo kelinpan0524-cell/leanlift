@@ -1,4 +1,6 @@
+import '../l10n/lang.dart';
 import 'engine.dart';
+import 'weight_unit.dart' show WeightUnits, kgToLb;
 
 /// 数据页统计的纯函数集（wger 借鉴，2026-09-27）：
 /// - 身体指标录入防呆区间（wger measurements/limits.py 的口径）
@@ -23,18 +25,36 @@ String? validateBodyMetric({
   double? waistCm,
   double? bodyFatPct,
 }) {
-  String? check(String? key, double? v, String label, String unit) {
+  String? check(
+    String key,
+    double? v,
+    String zhLabel,
+    String enLabel,
+    String unit,
+  ) {
     final range = kBodyMetricLimits[key]!;
     if (v == null) return null;
     if (v < range.$1 || v > range.$2) {
-      return '$label 必须在 ${range.$1}-${range.$2}$unit 之间（当前填的是 $v）';
+      if (key == 'weight' && WeightUnits.isLb) {
+        final loLb = kgToLb(range.$1).round();
+        final hiLb = kgToLb(range.$2).round();
+        final curLb = kgToLb(v).toStringAsFixed(1);
+        return tx(
+          '$zhLabel 必须在 $loLb-$hiLb lb 之间（当前填的是 ${curLb}lb）',
+          en: '$enLabel must be between $loLb-$hiLb lb (entered ${curLb}lb)',
+        );
+      }
+      return tx(
+        '$zhLabel 必须在 ${range.$1}-${range.$2}$unit 之间（当前填的是 $v）',
+        en: '$enLabel must be between ${range.$1}-${range.$2}$unit (entered $v)',
+      );
     }
     return null;
   }
 
-  return check('weight', weightKg, '体重', 'kg') ??
-      check('waist', waistCm, '腰围', 'cm') ??
-      check('bodyfat', bodyFatPct, '体脂率', '%');
+  return check('weight', weightKg, '体重', 'Weight', 'kg') ??
+      check('waist', waistCm, '腰围', 'Waist', 'cm') ??
+      check('bodyfat', bodyFatPct, '体脂率', 'Body fat', '%');
 }
 
 // ---------------- 周/月分桶 ----------------

@@ -12,7 +12,8 @@ import '../engine/superset.dart';
 import '../engine/weight_unit.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
-import '../presets/exercise_library.dart' show defaultLoadTypeFor;
+import '../presets/exercise_library.dart'
+    show defaultLoadTypeFor, defaultLoggingFor;
 import '../presets/start_weights.dart';
 import 'focus_service.dart';
 import 'rest_cue.dart';
@@ -418,12 +419,16 @@ class SessionController extends ChangeNotifier {
   /// 每次进入休息都会置位（组间休息也能"再来一组"），
   /// 休息结束/结束训练时清除。
   String? extraSetExerciseName;
+  int? extraSetExerciseId;
 
   /// 本次训练净时长（毫秒）：休息桶 / 训练桶，随相位切换累计，
   /// 结束时写入 sessions（总结页、历史、AI 分析评估休息长短用）。
   int restMs = 0;
   int activeMs = 0;
   DateTime? _phaseSince;
+  int? _cappedIdleResumeAtMs;
+  bool _closing = false;
+  bool _preFinishGuardActive = false;
 
   /// 忘停表守护的截断点（epoch ms，非 null = finish 落库时用它当 ended_at）。
   /// 由 truncateDurationToLastSet 设置；新会话/放弃时清零。
@@ -608,6 +613,12 @@ class SessionController extends ChangeNotifier {
   void _clearProgress() {
     _lastPersist = null;
     _idleNotified = false;
+    _cappedIdleResumeAtMs = null;
+    _closing = false;
+    _preFinishGuardActive = false;
+    _restPaused = false;
+    extraSetExerciseName = null;
+    extraSetExerciseId = null;
     setupNotes.clear();
     // 会话结束/无活跃会话：本场手调草稿全部作废，避免下一场串味。
     _clearDraftWeights();
@@ -703,7 +714,10 @@ class SessionController extends ChangeNotifier {
             final cap =
                 last != null ? last + 2 * 60000 : hbSince + 30 * 60000;
             final allowed = cap - hbSince;
-            if (extra > allowed) extra = allowed;
+            if (extra > allowed) {
+              extra = allowed;
+              _cappedIdleResumeAtMs = nowMs;
+            }
             if (extra < 0) extra = 0;
             activeMs += extra;
           }
@@ -1177,6 +1191,12 @@ class SessionController extends ChangeNotifier {
     // 时 historyBefore 会重灌，旧缓存（尤其 null 值）会静默挡住提醒
     _plateauCache.clear();
     truncatedEndAtMs = null;
+    _cappedIdleResumeAtMs = null;
+    _closing = false;
+    _preFinishGuardActive = false;
+    _restPaused = false;
+    extraSetExerciseName = null;
+    extraSetExerciseId = null;
     final now = DateTime.now().millisecondsSinceEpoch;
     // 会话与动作一个事务落库（sessionId 先占位，事务内回填真实 id），
     // 消除"会话已落库、动作未落库"的半写窗口。
@@ -1376,6 +1396,7 @@ class SessionController extends ChangeNotifier {
         // 会话不再 active 时不能继续起休息页。
         if (!hasActive) return pr;
         extraSetExerciseName = ex.name;
+        extraSetExerciseId = ex.id;
         _beginRestFor(ex);
         return pr;
       }
@@ -1390,6 +1411,7 @@ class SessionController extends ChangeNotifier {
     // 无论组间还是练满推进：休息页都能"再来一组"回到刚完成的动作。
     // 组间时 currentEx 未变，startExtraSet 回退到自身是无害幂等操作。
     extraSetExerciseName = ex.name;
+    extraSetExerciseId = ex.id;
     _beginRestFor(ex);
     return pr;
   }
@@ -1451,6 +1473,7 @@ class SessionController extends ChangeNotifier {
     await _applyExerciseSwitch(exIdx);
     // 已经离开旧动作：撤掉它的「再来一组」入口，否则休息页会把人带回去。
     extraSetExerciseName = null;
+    extraSetExerciseId = null;
     if (wasResting) {
       // 休息中切动作不改相位：剩余时间、暂停态、闹钟都保持原样。
       notifyCard();
@@ -1618,9 +1641,11 @@ class SessionController extends ChangeNotifier {
     _tick?.cancel();
     _tick = null;
     _lastCardSec = -1;
+    _restPaused = false;
     _prefs.setInt('rest.endAt', 0);
     _prefs.setInt('rest.paused', 0);
     extraSetExerciseName = null;
+    extraSetExerciseId = null;
     if (cancelAlarm) onRestAlarmChanged?.call(null);
     _setPhase(WorkoutPhase.lifting);
     restRemainingMs.value = 0;
@@ -1636,8 +1661,14 @@ class SessionController extends ChangeNotifier {
   /// 手调过的配重不从头再来。
   Future<void> startExtraSet() async {
     final name = extraSetExerciseName;
-    if (name == null || !hasActive) return;
-    final idx = exercises.indexWhere((e) => e.name == name);
+    final targetId = extraSetExerciseId;
+    if ((name == null && targetId == null) || !hasActive) return;
+    var idx = targetId == null
+        ? -1
+        : exercises.indexWhere((e) => e.id == targetId);
+    if (idx < 0 && name != null) {
+      idx = exercises.indexWhere((e) => e.name == name);
+    }
     if (idx < 0) return;
     curExIdx = idx;
     final list = setsByEx[exercises[idx].id] ?? const <SetEntry>[];
@@ -1648,6 +1679,7 @@ class SessionController extends ChangeNotifier {
     // 不结束休息：落点改为该动作的加练组，倒计时自然走完再进动作态。
     // 入口即消费（清空后按钮消失，休息页由「下一组 · 加练」文案报状态）。
     extraSetExerciseName = null;
+    extraSetExerciseId = null;
     notifyCard();
     notifyListeners();
   }
@@ -1772,6 +1804,7 @@ class SessionController extends ChangeNotifier {
       );
       if (!anyStillPr) prHit.remove(ex.name);
     }
+    if (phase == WorkoutPhase.resting) _finishRest(cancelAlarm: true);
     notifyCard();
     notifyListeners();
   }
@@ -1883,19 +1916,26 @@ class SessionController extends ChangeNotifier {
     var prevName =
         exercises.isEmpty ? '' : exercises.last.name; // 痕迹：追加在谁后面
     for (final m in metas) {
+      final logging = defaultLoggingFor(m.name);
+      final timed = logging == LoggingMode.time;
+      final rule = timed
+          ? const ProgressionRule(
+              repsMin: 30, repsMax: 45, incrementKg: 1.25, workingSets: 3)
+          : ProgressionRule.fallback;
       final draft = SessionExercise(
         sessionId: session!.id!,
         name: m.name,
         orderIdx: order++,
-        kind: m.isCompound ? 'compound' : 'assistance',
+        kind: timed ? 'assistance' : (m.isCompound ? 'compound' : 'assistance'),
         restSec: 0,
+        logging: logging,
         // 临时追加也按动作库口径给自重动作落 bodyweight（P2-E 复核）。
         loadType: defaultLoadTypeFor(m.name),
-        rule: ProgressionRule.fallback,
+        rule: rule,
         // 减载周/停练回归临时加的动作同样少做 1 组；其余情况保持 0
         //（无快照，回退规则 workingSets），与旧行为一致。
         targetSets: (_deloadWeek || _layoffActive)
-            ? layoffWorkingSets(ProgressionRule.fallback.workingSets)
+            ? layoffWorkingSets(rule.workingSets)
             : 0,
         trace: prevName.isEmpty
             ? tx('追加于：会话开头', en: 'Added at start of session')
@@ -1932,8 +1972,9 @@ class SessionController extends ChangeNotifier {
       kind: ex.kind,
       restSec: ex.restSec,
       rule: ex.rule,
-      // 换成的新动作按动作库口径决定负荷类型（P2-E 复核）：替换成
-      // 俯卧撑/引体向上等自重动作时不再沿用旧动作的 weighted。
+      // 换成的新动作按动作库口径决定负荷类型与记录形态（P2-E 复核）：
+      // 替换成俯卧撑/平板支撑等动作时同步带出对应的默认形态。
+      logging: defaultLoggingFor(meta.name),
       loadType: defaultLoadTypeFor(meta.name),
       // 条目 14：快照列原样保留——整行覆写若丢这三列会把已快照的
       // 模板目标抹成 0，老记录完成度对比就失真了。
@@ -1982,16 +2023,23 @@ class SessionController extends ChangeNotifier {
   /// 超出部分从对应桶里扣（地板 0），ended_at 截到 [truncatedEndAtMs]。
   /// finish 时按真实墙钟补记最后一段（_accrueTime），扣掉的量正好抵消挂机段。
   void truncateDurationToLastSet() {
+    _accrueTime();
     final last = lastSetDoneAtMs;
     if (last == null) return;
     final cap = last + 2 * 60000;
     final now = DateTime.now().millisecondsSinceEpoch;
     if (cap >= now) return;
-    final excess = now - cap;
-    if (phase == WorkoutPhase.resting) {
-      restMs = (restMs - excess).clamp(0, 1 << 31);
-    } else {
-      activeMs = (activeMs - excess).clamp(0, 1 << 31);
+    final deductFrom =
+        (_cappedIdleResumeAtMs != null && _cappedIdleResumeAtMs! > cap)
+            ? _cappedIdleResumeAtMs!
+            : cap;
+    final excess = now - deductFrom;
+    if (excess > 0) {
+      if (phase == WorkoutPhase.resting) {
+        restMs = (restMs - excess).clamp(0, 1 << 31);
+      } else {
+        activeMs = (activeMs - excess).clamp(0, 1 << 31);
+      }
     }
     truncatedEndAtMs = cap;
   }
@@ -2000,61 +2048,79 @@ class SessionController extends ChangeNotifier {
 
   Future<void> finish() async {
     if (session == null) return;
-    if (session!.status != 'active') return; // 幂等：自动结束+手动结束不重复
+    if (session!.status != 'active' || _closing || _preFinishGuardActive) return;
     // 忘停表守护（2026-11-08 复核）：必须跑在落库之前——自动收尾时
     // completeSet 会先调用本方法再通知页面，若把守护留在页面收尾里，
     // 「不留记录 / 截断」面对已 done 的会话会静默失效。
     // 返回 false = 用户选了「不留记录」，回调内部已 quit，这里不再落库。
     final guard = preFinishGuard;
-    if (guard != null && !await guard()) return;
-    _finishRest();
-    onRestAlarmChanged?.call(null); // 会话结束：精确提醒一并取消
-    await _db.updateSession(session!.id!, {
-      'ended_at': truncatedEndAtMs ?? DateTime.now().millisecondsSinceEpoch,
-      'status': 'done',
-      'rest_ms': restMs,
-      'active_ms': activeMs,
-    });
-    // 记下这场是减载/停练回归会话：下次处方/平台期回溯跳过它，
-    // 避免把主动降负荷（90%/85%）的档位带低，停练回归后下一场
-    // 间隔正常时能回到停练前的档位。
-    if (_deloadWeek || _layoffActive) await _markDeloadSession(session!);
-    await _clearSessionBlockState(session!.id!);
-    await _exitFocus();
-    session = await _db.sessionById(session!.id!);
-    WakelockPlus.disable();
-    // 先快照再清空：自动收尾的总结页在 finish 之后才取 PR 列表
-    finishedPrNames = prHit.toList();
-    prHit.clear();
-    _setPhase(WorkoutPhase.idle);
-    onSessionClosed?.call();
+    if (guard != null) {
+      _preFinishGuardActive = true;
+      final ok = await guard();
+      _preFinishGuardActive = false;
+      if (!ok) return;
+      if (session == null || session!.status != 'active' || _closing) return;
+    }
+    _closing = true;
+    try {
+      _accrueTime();
+      _finishRest();
+      onRestAlarmChanged?.call(null); // 会话结束：精确提醒一并取消
+      await _db.updateSession(session!.id!, {
+        'ended_at': truncatedEndAtMs ?? DateTime.now().millisecondsSinceEpoch,
+        'status': 'done',
+        'rest_ms': restMs,
+        'active_ms': activeMs,
+      });
+      // 记下这场是减载/停练回归会话：下次处方/平台期回溯跳过它，
+      // 避免把主动降负荷（90%/85%）的档位带低，停练回归后下一场
+      // 间隔正常时能回到停练前的档位。
+      if (_deloadWeek || _layoffActive) await _markDeloadSession(session!);
+      await _clearSessionBlockState(session!.id!);
+      await _exitFocus();
+      session = await _db.sessionById(session!.id!);
+      WakelockPlus.disable();
+      // 先快照再清空：自动收尾的总结页在 finish 之后才取 PR 列表
+      finishedPrNames = prHit.toList();
+      prHit.clear();
+      _setPhase(WorkoutPhase.idle);
+      onSessionClosed?.call();
+    } finally {
+      _closing = false;
+    }
   }
 
   Future<void> quit() async {
     if (session == null) return;
-    if (session!.status != 'active') return;
-    _finishRest();
-    onRestAlarmChanged?.call(null);
-    await _db.updateSession(session!.id!, {
-      'ended_at': DateTime.now().millisecondsSinceEpoch,
-      'status': 'quit',
-      'rest_ms': restMs,
-      'active_ms': activeMs,
-    });
-    await _clearSessionBlockState(session!.id!);
-    await _exitFocus();
-    WakelockPlus.disable();
-    session = null;
-    prHit.clear();
-    finishedPrNames = const [];
-    truncatedEndAtMs = null;
-    _blockWeek = null;
-    _blockWeeks = 0;
-    _deloadWeek = false;
-    _layoffActive = false;
-    _layoffDays = 0;
-    _setPhase(WorkoutPhase.idle);
-    onSessionClosed?.call();
+    if (session!.status != 'active' || _closing) return;
+    _closing = true;
+    try {
+      _accrueTime();
+      _finishRest();
+      onRestAlarmChanged?.call(null);
+      await _db.updateSession(session!.id!, {
+        'ended_at': DateTime.now().millisecondsSinceEpoch,
+        'status': 'quit',
+        'rest_ms': restMs,
+        'active_ms': activeMs,
+      });
+      await _clearSessionBlockState(session!.id!);
+      await _exitFocus();
+      WakelockPlus.disable();
+      session = null;
+      prHit.clear();
+      finishedPrNames = const [];
+      truncatedEndAtMs = null;
+      _blockWeek = null;
+      _blockWeeks = 0;
+      _deloadWeek = false;
+      _layoffActive = false;
+      _layoffDays = 0;
+      _setPhase(WorkoutPhase.idle);
+      onSessionClosed?.call();
+    } finally {
+      _closing = false;
+    }
   }
 
   /// 训练后主观自评（wger 的 impression 三档：1=差/2=一般/3=好）。

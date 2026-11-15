@@ -183,7 +183,8 @@ class _TodayEditSheetState extends State<_TodayEditSheet> {
         dayId: widget.day.id ?? 0,
         orderIdx: next.length,
         isCompound: m.isCompound,
-      ).copyWith(name: m.name));
+        name: m.name,
+      ));
     }
     _apply(next);
   }

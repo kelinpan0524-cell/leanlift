@@ -399,7 +399,10 @@ class AiService {
       } on FormatException {
         throw const AiException('AI 返回的不是有效 JSON（网关错误页？），请检查 Base URL');
       }
-      final data = decoded as Map<String, dynamic>;
+      if (decoded is! Map) {
+        throw const AiException('AI 返回格式异常（非 JSON 对象），请检查 Base URL 或模型');
+      }
+      final data = Map<String, dynamic>.from(decoded);
       final choices = data['choices'] as List?;
       if (choices == null || choices.isEmpty) {
         throw const AiException('AI 返回为空');

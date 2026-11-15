@@ -343,46 +343,61 @@ class HeartRateService extends ChangeNotifier {
   }
 
   /// 扫描广播标准心率服务的设备（12 秒自动停）。
+  bool _startingScan = false;
+
   Future<void> startScan() async {
-    if (_link == HrLink.scanning || _link == HrLink.connecting) return;
-    lastError = '';
-    // 先确认权限/蓝牙可用，再放弃后台重连：否则用户在「重连中」
-    // 打开扫描弹层但权限被拒，会把退避计时器取消掉、状态卡死在重连中。
-    if (!await _ensureReady()) {
-      _safeNotify();
+    if (_startingScan ||
+        _link == HrLink.scanning ||
+        _link == HrLink.connecting) {
       return;
     }
-    if (_link == HrLink.connected || _link == HrLink.connecting) return;
-    // 用户主动开扫 = 放弃后台重连（在途重连也作废，避免抢回连接）。
-    _cancelReconnectTimer();
-    _linkEpoch++;
-    _found.clear();
-    _setLink(HrLink.scanning);
-    _scanSub?.cancel();
-    _scanSub = FlutterBluePlus.scanResults.listen((results) {
-      for (final r in results) {
-        final i = _found.indexWhere(
-          (x) => x.device.remoteId == r.device.remoteId,
-        );
-        if (i >= 0) {
-          _found[i] = r;
-        } else {
-          _found.add(r);
-        }
-      }
-      _found.sort((a, b) => b.rssi.compareTo(a.rssi));
-      _safeNotify();
-    });
+    _startingScan = true;
     try {
-      await FlutterBluePlus.startScan(
-        timeout: const Duration(seconds: 12),
-        withServices: [kHrServiceUuid],
-      );
-    } catch (e) {
-      lastError = '扫描失败：$e';
+      lastError = '';
+      // 先确认权限/蓝牙可用，再放弃后台重连：否则用户在「重连中」
+      // 打开扫描弹层但权限被拒，会把退避计时器取消掉、状态卡死在重连中。
+      if (!await _ensureReady()) {
+        _safeNotify();
+        return;
+      }
+      if (_link == HrLink.connected ||
+          _link == HrLink.connecting ||
+          _link == HrLink.scanning) {
+        return;
+      }
+      // 用户主动开扫 = 放弃后台重连（在途重连也作废，避免抢回连接）。
+      _cancelReconnectTimer();
+      _linkEpoch++;
+      _found.clear();
+      _setLink(HrLink.scanning);
+      _scanSub?.cancel();
+      _scanSub = FlutterBluePlus.scanResults.listen((results) {
+        for (final r in results) {
+          final i = _found.indexWhere(
+            (x) => x.device.remoteId == r.device.remoteId,
+          );
+          if (i >= 0) {
+            _found[i] = r;
+          } else {
+            _found.add(r);
+          }
+        }
+        _found.sort((a, b) => b.rssi.compareTo(a.rssi));
+        _safeNotify();
+      });
+      try {
+        await FlutterBluePlus.startScan(
+          timeout: const Duration(seconds: 12),
+          withServices: [kHrServiceUuid],
+        );
+      } catch (e) {
+        lastError = '扫描失败：$e';
+      }
+      if (_link == HrLink.scanning) _setLink(HrLink.idle);
+      _safeNotify();
+    } finally {
+      _startingScan = false;
     }
-    if (_link == HrLink.scanning) _setLink(HrLink.idle);
-    _safeNotify();
   }
 
   Future<void> stopScan() async {
@@ -732,6 +747,8 @@ class HeartRateService extends ChangeNotifier {
     merged.sort((a, b) => a.ts.compareTo(b.ts));
     _samples.addAll(merged);
   }
+
+  Future<void> flushSamplesToPrefs() => _persistSamples();
 
   Future<void> _persistSamples() async {
     final sid = _sessionId;

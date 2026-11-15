@@ -755,14 +755,18 @@ class LocalBridgeService extends ChangeNotifier {
     }
     final buf = BytesBuilder(copy: false);
     var tooLarge = false;
-    await for (final chunk in req) {
-      if (tooLarge) continue; // 已超限：只 drain，不再缓存
-      if (buf.length + chunk.length > _maxPairBodyBytes) {
-        tooLarge = true;
-        buf.clear();
-        continue;
+    try {
+      await for (final chunk in req.timeout(const Duration(seconds: 5))) {
+        if (tooLarge) continue; // 已超限：只 drain，不再缓存
+        if (buf.length + chunk.length > _maxPairBodyBytes) {
+          tooLarge = true;
+          buf.clear();
+          continue;
+        }
+        buf.add(chunk);
       }
-      buf.add(chunk);
+    } on TimeoutException {
+      throw const FormatException('请求体读取超时');
     }
     if (tooLarge) throw const FormatException('请求体过大');
     return utf8.decode(buf.takeBytes());

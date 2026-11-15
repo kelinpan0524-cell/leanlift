@@ -136,6 +136,7 @@ double? recommendWeight({
     rule: rule,
   );
   final next = last.weightKg + v.deltaKg;
+  if (last.weightKg < 0) return next >= 0 ? 0.0 : _round05(next);
   return next > 0 ? _round05(next) : _round05(last.weightKg);
 }
 
@@ -223,8 +224,8 @@ Map<String, double> muscleLoadShare(
 /// PR 检测：本次组是否超过历史最佳重量。
 bool isPrWeight(double weight, List<SetEntry> historyBefore) {
   if (historyBefore.isEmpty) return false;
-  final best =
-      historyBefore.fold(0.0, (m, s) => s.weightKg > m ? s.weightKg : m);
+  final best = historyBefore.skip(1).fold(
+      historyBefore.first.weightKg, (m, s) => s.weightKg > m ? s.weightKg : m);
   return weight > best + 0.01;
 }
 

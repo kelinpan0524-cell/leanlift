@@ -177,8 +177,9 @@ class LarkService {
         {'minutes': _settings.larkReminderMin}
       ],
     });
-    final exist =
-        planDayId == null ? null : await _db.larkSyncFor('plan_day', planDayId);
+    final exist = planDayId == null
+        ? null
+        : await _db.larkSyncForDayDate(planDayId, date);
     http.Response resp;
     if (exist != null) {
       resp = await http
@@ -206,8 +207,7 @@ class LarkService {
         final probeData =
             jsonDecode(utf8.decode(probe.bodyBytes)) as Map<String, dynamic>;
         if (probeData['code'] != 0) {
-          // exist 非空必然 planDayId 非空（映射按 planDayId 查的）
-          await _db.removeLarkSync('plan_day', planDayId!);
+          if (exist.id != null) await _db.removeLarkSyncById(exist.id!);
           resp = await _postDayEvent(cid, token, body);
         } else {
           // 事件还在：真正的权限/参数问题，按原失败路径抛出入队
@@ -223,7 +223,7 @@ class LarkService {
         (data['data']?['event']?['event_id'] as String?) ?? exist?.larkEventId ?? '';
     if (eventId.isNotEmpty && planDayId != null) {
       await _db.upsertLarkSync(LarkSync(
-        refType: 'plan_day',
+        refType: 'plan_day:$date',
         refId: planDayId,
         larkEventId: eventId,
         eventDate: date,
@@ -286,11 +286,16 @@ class LarkService {
     String prevDesc = '';
     for (final it in items) {
       final m = Map<String, dynamic>.from(it as Map);
-      if ((m['summary'] as String?)?.contains('（训练）') == true) {
-        eventId = m['event_id'] as String?;
-        prevDesc = (m['description'] as String?) ?? '';
-        break;
+      if ((m['summary'] as String?)?.contains('（训练）') != true) continue;
+      final rawTs = (m['start_time'] as Map?)?['timestamp']?.toString();
+      final ts = rawTs == null ? null : int.tryParse(rawTs);
+      if (ts != null &&
+          fmtYmd(DateTime.fromMillisecondsSinceEpoch(ts * 1000)) != date) {
+        continue;
       }
+      eventId = m['event_id'] as String?;
+      prevDesc = (m['description'] as String?) ?? '';
+      break;
     }
     if (eventId == null) {
       // 找不到事件不能静默当成功：主路径要入队、离线行要保留重试，
@@ -303,14 +308,24 @@ class LarkService {
     final newDesc = prevDesc.isEmpty
         ? '$_doneMarker\n$summary'
         : '$prevDesc\n\n$_doneMarker\n$summary';
-    await http.patch(
-      Uri.parse('$_base/open-apis/calendar/v4/calendars/$cid/events/$eventId'),
-      headers: {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json'
-      },
-      body: jsonEncode({'description': newDesc}),
-    ).timeout(const Duration(seconds: 20));
+    final patchResp = await http
+        .patch(
+          Uri.parse(
+              '$_base/open-apis/calendar/v4/calendars/$cid/events/$eventId'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json'
+          },
+          body: jsonEncode({'description': newDesc}),
+        )
+        .timeout(const Duration(seconds: 20));
+    final patchData =
+        jsonDecode(utf8.decode(patchResp.bodyBytes)) as Map<String, dynamic>;
+    if (patchResp.statusCode < 200 ||
+        patchResp.statusCode >= 300 ||
+        patchData['code'] != 0) {
+      throw LarkException('${patchData['msg'] ?? patchResp.statusCode}');
+    }
   }
 
   /// 删除某计划日对应的日历事件（切计划/删计划时撤下日程）。
@@ -320,30 +335,39 @@ class LarkService {
   ///    其余失败（网络异常/token 失效/权限拒绝）保留映射，交给下次同步或离线队列，
   ///    不让事件变成 App 再也定位不到的孤儿。
   Future<void> removePlanDayEvent(int planDayId) async {
-    final sync = await _db.larkSyncFor('plan_day', planDayId);
-    if (sync == null) return;
-    if (sync.eventDate.compareTo(fmtYmd(DateTime.now())) < 0) return;
+    final syncs = await _db.larkSyncsForDay(planDayId);
+    if (syncs.isEmpty) return;
+    final today = fmtYmd(DateTime.now());
+    final futureSyncs =
+        syncs.where((s) => s.eventDate.compareTo(today) >= 0).toList();
+    if (futureSyncs.isEmpty) return;
     try {
       final token = await ensureToken();
       if (token == null) return; // 凭证不可用：保留映射，等下次同步
       final cid = _settings.larkCalendarId.isNotEmpty
           ? _settings.larkCalendarId
           : await fetchPrimaryCalendar();
-      final resp = await http
-          .delete(
-            Uri.parse(
-                '$_base/open-apis/calendar/v4/calendars/$cid/events/${sync.larkEventId}'),
-            headers: {'Authorization': 'Bearer $token'},
-          )
-          .timeout(const Duration(seconds: 20));
-      final data =
-          jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
-      final deleted = (resp.statusCode >= 200 &&
-              resp.statusCode < 300 &&
-              data['code'] == 0) ||
-          resp.statusCode == 404; // 事件已被手动删：同样算清理完成
-      if (deleted) {
-        await _db.removeLarkSync('plan_day', planDayId);
+      for (final sync in futureSyncs) {
+        final resp = await http
+            .delete(
+              Uri.parse(
+                  '$_base/open-apis/calendar/v4/calendars/$cid/events/${sync.larkEventId}'),
+              headers: {'Authorization': 'Bearer $token'},
+            )
+            .timeout(const Duration(seconds: 20));
+        final data =
+            jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+        final deleted = (resp.statusCode >= 200 &&
+                resp.statusCode < 300 &&
+                data['code'] == 0) ||
+            resp.statusCode == 404; // 事件已被手动删：同样算清理完成
+        if (deleted) {
+          if (sync.id != null) {
+            await _db.removeLarkSyncById(sync.id!);
+          } else {
+            await _db.removeLarkSync(sync.refType, planDayId);
+          }
+        }
       }
       // 其余失败（403 权限拒绝、网关错误页等）：保留映射，下次再试
     } catch (_) {

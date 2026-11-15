@@ -105,13 +105,14 @@ List<LocalPlanExercise> _pickDayExercises(
     if (m == null) return;
     used.add(m.name);
     final isCompound = m.isCompound;
+    final timed = defaultLoggingFor(m.name) == LoggingMode.time;
     out.add(LocalPlanExercise(
       name: m.name,
       sets: 3,
-      repsMin: isCompound ? 6 : 10,
-      repsMax: isCompound ? 10 : 15,
-      restSec: isCompound ? 180 : 90,
-      kind: isCompound ? 'compound' : 'assistance',
+      repsMin: timed ? 30 : (isCompound ? 6 : 10),
+      repsMax: timed ? 45 : (isCompound ? 10 : 15),
+      restSec: timed ? 60 : (isCompound ? 180 : 90),
+      kind: timed ? 'assistance' : (isCompound ? 'compound' : 'assistance'),
       mainMuscle: m.muscles.main,
     ));
   }

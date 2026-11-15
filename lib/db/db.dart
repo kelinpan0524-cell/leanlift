@@ -1469,6 +1469,14 @@ class Db {
   Future<int> insertSet(SetEntry set) async =>
       (await database).insert('sets', set.toMap());
 
+  Future<void> updateSet(SetEntry set) async {
+    final id = set.id;
+    if (id == null) return;
+    final db = await database;
+    final map = set.toMap()..remove('id');
+    await db.update('sets', map, where: 'id = ?', whereArgs: [id]);
+  }
+
   Future<void> deleteSet(int id) async {
     final db = await database;
     await db.delete('sets', where: 'id = ?', whereArgs: [id]);
@@ -1598,8 +1606,12 @@ class Db {
           FROM session_exercises se2
           JOIN sessions ss2 ON ss2.id = se2.session_id
           WHERE (se2.exercise_key = ? OR se2.name = ?) AND ss2.status = 'done'
+            AND EXISTS (
+              SELECT 1 FROM sets s2
+              WHERE s2.session_exercise_id = se2.id AND s2.kind = 'working'
+            )
           $exSubSql
-          ORDER BY ss2.id DESC
+          ORDER BY ss2.date DESC, ss2.started_at DESC, ss2.id DESC
           LIMIT 1
         )
       ORDER BY s.id ASC
@@ -1647,7 +1659,10 @@ class Db {
           JOIN sessions ss2 ON ss2.id = se2.session_id
           WHERE (se2.exercise_key = ? OR se2.name = ?) AND ss2.status = 'done'
           $exSubSql
-          ORDER BY ss2.id DESC
+          ORDER BY EXISTS (
+            SELECT 1 FROM sets s2
+            WHERE s2.session_exercise_id = se2.id AND s2.kind = 'working'
+          ) DESC, ss2.date DESC, ss2.started_at DESC, ss2.id DESC
           LIMIT 1
         )
     ''',
@@ -1690,8 +1705,12 @@ class Db {
           FROM session_exercises se2
           JOIN sessions ss2 ON ss2.id = se2.session_id
           WHERE (se2.exercise_key = ? OR se2.name = ?) AND ss2.status = 'done'
+            AND EXISTS (
+              SELECT 1 FROM sets s2
+              WHERE s2.session_exercise_id = se2.id AND s2.kind = 'working'
+            )
           $exSubSql
-          ORDER BY ss2.id DESC
+          ORDER BY ss2.date DESC, ss2.started_at DESC, ss2.id DESC
           LIMIT 1
         )
       ORDER BY s.id DESC
@@ -1787,6 +1806,32 @@ class Db {
     return rows.isEmpty ? null : LarkSync.fromMap(rows.first);
   }
 
+  /// 按「计划日 + 日期」读飞书同步映射；兼容旧的单条 `ref_type='plan_day'`（仅同日匹配）。
+  Future<LarkSync?> larkSyncForDayDate(int planDayId, String eventDate) async {
+    final byDate = await larkSyncFor('plan_day:$eventDate', planDayId);
+    if (byDate != null) return byDate;
+    final legacy = await larkSyncFor('plan_day', planDayId);
+    if (legacy != null && legacy.eventDate == eventDate) return legacy;
+    return null;
+  }
+
+  /// 某训练日在飞书上的全部日历映射（按日期展开可能有多周事件）。
+  Future<List<LarkSync>> larkSyncsForDay(int planDayId) async {
+    final db = await database;
+    final rows = await db.query(
+      'lark_sync',
+      where:
+          "ref_id = ? AND (ref_type = 'plan_day' OR ref_type LIKE 'plan_day:%')",
+      whereArgs: [planDayId],
+    );
+    return rows.map(LarkSync.fromMap).toList();
+  }
+
+  Future<void> removeLarkSyncById(int id) async {
+    final db = await database;
+    await db.delete('lark_sync', where: 'id = ?', whereArgs: [id]);
+  }
+
   // ---------- sync queue（离线补写） ----------
   Future<void> enqueueSync(String op, String payload) async {
     final db = await database;
@@ -1828,7 +1873,8 @@ class Db {
       '''
       SELECT l.* FROM lark_sync l
       JOIN plan_days d ON d.id = l.ref_id
-      WHERE l.ref_type = 'plan_day' AND d.plan_id = ?
+      WHERE (l.ref_type = 'plan_day' OR l.ref_type LIKE 'plan_day:%')
+        AND d.plan_id = ?
     ''',
       [planId],
     );
@@ -1868,6 +1914,7 @@ class Db {
       'exercise_meta': await db.query('exercise_meta'),
       'exercise_notes': await db.query('exercise_notes'),
       'hr_sample': await db.query('hr_sample'),
+      'deleted_plans': await db.query('deleted_plans'),
       // 本机偏好标记（减载/停练 + 训练块锚点）：随快照带走，恢复时写回。
       // 未 attach SharedPreferences（老测试路径）时为 null，恢复侧跳过。
       'prefs': sp == null
@@ -1929,6 +1976,7 @@ class Db {
         'sync_queue',
         'exercise_notes',
         'hr_sample',
+        'deleted_plans',
       ]) {
         await tx.delete(t);
       }
@@ -1946,12 +1994,18 @@ class Db {
         'exercise_meta',
         'exercise_notes',
         'hr_sample',
+        'deleted_plans',
       ]) {
         final rows = data[t];
         if (rows is! List) continue;
         for (final row in rows) {
           if (row is! Map) continue;
           final m = Map<String, Object?>.from(row);
+          if (t == 'sessions' && (m['status'] as String?) == 'active') {
+            m['status'] = 'quit';
+            m['ended_at'] ??=
+                m['started_at'] ?? DateTime.now().millisecondsSinceEpoch;
+          }
           // 老备份没有 exercise_key（v14-），或 v15 备份的键还是原始名字：
           // 恢复时按 v16 口径补/归一，避免恢复后历史查询漏行。显式定制键保留。
           if (t == 'plan_exercises' || t == 'session_exercises') {
@@ -1961,7 +2015,8 @@ class Db {
               m['exercise_key'] = exerciseKeyOf(name);
             }
             if (name.isNotEmpty) {
-              restoredNameToKey[name] = (m['exercise_key'] as String?) ?? '';
+              restoredNameToKey.putIfAbsent(
+                  name, () => (m['exercise_key'] as String?) ?? '');
             }
           }
           // 备注：按恢复出来的动作名/别名把旧 key 归一；同键冲突取较新一条。

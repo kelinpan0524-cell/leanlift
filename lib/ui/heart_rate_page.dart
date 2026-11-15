@@ -105,12 +105,13 @@ Future<void> showHrRestSheet(BuildContext context) async {
       : ((points.last.ts - points.first.ts) / 60000).round();
   await showModalBottomSheet<void>(
     context: context,
+    isScrollControlled: true,
     backgroundColor: AppTheme.card,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
     builder: (sheetCtx) => SafeArea(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -176,6 +177,10 @@ Future<void> showHrRestSheet(BuildContext context) async {
                       color: AppTheme.textDim, fontSize: 13),
                 ),
               ],
+              if (points.length >= 2) ...[
+                const SizedBox(height: 12),
+                HrChartBlock(points: points, showSummary: false),
+              ],
               const SizedBox(height: 10),
               Text(
                 tx('按心率估算（Keytel 方程 + 力量训练修正口径），仅供参考。',
@@ -192,7 +197,7 @@ Future<void> showHrRestSheet(BuildContext context) async {
               child: OutlinedButton.icon(
                 key: const Key('hrSheetOpenCurve'),
                 icon: const Icon(Icons.show_chart, size: 18),
-                label: Text(tx('查看心率曲线', en: 'View heart-rate curve')),
+                label: Text(tx('心率设备与设置', en: 'HR Device & Settings')),
                 onPressed: () {
                   Navigator.of(sheetCtx).pop();
                   Navigator.of(context).push(
@@ -661,9 +666,14 @@ class _ScanSheetState extends State<_ScanSheet> {
 /// 单条曲线块（不带卡片壳）：均值/峰值行 + LineChart。
 /// x 轴 = 开练起第几分钟，y 轴 = bpm；<2 个采样不渲染（调用方过滤）。
 class HrChartBlock extends StatelessWidget {
-  const HrChartBlock({super.key, required this.points});
+  const HrChartBlock({
+    super.key,
+    required this.points,
+    this.showSummary = true,
+  });
 
   final List<HrPoint> points;
+  final bool showSummary;
 
   @override
   Widget build(BuildContext context) {
@@ -716,22 +726,24 @@ class HrChartBlock extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          tx('平均 ${sum.avg.round()} bpm · 峰值 ${sum.max} bpm',
-              en: 'Avg ${sum.avg.round()} bpm · Peak ${sum.max} bpm'),
-          style: const TextStyle(color: AppTheme.textDim, fontSize: 13),
-        ),
-        if (loadLine.isNotEmpty) ...[
-          const SizedBox(height: 4),
-          Text(loadLine,
-              style: const TextStyle(color: AppTheme.textDim, fontSize: 13)),
+        if (showSummary) ...[
+          Text(
+            tx('平均 ${sum.avg.round()} bpm · 峰值 ${sum.max} bpm',
+                en: 'Avg ${sum.avg.round()} bpm · Peak ${sum.max} bpm'),
+            style: const TextStyle(color: AppTheme.textDim, fontSize: 13),
+          ),
+          if (loadLine.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(loadLine,
+                style: const TextStyle(color: AppTheme.textDim, fontSize: 13)),
+          ],
+          if (kcalLine.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(kcalLine,
+                style: const TextStyle(color: AppTheme.textDim, fontSize: 13)),
+          ],
+          const SizedBox(height: 8),
         ],
-        if (kcalLine.isNotEmpty) ...[
-          const SizedBox(height: 4),
-          Text(kcalLine,
-              style: const TextStyle(color: AppTheme.textDim, fontSize: 13)),
-        ],
-        const SizedBox(height: 8),
         SizedBox(
           height: 180,
           child: LineChart(
