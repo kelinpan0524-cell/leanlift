@@ -1077,6 +1077,7 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
   @override
   Widget build(BuildContext context) {
     final suggestions = _suggestions;
+    final family = assistWeightFamilyOf(_nameCtrl.text);
     return Padding(
       padding: EdgeInsets.only(
           left: 16,
@@ -1125,6 +1126,52 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
                           setState(() {
                             _syncLoadTypeFromName();
                             _muscle = meta?.muscles.main ?? _muscle;
+                          });
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            if (family != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(
+                      tx('同动作档位：', en: 'Progression tier:'),
+                      style: const TextStyle(
+                        color: AppTheme.textDim,
+                        fontSize: 12,
+                      ),
+                    ),
+                    for (final variant in family)
+                      ChoiceChip(
+                        key: Key('familyTier_$variant'),
+                        label: Text(
+                          exname(variant),
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        selected:
+                            canonicalExerciseNameOf(_nameCtrl.text) == variant,
+                        selectedColor:
+                            AppTheme.primary.withValues(alpha: 0.18),
+                        backgroundColor: AppTheme.cardHi,
+                        side: BorderSide.none,
+                        onSelected: (_) {
+                          _nameCtrl.text = variant;
+                          final meta = widget.knownMetas
+                              .where((m) => m.name == variant)
+                              .firstOrNull;
+                          setState(() {
+                            _loadTypeTouched = false;
+                            _loadType = defaultLoadTypeFor(variant);
+                            if (meta != null) {
+                              _muscle = meta.muscles.main;
+                              _equipment = meta.equipment;
+                            }
                           });
                         },
                       ),
@@ -1186,6 +1233,21 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
                 _loadType = v;
               }),
             ),
+            if (isExplicitAssistedVariantName(_nameCtrl.text))
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  tx(
+                    '器械辅助动作按「负重」记录抵消配重（如 -25kg = 辅 25kg），配重越小越接近自重',
+                    en: 'Machine-assisted moves use Weighted mode with negative counterweight (e.g. -25kg = Assist 25kg); smaller assist = closer to bodyweight',
+                  ),
+                  key: const Key('assistedLoadModeNote'),
+                  style: const TextStyle(
+                    color: AppTheme.textDim,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
             const SizedBox(height: 10),
             _stepper(tx('组数', en: 'Sets'), _sets, 1, 8, 1,
                 (v) => setState(() => _sets = v)),

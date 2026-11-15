@@ -2,7 +2,10 @@
 /// 会话控制器与计划仓库共用同一入口，避免两套兜底逻辑漂移。
 library;
 
-import '../engine/exercise_identity.dart' show exerciseKeyOf;
+import '../engine/exercise_identity.dart'
+    show canonicalExerciseNameOf, exerciseKeyOf;
+import '../engine/logging_modes.dart'
+    show isExplicitAssistedVariantName, isExplicitWeightedVariantName;
 import '../engine/weight_unit.dart' show lbToKg;
 import 'baoji_plan.dart' show kBaojiExercisesByWeekday;
 import 'exercise_library.dart'
@@ -20,12 +23,23 @@ double? knownStartWeightOf(String name) {
       }
     }
   }
+  final meta = libraryMetaForLift(name);
+  final canonical = canonicalExerciseNameOf(name);
   final override =
-      (key.isEmpty ? null : kStartWeightOverrides[key]) ??
+      (meta == null ? null : kStartWeightOverrides[meta.name]) ??
+          kStartWeightOverrides[canonical] ??
+          (key.isEmpty ? null : kStartWeightOverrides[key]) ??
           kStartWeightOverrides[name];
   if (override != null) return override;
-  final meta = libraryMetaForLift(name);
-  return meta == null ? null : defaultStartWeightOf(meta);
+  if (isExplicitAssistedVariantName(name)) {
+    return canonical.contains('引体') ? -25.0 : -20.0;
+  }
+  final libDefault = meta == null ? null : defaultStartWeightOf(meta);
+  if (isExplicitWeightedVariantName(name) &&
+      (libDefault == null || libDefault == 0)) {
+    return 5.0;
+  }
+  return libDefault;
 }
 
 /// 具体器械的空杆重量（kg）：EZ 杠约 10kg（lb 制 25lb）。

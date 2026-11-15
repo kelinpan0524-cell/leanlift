@@ -1,6 +1,6 @@
 import '../l10n/lang.dart';
 import 'engine.dart';
-import 'weight_unit.dart' show fmtWithUnit;
+import 'weight_unit.dart' show fmtWithUnit, unitLabel;
 
 export '../models/models.dart' show ChainRule;
 
@@ -87,13 +87,36 @@ class ProgressionChain {
         ),
       ]);
 
+  /// 器械辅助动作的默认链（如器械辅助引体向上/双杠臂屈伸）：
+  /// 1. 次数轴：达标目标 +1 次，天花板 = reps_max，触顶进位；
+  /// 2. 负重轴：每次 +increment_kg（即减少辅助配重），天花板 = 0.0（纯自重，
+  ///    到 0 后停住不跨零变正外载），执行后次数复位到 reps_min。
+  factory ProgressionChain.defaultAssistedFor(ProgressionRule rule,
+          {int repStep = 1}) =>
+      ProgressionChain([
+        ChainRule(
+          axis: 'reps',
+          step: repStep.toDouble(),
+          ceiling: rule.repsMax.toDouble(),
+          advanceOnCap: true,
+        ),
+        ChainRule(
+          axis: 'load',
+          step: rule.incrementKg,
+          ceiling: 0.0,
+          advanceOnCap: false,
+          resetRepsTo: rule.repsMin,
+        ),
+      ]);
+
   /// 规则优先级：bodyweight 负荷强制走自重链（显式 chain 里即便配了
   /// 重量轴也不执行——自重渐进不碰重量）；其余 显式配置的 chain >
-  /// 旧参数派生的默认双阶梯。缺省 loadType 保证现有调用行为不变。
+  /// 器械辅助默认链（[assisted] = true，天花板 0kg）> 旧参数派生的默认双阶梯。
   static ProgressionChain of(
     ProgressionRule rule, {
     String loadType = LoadMode.weighted,
     String logging = LoggingMode.reps,
+    bool assisted = false,
   }) {
     final repStep = logging == LoggingMode.repsPerSide ? 2 : 1;
     if (loadType == LoadMode.bodyweight) {
@@ -101,6 +124,9 @@ class ProgressionChain {
     }
     if (rule.chain != null && rule.chain!.isNotEmpty) {
       return ProgressionChain(rule.chain!);
+    }
+    if (assisted) {
+      return ProgressionChain.defaultAssistedFor(rule, repStep: repStep);
     }
     return ProgressionChain.defaultFor(rule, repStep: repStep);
   }
@@ -129,8 +155,15 @@ class ProgressionChain {
             targetReps: capped,
           );
         }
+        var nextLoad = round05(s.weightKg + r.step);
+        if (r.ceiling != null && nextLoad > r.ceiling!) {
+          nextLoad = round05(r.ceiling!);
+        } else if (s.weightKg < 0 && nextLoad > 0) {
+          // 负辅助配重靠近 0 时先落到纯自重 0kg，不跳过自重直接变正负重
+          nextLoad = 0.0;
+        }
         return ChainState(
-          weightKg: round05(s.weightKg + r.step),
+          weightKg: nextLoad,
           targetReps: r.resetRepsTo ?? s.targetReps,
         );
       }
@@ -240,6 +273,7 @@ ChainVerdict evaluateChain({
   int targetSets = 0,
   String logging = LoggingMode.reps,
   String loadType = LoadMode.weighted,
+  bool assisted = false,
 }) {
   // 计时形态：展示单位换文案，判定与数字原样（'次' → '秒'）
   final unit = logging == LoggingMode.time ? '秒' : '次';
@@ -304,8 +338,12 @@ ChainVerdict evaluateChain({
           en: ' (RIR not recorded — judged by reps)');
 
   if (allMetTarget && lastSetRirOk) {
-    final chain =
-        ProgressionChain.of(rule, loadType: loadType, logging: logging);
+    final chain = ProgressionChain.of(
+      rule,
+      loadType: loadType,
+      logging: logging,
+      assisted: assisted || state.weightKg < 0,
+    );
     final next = chain.advance(state, rule);
     if (next == state) {
       // 自重档位（0kg）不展示「重量 0kg 触顶」——0 是档位起点不是天花板
@@ -325,6 +363,26 @@ ChainVerdict evaluateChain({
           holdKind: 'chain_end');
     }
     if (next.weightKg != state.weightKg) {
+      if (state.weightKg < 0) {
+        if (next.weightKg == 0) {
+          return ChainVerdict(
+            'advance',
+            next,
+            tx(
+                '${near.length} 组全部达到 ${state.targetReps} $unit目标，辅助档已清空 → 下次进阶到自重（0${unitLabel()}）、目标回到 ${next.targetReps} $unit$rirNote',
+                en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target and machine assist cleared → graduate to bodyweight (0${unitLabel()}), target resets to ${next.targetReps} $enUnit$rirNote'),
+          );
+        }
+        final nextDisp = '辅 ${fmtWithUnit(-next.weightKg)}';
+        final nextEnDisp = 'Assist ${fmtWithUnit(-next.weightKg)}';
+        return ChainVerdict(
+          'advance',
+          next,
+          tx(
+              '${near.length} 组全部达到 ${state.targetReps} $unit目标，次数轴触顶 → 下次减少辅助至 $nextDisp、目标回到 ${next.targetReps} $unit$rirNote',
+              en: 'All ${near.length} sets hit the ${enRepPhrase(state.targetReps, logging)} target and the rep axis is topped out → reduce assist to $nextEnDisp, target resets to ${next.targetReps} $enUnit$rirNote'),
+        );
+      }
       return ChainVerdict(
         'advance',
         next,

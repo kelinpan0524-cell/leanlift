@@ -72,6 +72,8 @@ class SessionController extends ChangeNotifier {
   // 切到自重前的草稿重量：切回来时优先恢复它，避免在减载周把上一场
   // 减载后的 54kg 再乘 0.9（双重减载），也避免丢掉平台期协议给的重量。
   double? _draftBeforeBodyweight;
+  double? _lastAssistedDraft;
+  double? _lastPositiveDraft;
   // 本次会话每个动作的「当时处方重量」快照（sessionExerciseId → kg）：
   // 第一组落库前定档，后续组沿用，避免平台期/减载在本场内改变目标值，
   // 出现同一场 target_weight_kg 54/62.5 打架。
@@ -927,22 +929,27 @@ class SessionController extends ChangeNotifier {
     }
 
     final last = progressionSets();
+    final assistedName = isExplicitAssistedVariantName(name);
     if (last.isEmpty) {
-      final state = chainStateFromHistory(const <SetEntry>[], rule);
+      final startW =
+          loadType == LoadMode.bodyweight ? 0.0 : _presetStartFor(name);
+      final state = ChainState(weightKg: startW, targetReps: rule.repsMin);
       return (
         // 自重动作首次训练同样不该猜 20kg：重量恒 0，渐进走次数轴。
-        weight: loadType == LoadMode.bodyweight ? 0.0 : _presetStartFor(name),
+        weight: startW,
         why: chainTargetWhy(
           rule: rule,
           state: state,
           loadType: loadType,
           logging: logging,
           plannedSets: planned,
+          assisted: assistedName || startW < 0,
         ),
       );
     }
 
     final state = chainStateFromHistory(last, rule);
+    final assisted = assistedName || state.weightKg < 0;
     // 上次的计划组数一起判定（P0-B 复核）：少做不能只让总结页 hold、
     // 下次开练却继续按达标推进重量。老记录没有 target_sets 快照时
     // DB 层回退该场次 rule 的 workingSets，不拿当前规则去猜上一场。
@@ -957,6 +964,7 @@ class SessionController extends ChangeNotifier {
       targetSets: lastTarget,
       logging: modes?.$1 ?? logging,
       loadType: loadType,
+      assisted: assisted,
     );
     // 平台期协议（P1-C）：未顶格且没有「成功加重」时，协议建议的减载
     // 重量优先于链的 hold/继续冲。少做/没记录/换档位的 hold 不触发
@@ -1000,6 +1008,7 @@ class SessionController extends ChangeNotifier {
         loadType: loadType,
         logging: logging,
         plannedSets: planned,
+        assisted: assisted,
       ),
     );
   }
@@ -1057,11 +1066,28 @@ class SessionController extends ChangeNotifier {
     final current = (setsByEx[ex.id] ?? const <SetEntry>[])
         .where((s) => s.kind == SetKind.working && !s.isExtra)
         .toList(growable: false);
-    if (current.isEmpty) return base.why;
     // 有效负荷类型：与本场 verdict/变式建议同一口径（旧 weighted 的
     // 0kg 自重动作按 bodyweight 解释，见 _effectiveLoadTypeOf）。
     final effective = _effectiveLoadTypeOf(ex);
+    if (current.isEmpty) {
+      final prevWorking =
+          (_progressionLastWorkout[ex.name] ?? const <SetEntry>[])
+              .where((s) => !s.isExtra);
+      if (weightDraft < 0 && prevWorking.every((s) => s.weightKg >= 0)) {
+        return chainTargetWhy(
+          rule: ex.rule,
+          state: ChainState(weightKg: weightDraft, targetReps: ex.rule.repsMin),
+          loadType: effective,
+          logging: ex.logging,
+          plannedSets: plannedSetsOf(ex),
+          assisted: true,
+        );
+      }
+      return base.why;
+    }
     final currentState = chainStateFromHistory(current, ex.rule);
+    final assisted =
+        isExplicitAssistedVariantName(ex.name) || currentState.weightKg < 0;
     final v = evaluateChain(
       rule: ex.rule,
       state: currentState,
@@ -1069,11 +1095,12 @@ class SessionController extends ChangeNotifier {
       targetSets: plannedSetsOf(ex),
       logging: ex.logging,
       loadType: effective,
+      assisted: assisted,
     );
     final advancedWeight =
         v.action == 'advance' && v.next.weightKg != currentState.weightKg;
-    final bodyweightTop =
-        v.holdKind == 'chain_end' && effective == LoadMode.bodyweight;
+    final bodyweightTop = v.holdKind == 'chain_end' &&
+        (effective == LoadMode.bodyweight || assisted);
     if (advancedWeight || bodyweightTop) {
       return chainTargetWhy(
         rule: ex.rule,
@@ -1081,6 +1108,7 @@ class SessionController extends ChangeNotifier {
         loadType: effective,
         logging: ex.logging,
         plannedSets: plannedSetsOf(ex),
+        assisted: assisted,
       );
     }
     return base.why;
@@ -1123,8 +1151,10 @@ class SessionController extends ChangeNotifier {
   Future<void> _loadContextForCurrent() async {
     final ex = currentEx;
     if (ex == null) return;
-    // 换动作/开练后，上一个动作的「自重前草稿」不再适用。
+    // 换动作/开练后，上一个动作的「自重前草稿」与辅助/负重临时档不再适用。
     _draftBeforeBodyweight = null;
+    _lastAssistedDraft = null;
+    _lastPositiveDraft = null;
     final name = ex.name;
     // 纵向历史按会话动作行自带的稳定键查（别名/改名共享同一份历史）；
     // 空键（老记录/未分配）由 DB 按名字现算，行为与升级前一致。
@@ -1883,6 +1913,8 @@ class SessionController extends ChangeNotifier {
     // 下限 -300kg 防手抖连点把数值打到无意义区间。
     if (weightDraft < -300) weightDraft = -300;
     if (weightDraft > 1000) weightDraft = 1000;
+    if (weightDraft < 0) _lastAssistedDraft = weightDraft;
+    if (weightDraft > 0) _lastPositiveDraft = weightDraft;
     final ex = currentEx;
     if (hasActive && ex != null) _queueDraftWeight(ex, weightDraft);
     notifyCard();
@@ -1905,6 +1937,73 @@ class SessionController extends ChangeNotifier {
     // 没有可恢复的草稿（例如一开始就是自重）：按当前处方回填，
     // 减载周/平台期协议都给同一个数字，不会对减载场再次打折。
     setWeightDraft(_prescriptionFor(currentEx?.name ?? '').weight);
+  }
+
+  SessionExercise? _asWeightedExercise(SessionExercise ex) {
+    if (ex.loadType == LoadMode.weighted) return null;
+    return SessionExercise(
+      id: ex.id,
+      sessionId: ex.sessionId,
+      name: ex.name,
+      orderIdx: ex.orderIdx,
+      kind: ex.kind,
+      restSec: ex.restSec,
+      logging: ex.logging,
+      loadType: LoadMode.weighted,
+      rule: ex.rule,
+      targetSets: ex.targetSets,
+      targetRepsMin: ex.targetRepsMin,
+      targetRepsMax: ex.targetRepsMax,
+      trace: ex.trace,
+      supersetTag: ex.supersetTag,
+      exerciseKey: ex.exerciseKey,
+    );
+  }
+
+  /// 训练中一键切入「器械辅助」档（负配重）：
+  /// 若当前动作还是 bodyweight 形态，同步在内存与 DB 切为 weighted 以显示重量输入区。
+  Future<void> enterAssistedMode() async {
+    final ex = currentEx;
+    if (ex == null) return;
+    if (weightDraft > 0) _lastPositiveDraft = weightDraft;
+    final family = assistWeightFamilyOf(ex.name, exerciseKey: ex.exerciseKey);
+    final familyAssist = family?[0];
+    final startFromPreset = familyAssist != null
+        ? _presetStartFor(familyAssist)
+        : _presetStartFor(ex.name);
+    final fallbackAssist = startFromPreset < 0
+        ? startFromPreset
+        : (canonicalExerciseNameOf(ex.name).contains('双杠') ? -20.0 : -25.0);
+    final target = (_lastAssistedDraft != null && _lastAssistedDraft! < 0)
+        ? _lastAssistedDraft!
+        : fallbackAssist;
+    final updated = _asWeightedExercise(ex);
+    if (updated != null) exercises[curExIdx] = updated;
+    setWeightDraft(target);
+    if (updated != null) await _db.updateSessionExercise(updated);
+  }
+
+  /// 训练中一键切入「+负重」档（正外载）：
+  /// 优先恢复本动作最近一次正外载草稿，否则按家族负重起手或 5kg。
+  Future<void> enterWeightedMode() async {
+    final ex = currentEx;
+    if (ex == null) return;
+    if (weightDraft < 0) _lastAssistedDraft = weightDraft;
+    final family = assistWeightFamilyOf(ex.name, exerciseKey: ex.exerciseKey);
+    final familyWeighted = family?[2];
+    final startFromPreset = familyWeighted != null
+        ? _presetStartFor(familyWeighted)
+        : _presetStartFor(ex.name);
+    final fallbackWeighted = startFromPreset > 0
+        ? startFromPreset
+        : (family != null ? 5.0 : 20.0);
+    final target = (_lastPositiveDraft != null && _lastPositiveDraft! > 0)
+        ? _lastPositiveDraft!
+        : fallbackWeighted;
+    final updated = _asWeightedExercise(ex);
+    if (updated != null) exercises[curExIdx] = updated;
+    setWeightDraft(target);
+    if (updated != null) await _db.updateSessionExercise(updated);
   }
 
   /// 训练中临时加动作：从动作库挑的动作追加到队尾（只进本次会话，不改计划）。
@@ -2174,10 +2273,10 @@ class SessionController extends ChangeNotifier {
         final bodyweight = effective == LoadMode.bodyweight;
         final lastWorking =
             _progressionLastWorkout[ex.name] ?? const <SetEntry>[];
-        final assisted =
-            !bodyweight &&
-            lastWorking.isNotEmpty &&
-            lastWorking.last.weightKg < 0;
+        final refWeight = lastWorking.isNotEmpty
+            ? lastWorking.last.weightKg
+            : _presetStartFor(ex.name);
+        final assisted = !bodyweight && refWeight < 0;
         final zhDetail = bodyweight
             ? '本次少做 1 组'
             : assisted
@@ -2209,10 +2308,10 @@ class SessionController extends ChangeNotifier {
         final bodyweight = effective == LoadMode.bodyweight;
         final lastWorking =
             _progressionLastWorkout[ex.name] ?? const <SetEntry>[];
-        final assisted =
-            !bodyweight &&
-            lastWorking.isNotEmpty &&
-            lastWorking.last.weightKg < 0;
+        final refWeight = lastWorking.isNotEmpty
+            ? lastWorking.last.weightKg
+            : _presetStartFor(ex.name);
+        final assisted = !bodyweight && refWeight < 0;
         final zhDetail = bodyweight
             ? '本次少做 1 组'
             : assisted
@@ -2244,6 +2343,7 @@ class SessionController extends ChangeNotifier {
         targetSets: tSets,
         logging: ex.logging,
         loadType: effective,
+        assisted: isExplicitAssistedVariantName(ex.name) || state.weightKg < 0,
       );
       // 停滞协议（P1-C）：平台期未顶格时，链判定只会说「继续冲」；
       // 换成有原因的下一步（减载 10% 或换变式）。已顶格保留链的加重建议。

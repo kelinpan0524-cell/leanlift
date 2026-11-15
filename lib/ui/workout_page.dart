@@ -1969,10 +1969,41 @@ Future<void> showWeightInputSheet(BuildContext context, SessionController s) {
                     ),
                     LengthLimitingTextInputFormatter(8),
                   ],
+                  onChanged: (_) => setSheetState(() {}),
                   onSubmitted: (_) => submit(),
                   style: AppTheme.bigNum(30),
                   decoration: InputDecoration(
                     hintText: tx('如 $exPos', en: 'e.g. $exPos'),
+                    suffixIcon: TextButton(
+                      key: const Key('weightInputToggleSign'),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(0, 36),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      onPressed: () {
+                        final raw = ctrl.text.trim();
+                        final String next;
+                        if (raw.startsWith('-')) {
+                          next = raw.substring(1);
+                        } else if (raw.isEmpty || raw == '0') {
+                          next = '-';
+                        } else {
+                          next = '-$raw';
+                        }
+                        ctrl.value = TextEditingValue(
+                          text: next,
+                          selection: TextSelection.collapsed(
+                            offset: next.length,
+                          ),
+                        );
+                        setSheetState(() {});
+                      },
+                      child: Text(
+                        tx('± 辅助/负重', en: '± Assist'),
+                        style: const TextStyle(fontSize: 12.5),
+                      ),
+                    ),
                     errorText: invalid
                         ? tx('请输入数字，如 $exPos 或 $exNeg',
                             en: 'Enter a number, e.g. $exPos or $exNeg')
@@ -2244,9 +2275,13 @@ class _ActionPanelState extends State<_ActionPanel> {
             ? tx(
                 '已连续 ${info.sessions} 次·${info.days} 天——${timed ? '时长' : '次数'}稳定到 ${rule.repsMax}${timed ? ' 秒' : ' 次'} 可加组或进阶变式',
                 en: '${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax}${timed ? 's' : ' reps'} cleanly, then add sets or progress')
-            : tx(
-                '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——${timed ? '时长' : '次数'}冲到 ${rule.repsMax}${timed ? ' 秒' : ''} 就该 +${fmtWt(rule.incrementKg)}',
-                en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — once you reach ${rule.repsMax}${timed ? 's' : ' reps'}, add +${fmtWt(rule.incrementKg)}');
+            : info.weightKg < 0
+                ? tx(
+                    '已连续 ${info.sessions} 次·${info.days} 天 ${fmtLoadU(info.weightKg)}——${timed ? '时长' : '次数'}冲到 ${rule.repsMax}${timed ? ' 秒' : ''} 就该减辅助 ${fmtWt(rule.incrementKg)}',
+                    en: '${fmtLoadU(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — once you reach ${rule.repsMax}${timed ? 's' : ' reps'}, reduce assist by ${fmtWt(rule.incrementKg)}')
+                : tx(
+                    '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——${timed ? '时长' : '次数'}冲到 ${rule.repsMax}${timed ? ' 秒' : ''} 就该 +${fmtWt(rule.incrementKg)}',
+                    en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — once you reach ${rule.repsMax}${timed ? 's' : ' reps'}, add +${fmtWt(rule.incrementKg)}');
     final color = reduce ? AppTheme.warn : AppTheme.primary;
     return [
       const SizedBox(height: 4),
@@ -2465,6 +2500,8 @@ class _ActionPanelState extends State<_ActionPanel> {
               child: Text(
                 _workClockText,
                 key: const Key('workTimerText'),
+                maxLines: 1,
+                softWrap: false,
                 style: AppTheme.bigNum(compact ? 56 : 84),
               ),
             ),
@@ -2478,8 +2515,11 @@ class _ActionPanelState extends State<_ActionPanel> {
             ..._lastPerformanceRow(context, s),
           ] else if (bodyweight) ...[
             const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            Wrap(
+              alignment: WrapAlignment.center,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 6,
               children: [
                 Container(
                   padding:
@@ -2494,6 +2534,54 @@ class _ActionPanelState extends State<_ActionPanel> {
                       fontSize: 20,
                       fontWeight: FontWeight.w800,
                       color: Color(0xFF06220F),
+                    ),
+                  ),
+                ),
+                if (supportsAssistMachine(ex.name,
+                    exerciseKey: ex.exerciseKey))
+                  GestureDetector(
+                    key: const Key('workoutSwitchAssisted'),
+                    onTap: () {
+                      HapticFeedback.selectionClick();
+                      s.enterAssistedMode();
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppTheme.cardHi,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        tx('器械辅助', en: 'Assisted'),
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textDim,
+                        ),
+                      ),
+                    ),
+                  ),
+                GestureDetector(
+                  key: const Key('workoutSwitchWeighted'),
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    s.enterWeightedMode();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: AppTheme.cardHi,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      tx('+负重', en: '+Weight'),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textDim,
+                      ),
                     ),
                   ),
                 ),
@@ -2521,8 +2609,12 @@ class _ActionPanelState extends State<_ActionPanel> {
                       child: Text(
                         fmtLoad(s.weightDraft),
                         key: const ValueKey('weightDraftNum'),
+                        maxLines: 1,
+                        softWrap: false,
                         style: AppTheme.bigNum(
-                          compact || s.weightDraft <= 0 ? 56 : 84,
+                          compact
+                              ? (s.weightDraft < 0 ? 44 : 56)
+                              : (s.weightDraft <= 0 ? 56 : 84),
                         ),
                       ),
                     ),
@@ -2550,7 +2642,7 @@ class _ActionPanelState extends State<_ActionPanel> {
                 ),
                 // 自重/负重一键切换（长按清零的老入口保留，这里给可见入口）
                 Padding(
-                  padding: const EdgeInsets.only(left: 12, bottom: 12),
+                  padding: const EdgeInsets.only(left: 8, bottom: 12),
                   child: Tooltip(
                     message: tx(
                       '自重/辅助动作点这里：在自重和上次重量间切换；点大数字可直接键入重量（负值 = 辅助器械配重，如 -30）',
@@ -2588,6 +2680,49 @@ class _ActionPanelState extends State<_ActionPanel> {
                     ),
                   ),
                 ),
+                if (supportsAssistMachine(ex.name,
+                    exerciseKey: ex.exerciseKey))
+                  Padding(
+                    padding: const EdgeInsets.only(left: 6, bottom: 12),
+                    child: Builder(builder: (context) {
+                      final toWeighted = s.weightDraft < 0 ||
+                          (s.weightDraft == 0 &&
+                              isExplicitAssistedVariantName(ex.name));
+                      return GestureDetector(
+                        key: Key(toWeighted
+                            ? 'workoutQuickWeighted'
+                            : 'workoutQuickAssist'),
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          if (toWeighted) {
+                            s.enterWeightedMode();
+                          } else {
+                            s.enterAssistedMode();
+                          }
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppTheme.cardHi,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            toWeighted
+                                ? tx('+负重', en: '+Wt')
+                                : tx('切辅助', en: 'Assist'),
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.textDim,
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
               ],
             ),
             // 杠铃片速配（2026-09-26 Arono）：杠铃动作改重量时短暂显示
@@ -2596,6 +2731,25 @@ class _ActionPanelState extends State<_ActionPanel> {
                 s: s,
                 exName: ex.name,
                 gear: libraryMetaForLift(ex.name)?.gear ?? ''),
+            if (s.weightDraft < 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  tx(
+                    '辅助配重：数字越小越难 · 点「+」减少辅助、进阶向自重',
+                    en: 'Counterweight: smaller = harder · tap + to reduce assist toward bodyweight',
+                  ),
+                  key: const Key('assistedStepHint'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppTheme.textDim,
+                    fontSize: 11.5,
+                    height: 1.15,
+                  ),
+                ),
+              ),
             // 上次成绩行（调研条目 7，wger/LibreFit 思路）：与渐进引擎建议值
             // （大数字 = 本组推荐起点）并列的第二起点，点按整套带入重量/次数/
             // RIR；不替换建议值、不弹窗，无需手动步进即可重现上次配置。
@@ -2604,7 +2758,7 @@ class _ActionPanelState extends State<_ActionPanel> {
             // 同一重量停留过久时一行小字提醒可加重——与上次成绩行同级克制，
             // 不弹窗不打断（红线：训练中禁止弹窗）。
             ..._plateauRow(context, s),
-            const SizedBox(height: 8),
+            SizedBox(height: compact && s.weightDraft < 0 ? 4 : 8),
             Row(
               children: [
                 for (final step in _steps)
@@ -3912,9 +4066,13 @@ class _ProgressNudges extends StatelessWidget {
               ? tx(
                   '已连续 ${info.sessions} 次·${info.days} 天——${timed ? '时长' : '次数'}稳定到 ${rule.repsMax}${timed ? ' 秒' : ' 次'} 可加组或进阶变式',
                   en: '${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax}${timed ? 's' : ' reps'} cleanly, then add sets or progress')
-              : tx(
-                  '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——${timed ? '时长' : '次数'}冲到 ${rule.repsMax}${timed ? ' 秒' : ''} 就 +${fmtWt(rule.incrementKg)}',
-                  en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax}${timed ? 's' : ' reps'}, then +${fmtWt(rule.incrementKg)}'),
+              : info.weightKg < 0
+                  ? tx(
+                      '已连续 ${info.sessions} 次·${info.days} 天 ${fmtLoadU(info.weightKg)}——${timed ? '时长' : '次数'}冲到 ${rule.repsMax}${timed ? ' 秒' : ''} 就减辅助 ${fmtWt(rule.incrementKg)}',
+                      en: '${fmtLoadU(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax}${timed ? 's' : ' reps'}, then reduce assist by ${fmtWt(rule.incrementKg)}')
+                  : tx(
+                      '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——${timed ? '时长' : '次数'}冲到 ${rule.repsMax}${timed ? ' 秒' : ''} 就 +${fmtWt(rule.incrementKg)}',
+                      en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax}${timed ? 's' : ' reps'}, then +${fmtWt(rule.incrementKg)}'),
         ));
       }
     }
