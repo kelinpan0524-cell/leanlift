@@ -3,7 +3,7 @@ import '../models/models.dart';
 import '../presets/exercise_library.dart' show isLibraryBodyweightExercise;
 import 'exercise_identity.dart' show canonicalExerciseNameOf, exerciseKeyOf;
 import 'progression_chain.dart';
-import 'weight_unit.dart' show fmtWithUnit;
+import 'weight_unit.dart' show fmtWithUnit, unitLabel;
 
 /// 动作记录形态支持（v14）：按时间记录、单侧动作、自重负荷的纯函数工具。
 ///
@@ -25,16 +25,19 @@ bool isPerSideLogging(String logging) => logging == LoggingMode.repsPerSide;
 /// 是否自重负荷（无重量列，渐进只走次数轴）。
 bool isBodyweightLoad(String loadType) => loadType == LoadMode.bodyweight;
 
-/// 训练页 UI 的自重判定口径（H3 收尾）：在存储值上只叠加规则①——
-/// 名字是显式负重变体（[isExplicitWeightedVariantName]，如改名保留旧键的
-/// 「引体向上（负重版）」）时按负重 UI 处理，要给重量输入。
+/// 训练页 UI 的自重判定口径（H3 收尾）：在存储值上只叠加显式负重/
+/// 器械辅助变体规则——名字带「负重」（[isExplicitWeightedVariantName]）
+/// 或显式器械辅助（[isExplicitAssistedVariantName]）时按带载 UI 处理，
+/// 要给重量输入（正值外载或负值抵消配重）。
 /// 刻意**不**接整函数 [effectiveLoadTypeFor]：那里的 0kg 推断会把
 /// stored-weighted 的 0kg 俯卧撑也翻成自重 UI，丢失加重量入口。
 bool isBodyweightUi({
   required String exerciseName,
   required String loadType,
 }) =>
-    isBodyweightLoad(loadType) && !isExplicitWeightedVariantName(exerciseName);
+    isBodyweightLoad(loadType) &&
+    !isExplicitWeightedVariantName(exerciseName) &&
+    !isExplicitAssistedVariantName(exerciseName);
 
 /// 单侧动作目标就近取偶（最小 2）：总数要能两侧均分，奇数目标上取整；
 /// 0/1 这类无法成组的目标抬到每边 1 次（总数 2）。其他形态原样返回。
@@ -68,6 +71,7 @@ String chainTargetWhy({
   String loadType = LoadMode.weighted,
   String logging = LoggingMode.reps,
   int plannedSets = 0,
+  bool assisted = false,
 }) {
   final timed = isTimedLogging(logging);
   final unit = timed ? '秒' : '次';
@@ -85,7 +89,12 @@ String chainTargetWhy({
     return perSide ? '$x reps (${x ~/ 2}/side)' : '$x $enUnit';
   }
 
-  final chain = ProgressionChain.of(rule, loadType: loadType, logging: logging);
+  final chain = ProgressionChain.of(
+    rule,
+    loadType: loadType,
+    logging: logging,
+    assisted: assisted || state.weightKg < 0,
+  );
   final next = chain.advance(state, rule);
   if (next == state) {
     if (isBodyweightLoad(loadType)) {
@@ -108,6 +117,20 @@ String chainTargetWhy({
     );
   }
   if (next.weightKg != state.weightKg) {
+    if (state.weightKg < 0) {
+      if (next.weightKg == 0) {
+        return tx(
+          '全部组顶住 ${zhN()} → 下次进阶到自重（0${unitLabel()}）、目标回到 ${zhN(next.targetReps)}',
+          en: 'Hold ${enN()} across all sets → graduate to bodyweight (0${unitLabel()}), target resets to ${enN(next.targetReps)}',
+        );
+      }
+      final nextDisp = '辅 ${fmtWithUnit(-next.weightKg)}';
+      final nextEnDisp = 'Assist ${fmtWithUnit(-next.weightKg)}';
+      return tx(
+        '全部组顶住 ${zhN()} → 下次减少辅助至 $nextDisp、目标回到 ${zhN(next.targetReps)}',
+        en: 'Hold ${enN()} across all sets → reduce assist to $nextEnDisp, target resets to ${enN(next.targetReps)}',
+      );
+    }
     return tx(
       '全部组顶住 ${zhN()} → 下次加重至 ${fmtWithUnit(next.weightKg)}、目标回到 ${zhN(next.targetReps)}',
       en: 'Hold ${enN()} across all sets → add weight to ${fmtWithUnit(next.weightKg)}, target resets to ${enN(next.targetReps)}',
@@ -206,14 +229,80 @@ String? nextBodyweightVariation(String exerciseName,
 bool isExplicitWeightedVariantName(String name) =>
     canonicalExerciseNameOf(name).contains('负重');
 
+/// 是否**显式器械辅助变体**：「器械辅助 / 辅助引体 / 辅助双杠 / 辅助版 / 辅助机 /
+/// （辅助）」。刻意不单配泛词「辅助」，避免把「辅助1」「辅助甲」等副项动作误判。
+bool isExplicitAssistedVariantName(String name) {
+  bool matches(String s) =>
+      s.contains('器械辅助') ||
+      s.contains('辅助引体') ||
+      s.contains('辅助双杠') ||
+      s.contains('辅助版') ||
+      s.contains('辅助机') ||
+      s.contains('（辅助）') ||
+      s.contains('(辅助)');
+  final raw = name.trim();
+  if (raw.isEmpty) return false;
+  final canonical = canonicalExerciseNameOf(raw);
+  return matches(raw) || matches(canonical);
+}
+
+/// 引体向上 / 双杠臂屈伸家族三档变体：[器械辅助, 自重, 负重]。
+/// 供计划编辑同系一键切换与辅助毕业推荐共用。
+const kPullupDipFamilies = <List<String>>[
+  ['器械辅助引体向上', '引体向上', '负重引体向上'],
+  ['器械辅助引体向上（反手）', '引体向上（反手）', '负重引体向上（反手）'],
+  ['器械辅助双杠臂屈伸', '双杠臂屈伸', '负重双杠臂屈伸'],
+  ['器械辅助双杠臂屈伸（挺胸）', '双杠臂屈伸（挺胸）', '负重双杠臂屈伸（挺胸）'],
+];
+
+/// 查询动作所属的 `[器械辅助, 自重, 负重]` 家族三元组；不属于引体/双杠则返回 null。
+List<String>? assistWeightFamilyOf(
+  String exerciseName, {
+  String exerciseKey = '',
+}) {
+  final keys = _ladderKeys(exerciseName, exerciseKey);
+  for (final key in keys) {
+    for (final family in kPullupDipFamilies) {
+      for (final member in family) {
+        if (exerciseKeyOf(member) == key) return family;
+      }
+    }
+  }
+  final canonical = canonicalExerciseNameOf(exerciseName);
+  if (canonical.contains('引体')) {
+    return canonical.contains('反手')
+        ? kPullupDipFamilies[1]
+        : kPullupDipFamilies[0];
+  }
+  if (canonical.contains('双杠')) {
+    return canonical.contains('挺胸')
+        ? kPullupDipFamilies[3]
+        : kPullupDipFamilies[2];
+  }
+  return null;
+}
+
+/// 是否支持辅助器械一键切换（引体向上 / 双杠臂屈伸家族，或显式辅助变体）。
+bool supportsAssistMachine(String exerciseName, {String exerciseKey = ''}) =>
+    isExplicitAssistedVariantName(exerciseName) ||
+    assistWeightFamilyOf(exerciseName, exerciseKey: exerciseKey) != null;
+
+/// 器械辅助动作毕业到纯自重的目标动作名；非可毕业动作返回 null。
+String? assistedGraduationTarget(String exerciseName) {
+  if (!isExplicitAssistedVariantName(exerciseName)) return null;
+  final family = assistWeightFamilyOf(exerciseName);
+  return family == null ? null : family[1];
+}
+
 /// 有效负荷类型（P2-E，运行期推断，**唯一判定入口**）：引擎（[chainTargetWhy]
 /// 的链形态、[bodyweightProgressionReady] 的阶梯就绪）与控制器（verdict/
 /// 目标解释/处方）都调用本函数，保证两侧结论一致。
 ///
 /// 优先级从高到低：
-/// ① 名字是显式负重变体（[isExplicitWeightedVariantName]）→ weighted。
+/// ① 名字是显式负重或器械辅助变体（[isExplicitWeightedVariantName] /
+///    [isExplicitAssistedVariantName]）→ weighted。
 ///    改名保留旧键的动作经旧键仍会命中自重阶梯（[isBodyweightLadderExercise]），
-///    名字里的「负重」是更明确的用户意图，必须压住阶梯推断——即使存的
+///    名字里的「负重/器械辅助」是更明确的用户意图，必须压住阶梯推断——即使存的
 ///    loadType 是 bodyweight（改名前的旧行）也按 weighted 口径。
 /// ② 显式存储的 bodyweight 原样返回（计划编辑器/动作库口径落库的值）。
 /// ③ v14 的 PlanExercise 默认 weighted，会把内置计划/模板/老库里的俯卧撑、
@@ -228,9 +317,12 @@ String effectiveLoadTypeFor({
   required List<SetEntry> workingSets,
   String exerciseKey = '',
 }) {
-  // 「负重 X」「X（负重版）」是自重器械上的外加载重变体：即使本场 0kg
-  // 也保持 weighted，训练页要能记录外加重量。
-  if (isExplicitWeightedVariantName(exerciseName)) return LoadMode.weighted;
+  // 「负重 X」「器械辅助 X」「X（负重版/辅助版）」均需记正/负重量：
+  // 即使本场 0kg 也保持 weighted，训练页要能记录配重。
+  if (isExplicitWeightedVariantName(exerciseName) ||
+      isExplicitAssistedVariantName(exerciseName)) {
+    return LoadMode.weighted;
+  }
   if (isBodyweightLoad(loadType)) return loadType;
   final ws = workingSets
       .where((s) => s.kind == SetKind.working && !s.isExtra)
@@ -303,6 +395,34 @@ String? bodyweightVariationSuggestion({
     logging: logging,
     exerciseKey: exerciseKey,
   );
-  if (!ready) return null;
-  return nextBodyweightVariation(exerciseName, exerciseKey: exerciseKey);
+  if (ready) {
+    return nextBodyweightVariation(exerciseName, exerciseKey: exerciseKey);
+  }
+  // 器械辅助动作已把辅助减到 0kg 并顶满次数 → 建议毕业切换到对应纯自重动作。
+  if (!isExplicitAssistedVariantName(exerciseName)) return null;
+  final ws = workingSets
+      .where((s) => s.kind == SetKind.working && !s.isExtra)
+      .toList(growable: false);
+  if (ws.isEmpty) return null;
+  final effective = effectiveLoadTypeFor(
+    exerciseName: exerciseName,
+    loadType: loadType,
+    workingSets: ws,
+    exerciseKey: exerciseKey,
+  );
+  final state = chainStateFromHistory(ws, rule);
+  if (state.weightKg != 0) return null;
+  final v = evaluateChain(
+    rule: rule,
+    state: state,
+    workingSets: ws,
+    targetSets: plannedSets,
+    logging: logging,
+    loadType: effective,
+    assisted: true,
+  );
+  if (v.action == 'hold' && v.holdKind == 'chain_end') {
+    return assistedGraduationTarget(exerciseName);
+  }
+  return null;
 }

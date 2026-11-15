@@ -66,22 +66,21 @@ A lean physique comes from low body fat, training 3× a week, and progressive ov
 - **Pain notes**: tag the area and severity on any set (never interrupts training); level 2+ suggests backing the load off or switching variants — visible in history and the AI pack
 - **kg / lb one-tap switch**: global conversion across history, suggestions and the notification card
 
-### 📖 Illustrated exercise guides (187 exercises)
-- 187 built-in exercises (glute/leg specials, commercial-gym machines, band-at-home series), each with form cues: how-to + common mistakes (e.g. bench press: "shoulders shrug, bar drifts toward the neck"), bilingual
-- 177 exercises come with start/end demonstration photos — one glance before your first set shows you the setup; 14 core lifts (bench, squat and deadlift families, pull-ups, leg press, …) add **silent demo videos** on loop
+### 📖 Illustrated exercise guides (193 exercises)
+- 193 built-in exercises (assisted & weighted pull-ups/dips, glute/leg specials, commercial-gym machines, band-at-home series), each with form cues: how-to + common mistakes (e.g. bench press: "shoulders shrug, bar drifts toward the neck"), bilingual
+- 183 exercises come with start/end demonstration photos — one glance before your first set shows you the setup; 14 core lifts (bench, squat and deadlift families, pull-ups, leg press, …) add **silent demo videos** on loop
 - **Available mid-workout**: tap "📖 Form Guide" on the training screen anytime — swipe it away and keep lifting, the timer never stops
 
 ### 📈 Progressive overload engine
 - The Baoji (lean-physique) plan works out of the box (the big four lifts, 3×/week), plus PPL / bro-split / functional / home-dumbbell templates — or let the AI design one
 - **Every target says why**: each target weight/rep count carries the engine's reason — "all 3 sets hit 8 last time → +2.5kg this round" — never a black-box number
 - Load changes are judged for you: hit the rep ceiling on every working set with reps in reserve → add weight; miss the floor → back off 5% — just accept, no math
-- Bodyweight moves (push-ups, pull-ups) skip the weight column — log reps directly; once reps hit the ceiling the engine suggests adding a set instead of endless reps
 - **Supersets**: pair 2–3 neighboring exercises and alternate (A1→B1→A2→B2…) — one lift's rest fills another's work; the AI wires them up automatically when your plan mentions supersets, the plan editor toggles them in one tap, and transition rest vs full round rest are timed separately
 - Every set logs its target at completion — history shows **target vs actual**, so you can see which set fell short and by how much
 - **Training blocks & deload**: 5-week blocks by default with an automatic week-5 deload (~90% load, one set fewer); a stuck weight gets three clear exits — deload, switch variation, or add load — never just "keep pushing"
 - **Comeback taper**: back after 2+ weeks off? The next session starts at ~85% with one set fewer (stacks with neither deload), and the plan restores itself after one normal session — no getting crushed by pre-break numbers
-- **Stable exercise identity**: renaming an exercise, using a synonym, or AI-importing no longer splits its history and PRs (253 built-in Chinese/English aliases)
-- Bodyweight moves (push-ups, pull-ups) skip the weight column — log reps directly; once reps hit the ceiling the engine suggests adding a set or the **next variation** (decline push-ups, weighted pull-ups) instead of endless reps
+- **Stable exercise identity**: renaming an exercise, using a synonym, or AI-importing no longer splits its history and PRs (292 built-in Chinese/English aliases)
+- Assisted, bodyweight & weighted unified: push-ups log reps directly; pull-ups and dips switch between Bodyweight · Assisted · Weighted in one tap (machine assistance logs counterweight like "Assist 25kg", where less assistance = progress), and hitting the rep ceiling suggests adding a set or stepping up the ladder (assisted → bodyweight → weighted)
 - **Only 20 minutes**: on busy days the app condenses today's plan to at most 3 compound-first exercises × 2 sets — 20 minutes beats skipping
 - Automatic 1RM estimation with a **1RM ÷ bodyweight** strength-to-weight view; volume, set-count and intensity trends (weekly / monthly) without spreadsheet math
 

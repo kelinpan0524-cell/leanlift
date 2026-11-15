@@ -15,6 +15,8 @@ const _kExerciseEn = <String, String>{
   '坐姿夹胸（蝴蝶机）': 'Seated Chest Fly (Pec Deck)',
   '绳索夹胸': 'Cable Chest Fly',
   '双杠臂屈伸（挺胸）': 'Chest Dip',
+  '器械辅助双杠臂屈伸（挺胸）': 'Machine-Assisted Chest Dip',
+  '负重双杠臂屈伸（挺胸）': 'Weighted Chest Dip',
   '俯卧撑': 'Push-up',
   '上斜俯卧撑': 'Incline Push-up',
   '下斜俯卧撑（脚垫高）': 'Decline Push-up (Feet Elevated)',
@@ -23,6 +25,7 @@ const _kExerciseEn = <String, String>{
   '弹力带夹胸': 'Band Chest Fly',
   // 背
   '引体向上': 'Pull-up',
+  '器械辅助引体向上': 'Machine-Assisted Pull-up',
   '负重引体向上': 'Weighted Pull-up',
   '高位下拉': 'Lat Pulldown',
   '杠铃划船': 'Barbell Row',
@@ -57,6 +60,7 @@ const _kExerciseEn = <String, String>{
   '弹力带弯举': 'Band Curl',
   '凳上臂屈伸': 'Bench Dip',
   '双杠臂屈伸': 'Dip',
+  '器械辅助双杠臂屈伸': 'Machine-Assisted Dip',
   '负重双杠臂屈伸': 'Weighted Dip',
   // 腿
   '杠铃深蹲': 'Barbell Squat',
@@ -128,6 +132,8 @@ const _kExerciseEn = <String, String>{
   '器械划船': 'Machine Row',
   '单臂绳索划船': 'Single-Arm Cable Row',
   '引体向上（反手）': 'Chin-Up',
+  '器械辅助引体向上（反手）': 'Machine-Assisted Chin-Up',
+  '负重引体向上（反手）': 'Weighted Chin-Up',
   '绳索侧平举': 'Cable Lateral Raise',
   '哑铃耸肩': 'Dumbbell Shrug',
   '曲杠弯举（EZ杠）': 'EZ-Bar Curl',
@@ -473,6 +479,12 @@ const _kCueEn = <String, String>{
   '弹力带直立划船': 'Stand on the band with a narrow grip and pull it up your body to chin height, elbows leading above the hands, lower slowly. Shrink the range or skip it if shoulders complain. Common mistakes: the band drifting away from the body, shrugging to compensate.',
   '俯卧背挺身': 'Lie face down on the floor (or with hips on a bed edge), hands lightly at the ears, and raise the torso using the glutes and lower back to a natural height before lowering slowly - small range, full control. Common mistakes: craning the neck up, snapping up with momentum.',
   '哑铃交替平举': 'With a dumbbell in each hand, raise one arm forward to shoulder height while the other goes out to the side, alternating; keep the torso still. Common mistakes: swinging the weights up, shrugging.',
+  '器械辅助引体向上': 'Set the knees or feet firmly on the assist pad with an overhand grip slightly wider than the shoulders; depress the shoulder blades and pull the chest toward the bar. Log assist counterweight as negative weight (e.g. -25kg); smaller assist brings you closer to bodyweight pull-ups. Common mistakes: pulling only with the arms without setting the scapula, bouncing off the assist pad.',
+  '器械辅助引体向上（反手）': 'Step onto the assist pad with an underhand shoulder-width grip; depress the shoulder blades and pull chin over the bar with extra biceps involvement. Track assist as negative weight and gradually reduce it toward bodyweight chin-ups. Common mistakes: half reps, kicking or bouncing off the pad.',
+  '负重引体向上（反手）': 'Underhand grip at shoulder width with a plate on a dip belt or a dumbbell held between the legs, matching the bodyweight chin-up path. Pick a load you can control for 5-8 clean reps. Common mistakes: swinging to heave heavy loads, free-falling on the descent.',
+  '器械辅助双杠臂屈伸': 'Knees or feet planted on the assist pad, torso upright between the bars; bend elbows to about 90 degrees and press up with the triceps. Log assist counterweight as negative weight and reduce it over time toward bodyweight dips. Common mistakes: leaning far forward into a chest dip, dropping too deep into the shoulders.',
+  '器械辅助双杠臂屈伸（挺胸）': 'On the assist pad, lean the torso slightly forward with chest proud; lower until you feel a deep lower-chest stretch and press back up. Log assist as negative weight and taper it down toward unassisted chest dips. Common mistakes: shrugging the shoulders, crashing into the bottom.',
+  '负重双杠臂屈伸（挺胸）': 'Wear a dip belt or hold weight between the legs, lean forward with chest up, and lower until the lower chest stretches before pressing back up. Common mistakes: overloading and sinking so deep the shoulders ache, swinging for momentum.',
 };
 
 /// 动作名显示（动作库/训练/历史/统计等处）；英文界面支持别名归并后查英译。

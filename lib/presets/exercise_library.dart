@@ -287,6 +287,14 @@ const kExerciseLibrary = <ExerciseMeta>[
   ExerciseMeta('弹力带直立划船', MuscleGroups(main: '肩', secondary: ['手臂']), false, 'home', '踩住弹力带双手窄握，贴身拉至下颌高度、肘高于手再慢放。肩部不适者减小幅度或跳过。常见错误：杠（带）离身、耸肩代偿。', '弹力带'),
   ExerciseMeta('俯卧背挺身', MuscleGroups(main: '腿', secondary: ['背', '核心']), true, 'home', '俯卧在地面（或床沿），双手轻扶耳侧，用臀与下背把上身抬起至自然高度再慢放；幅度小一点、控制优先。常见错误：抬头过度折颈、猛甩起身。', '自重'),
   ExerciseMeta('哑铃交替平举', MuscleGroups(main: '肩', secondary: []), false, 'both', '双手持哑铃，一侧前平举至肩高回落的同时另一侧侧平举，交替进行；躯干稳定不晃。常见错误：借甩动、耸肩。', '哑铃'),
+
+  // ============ 补库第六弹（2026-11-15，器械辅助 & 负重引体/双杠） ============
+  ExerciseMeta('器械辅助引体向上', MuscleGroups(main: '背', secondary: ['手臂']), true, 'gym', '双膝或双脚踩稳辅助平台，正手握略宽于肩，肩胛下沉后拉胸口靠近单杠；辅助配重按负值记录（如 -25kg），配重越小越接近纯自重。常见错误：只用手臂拽不沉肩、靠辅助垫弹起借力。', '固定器械'),
+  ExerciseMeta('器械辅助引体向上（反手）', MuscleGroups(main: '背', secondary: ['手臂']), true, 'gym', '踩稳辅助平台、反握与肩同宽，肩胛下沉后拉到下巴过杠，肱二头参与更多；按负值记录辅助配重并逐步减小，过渡到纯自重反手引体。常见错误：只做半程、腿借辅助垫反弹。', '固定器械'),
+  ExerciseMeta('负重引体向上（反手）', MuscleGroups(main: '背', secondary: ['手臂']), true, 'gym', '反握与肩同宽，腰间挂杠铃片或夹哑铃，动作轨迹与标准反手引体一致；重量以能标准控制 5-8 次为准。常见错误：贪重借力甩身、下放自由落体拉扯肩肘。', '自重'),
+  ExerciseMeta('器械辅助双杠臂屈伸', MuscleGroups(main: '手臂', secondary: ['胸']), true, 'gym', '双膝或双脚踩稳辅助垫，身体保持竖直撑在双杠上，屈肘至约 90 度再用三头发力推起；按负值记录辅助配重，逐步减辅助过渡自重。常见错误：身体前倾过多变成练胸、下放过深压肩。', '固定器械'),
+  ExerciseMeta('器械辅助双杠臂屈伸（挺胸）', MuscleGroups(main: '胸', secondary: ['手臂']), true, 'gym', '踩稳辅助垫后上身前倾挺胸，屈肘下放至胸口有明显拉伸感再推起；按负值记录辅助配重并逐步减小，为自重挺胸臂屈伸打底。常见错误：耸肩含胸、下放过猛震肩。', '固定器械'),
+  ExerciseMeta('负重双杠臂屈伸（挺胸）', MuscleGroups(main: '胸', secondary: ['手臂']), true, 'gym', '穿负重腰带挂片后撑起身体，上身前倾挺胸、屈肘下放至胸肌充分拉伸再推起，专注胸下沿刺激。常见错误：重量过大下放过深压肩、靠身体前后摆荡借力。', '自重'),
 ];
 
 /// 兼容旧引用：薄肌计划内置词表 = 大库子集。
@@ -394,6 +402,15 @@ const kStartWeightOverrides = <String, double>{
   '窄距高位下拉': 30,
   '反手高位下拉': 30,
   '单臂绳索划船': 20,
+  // 器械辅助引体/双杠（负值抵消配重）与负重变体（正值外载）起始档。
+  '器械辅助引体向上': -25,
+  '器械辅助引体向上（反手）': -25,
+  '器械辅助双杠臂屈伸': -20,
+  '器械辅助双杠臂屈伸（挺胸）': -20,
+  '负重引体向上': 5,
+  '负重引体向上（反手）': 5,
+  '负重双杠臂屈伸': 5,
+  '负重双杠臂屈伸（挺胸）': 5,
 };
 
 // ================= 计划模板 =================
@@ -413,10 +430,15 @@ class PresetExercise {
     final logging = defaultLoggingFor(name);
     final unit = logging == LoggingMode.time ? '秒' : '次';
     final enUnit = logging == LoggingMode.time ? 's' : 'reps';
+    final deltaStr = kind == 'compound' ? '2.5' : '1.25';
     final String desc;
     if (loadType == LoadMode.bodyweight) {
       desc = tx('全部正式组达 $repsMax $unit且末组余力≥1 → 准备进阶变式或加练一组',
           en: 'All working sets hit $repsMax $enUnit with ≥1 RIR → try next variation or extra set');
+    } else if (name.contains('器械辅助')) {
+      desc = tx(
+          '全部正式组达 $repsMax $unit且末组余力≥1 → 减少辅助 ${deltaStr}kg；有组低于 $repsMin $unit → 增加约 5% 辅助',
+          en: 'All working sets hit $repsMax $enUnit with ≥1 RIR → reduce assist by ${deltaStr}kg; any set below $repsMin $enUnit → add ~5% assist');
     } else if (kind == 'compound') {
       desc = tx(
           '全部正式组达 $repsMax $unit且末组余力≥1 → 加 2.5kg；有组低于 $repsMin $unit → 减 5%',
