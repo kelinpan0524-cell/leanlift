@@ -380,9 +380,12 @@ class _ScheduleViewsState extends State<ScheduleViews> {
 
   Widget _monthCell(DateTime d, _CellData cell, {required bool isToday}) {
     final title = cell.day?.title;
-    final short = title == null
+    final localized = title == null ? null : dname(title);
+    final short = localized == null
         ? (cell.explicitRest ? tx('休', en: 'Rest') : '')
-        : (title.length > 3 ? title.substring(0, 3) : title);
+        : (localized.characters.length > 3
+            ? localized.characters.take(3).toString()
+            : localized);
     final inner = Container(
       height: 52,
       margin: const EdgeInsets.all(1.5),
@@ -437,17 +440,19 @@ class _ScheduleViewsState extends State<ScheduleViews> {
         final from = details.data;
         final messenger = ScaffoldMessenger.of(context);
         final c = app(context);
+        final fromTitle = dname(
+            _cells?[fmtDate(from)]?.day?.title ?? tx('训练', en: 'Workout'));
+        final targetTitle =
+            cell.day == null ? null : dname(cell.day!.title);
         await c.planRepo.moveScheduleDay(widget.plan, from, d);
         widget.onChanged();
         await _reload();
         // 放下后的肉眼确认：空目标＝移动，有训练的目标＝互换
-        final fromTitle =
-            dname(_cells?[fmtDate(from)]?.day?.title ?? tx('训练', en: 'Workout'));
-        final msg = cell.day == null
+        final msg = targetTitle == null
             ? tx('已移动：${_md(from)}「$fromTitle」→ ${_md(d)}（原日期改休息）',
                 en: 'Moved: ${_md(from)} "$fromTitle" → ${_md(d)} (original day becomes rest)')
-            : tx('已互换：${_md(from)}「$fromTitle」⇄ ${_md(d)}「${dname(cell.day!.title)}」',
-                en: 'Swapped: ${_md(from)} "$fromTitle" ⇄ ${_md(d)} "${dname(cell.day!.title)}"');
+            : tx('已互换：${_md(from)}「$fromTitle」⇄ ${_md(d)}「$targetTitle」',
+                en: 'Swapped: ${_md(from)} "$fromTitle" ⇄ ${_md(d)} "$targetTitle"');
         messenger
           ..hideCurrentSnackBar()
           ..showSnackBar(SnackBar(

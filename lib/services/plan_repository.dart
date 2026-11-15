@@ -394,6 +394,8 @@ class PlanRepository extends ChangeNotifier {
                   compound: _settings.restCompoundSec,
                   assistance: _settings.restAssistanceSec),
           kind: kind,
+          logging: defaultLoggingFor(ex.name),
+          loadType: defaultLoadTypeFor(ex.name),
           rule: ProgressionRule(
             repsMin: ex.repsMin,
             repsMax: ex.repsMax,
@@ -433,6 +435,8 @@ class PlanRepository extends ChangeNotifier {
           kind: metaMap[ex.name]?.isCompound == true
               ? 'compound'
               : (ex.kind ?? 'assistance'),
+          logging: defaultLoggingFor(ex.name),
+          loadType: defaultLoadTypeFor(ex.name),
           rule: ProgressionRule(
             repsMin: ex.repsMin,
             repsMax: ex.repsMax,

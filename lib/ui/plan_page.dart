@@ -17,6 +17,7 @@ import 'plan_preview_sheet.dart';
 import 'schedule_views.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
+import 'workout_page.dart';
 
 /// 计划页：多计划管理（查看/切换/重命名/复制/删除）+ 周视图 + AI 导入。
 /// 点击某个训练日进入编辑器，可人工调整动作与组数次数。
@@ -325,6 +326,12 @@ class _PlanPageState extends State<PlanPage> {
           OutlinedButton(
             onPressed: () => _createBlankPlan(),
             child: Text(tx('新建空白计划', en: 'New blank plan')),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: () => _openTrash(),
+            icon: const Icon(Icons.delete_outline, size: 18),
+            label: Text(tx('从回收站恢复已删计划', en: 'Restore deleted plan from trash')),
           ),
         ],
       ),
@@ -824,6 +831,7 @@ class _PlanPageState extends State<PlanPage> {
                               context,
                               tx('已恢复「${dname(plan.name)}」（未启用）',
                                   en: 'Restored "${dname(plan.name)}" (inactive)'));
+                          await _refresh();
                         } else if (mounted) {
                           toast(context,
                               tx('恢复失败，请重试', en: 'Restore failed, please retry'));
@@ -1109,6 +1117,7 @@ class _PlanPageState extends State<PlanPage> {
                 TextField(
                   controller: ctrl,
                   maxLines: genMode ? 4 : 8,
+                  onChanged: (_) => setSheet(() {}),
                   decoration: InputDecoration(
                     hintText: genMode
                         ? tx('描述你的目标、频率、部位、器械…',
@@ -1236,6 +1245,38 @@ class _PlanPageState extends State<PlanPage> {
       existingPlans: existingPlans,
     );
     if (picked == null || !mounted) return;
+    final dayIdx = picked.adhocDayIndex;
+    if (dayIdx != null) {
+      if (c.session.hasActive) {
+        toast(
+          context,
+          tx('已有进行中的训练，先完成或结束它',
+              en: 'A workout is already in progress — finish or end it first'),
+        );
+        return;
+      }
+      final spec = picked.specs[dayIdx];
+      final exs = PlanRepository.planExercisesFromDaySpec(
+        spec,
+        c.ai.metaMap(),
+        compoundRest: c.settings.restCompoundSec,
+        assistanceRest: c.settings.restAssistanceSec,
+      );
+      if (exs.isEmpty) return;
+      await c.planRepo.refreshRecommendations(exs);
+      await c.session.startAdHoc(
+        title: spec.title.trim().isEmpty
+            ? tx('临时训练', en: 'Ad-hoc workout')
+            : spec.title.trim(),
+        planExercises: exs,
+      );
+      if (!mounted) return;
+      Navigator.of(context).push(MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => const WorkoutPage(),
+      ));
+      return;
+    }
     final name = picked.name;
     final confirmed = picked.specs;
     // 替换现有计划（2026-09-26）：内容全量重建，计划行与启用态保留

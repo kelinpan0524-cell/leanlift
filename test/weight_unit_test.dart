@@ -15,12 +15,13 @@ void main() {
       expect(lbToKg(kgToLb(100)), closeTo(100, 1e-9));
     });
 
-    test('lbSnap 落 0.5lb 网格', () {
+    test('lbSnap 落 0.25lb 网格', () {
       expect(lbSnap(220.46), 220.5);
-      expect(lbSnap(220.2), 220.0);
+      expect(lbSnap(220.2), 220.25);
       expect(lbSnap(45.0), 45.0);
-      expect(lbSnap(-66.14), -66.0); // 负数（辅助配重）同样 snap
+      expect(lbSnap(-66.14), -66.25); // 负数（辅助配重）同样 snap
       expect(lbSnap(0), 0);
+      expect(lbSnap(-0.0).isNegative, isFalse);
     });
 
     test('换算 + snap：220lb 存 99.79kg 回显仍 220lb', () {

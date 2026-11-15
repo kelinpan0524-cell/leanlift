@@ -463,15 +463,24 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
   /// [initial] 非空 = 编辑既有自定义动作。
   Future<void> _showCustomSheet(ExerciseMeta? initial) async {
     final c = app(context);
+    final allMeta = await c.db.allExerciseMeta();
+    if (!mounted) return;
+    final existingNames = {for (final m in allMeta) m.name};
     final result = await showModalBottomSheet<ExerciseMeta>(
       context: context,
       backgroundColor: AppTheme.cardHi,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => _CustomExerciseSheet(initial: initial),
+      builder: (_) => _CustomExerciseSheet(
+        initial: initial,
+        existingNames: existingNames,
+      ),
     );
     if (result == null) return;
+    if (initial != null && result.name != initial.name) {
+      await c.db.deleteExerciseMeta(initial.name);
+    }
     await c.db.upsertExerciseMeta(result);
     await c.planRepo.reload();
     await _load();
@@ -510,9 +519,10 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
 /// 复合/单关节 + 场景。保存返回 ExerciseMeta（由调用方落库并同步 AI 词表）。
 /// 与内置动作重名会被拦截——静态词表在各消费方优先，同名落库不生效。
 class _CustomExerciseSheet extends StatefulWidget {
-  const _CustomExerciseSheet({this.initial});
+  const _CustomExerciseSheet({this.initial, this.existingNames = const {}});
 
   final ExerciseMeta? initial;
+  final Set<String> existingNames;
 
   @override
   State<_CustomExerciseSheet> createState() => _CustomExerciseSheetState();
@@ -670,6 +680,11 @@ class _CustomExerciseSheetState extends State<_CustomExerciseSheet> {
     if (libraryMetaByName(name) != null) {
       setState(() => _nameError =
           tx('与内置动作重名，请换一个名字', en: 'Same name as a built-in exercise — pick another'));
+      return;
+    }
+    if (widget.existingNames.contains(name) && name != widget.initial?.name) {
+      setState(() => _nameError = tx('与已有自定义动作重名，请换一个名字',
+          en: 'Same name as an existing custom exercise — pick another'));
       return;
     }
     Navigator.pop(

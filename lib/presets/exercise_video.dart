@@ -1,3 +1,6 @@
+import '../engine/exercise_identity.dart'
+    show canonicalExerciseNameOf, exerciseKeyOf;
+
 /// 动作示范视频映射（2026-09-27 深夜，Arono 拍板加入）。
 ///
 /// 素材来自 wger.de 社区贡献的动作视频，许可证 **CC BY-SA 4.0**
@@ -30,5 +33,14 @@ const kExerciseVideoMap = <String, ExerciseVideoAsset>{
   '面拉': ExerciseVideoAsset(file: 'assets/videos/v222.mp4', author: 'Goulart'),
 };
 
-/// 该动作的示范视频；无视频返回 null。
-ExerciseVideoAsset? exerciseVideoOf(String name) => kExerciseVideoMap[name];
+final Map<String, ExerciseVideoAsset> _kExerciseVideoByKey = {
+  for (final e in kExerciseVideoMap.entries) exerciseKeyOf(e.key): e.value,
+};
+
+/// 该动作的示范视频；支持别名与规范名兜底，无视频返回 null。
+ExerciseVideoAsset? exerciseVideoOf(String name) {
+  final canonical = canonicalExerciseNameOf(name);
+  return kExerciseVideoMap[name] ??
+      kExerciseVideoMap[canonical] ??
+      _kExerciseVideoByKey[exerciseKeyOf(canonical)];
+}

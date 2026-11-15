@@ -282,6 +282,8 @@ class AppContainer {
     final fg = state == AppLifecycleState.resumed;
     if (fg == _inForeground) return;
     _inForeground = fg;
+    // 切到后台时先落盘当前心率采样，防止系统回收丢最后几分钟点位。
+    if (!fg) unawaited(hr.flushSamplesToPrefs());
     // 会话层同步前台标记：休息到点的屏内提示（震动/提示音）只在前台做
     session.setForeground(fg);
     final s = session;
@@ -325,9 +327,9 @@ class AppContainer {
     // 周复盘提醒：会话恢复后再排（有活跃训练时 reschedule 会跳过，
     // 避免训练中弹出的周复盘通知打断训练）。
     unawaited(rescheduleWeeklyRecap());
-    // 自动备份补档：距上次快照满 24 小时（或从未备份）就在启动时补一份。
-    // 失败只在服务里记录——磁盘暂时不可写也不挡启动。
-    if (settings.autoBackupEnabled) {
+    // 自动备份补档：距上次快照满 24 小时（或从未备份）且无活跃训练时，启动时补一份。
+    // 训练中跳过启动备份，避免 SQLite 序列化快照争夺恢复窗口 I/O。
+    if (settings.autoBackupEnabled && !session.hasActive) {
       unawaited(autoBackup.maybeSnapshotOnLaunch().catchError((Object e) {
         autoBackup.recordError(e);
         return null;

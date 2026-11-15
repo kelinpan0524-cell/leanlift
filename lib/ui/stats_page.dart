@@ -499,10 +499,16 @@ class _OverviewTabState extends State<_OverviewTab> {
       return const SizedBox.shrink();
     }
     final dt = DateTime.fromMillisecondsSinceEpoch(keys[i] * 86400000);
+    const monthsEn = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: Text(
-        _granularity == 'week' ? '${dt.month}/${dt.day}' : '${dt.month}月',
+        _granularity == 'week'
+            ? '${dt.month}/${dt.day}'
+            : tx('${dt.month}月', en: monthsEn[dt.month - 1]),
         style: const TextStyle(color: AppTheme.textDim, fontSize: 10),
       ),
     );

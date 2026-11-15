@@ -19,30 +19,61 @@
 // 不写回长期计划。
 import '../l10n/lang.dart';
 import '../models/models.dart';
+import '../presets/exercise_library.dart'
+    show defaultLoadTypeFor, defaultLoggingFor;
 import 'superset.dart';
 import 'weight_unit.dart' show fmtWithUnit;
 
 /// 从动作库挑入当天时的默认参数（照抄 PlanEditorPage._pickFromLibrary）：
-/// 复合 4 组×6-10 次/休 150s/步长 2.5kg；辅助 3 组×8-12 次/休 90s/步长 1.25kg。
+/// 复合 4 组×6-10 次/休 150s/步长 2.5kg；辅助 3 组×8-12 次/休 90s/步长 1.25kg；
+/// 计时动作（如平板支撑）默认 3 组×30-45 秒/休 60s。
 PlanExercise todayExerciseDefaults({
   required int dayId,
   required int orderIdx,
   required bool isCompound,
+  String name = '',
 }) {
-  return PlanExercise(
-    dayId: dayId,
-    name: '',
-    orderIdx: orderIdx,
-    sets: isCompound ? 4 : 3,
-    repsMin: isCompound ? 6 : 8,
-    repsMax: isCompound ? 10 : 12,
-    restSec: isCompound ? 150 : 90,
-    kind: isCompound ? 'compound' : 'assistance',
-    rule: todayRuleFor(
+  if (name.isEmpty) {
+    return PlanExercise(
+      dayId: dayId,
+      name: '',
+      orderIdx: orderIdx,
       sets: isCompound ? 4 : 3,
       repsMin: isCompound ? 6 : 8,
       repsMax: isCompound ? 10 : 12,
+      restSec: isCompound ? 150 : 90,
       kind: isCompound ? 'compound' : 'assistance',
+      rule: todayRuleFor(
+        sets: isCompound ? 4 : 3,
+        repsMin: isCompound ? 6 : 8,
+        repsMax: isCompound ? 10 : 12,
+        kind: isCompound ? 'compound' : 'assistance',
+      ),
+    );
+  }
+  final logging = defaultLoggingFor(name);
+  final timed = logging == LoggingMode.time;
+  final sets = timed ? 3 : (isCompound ? 4 : 3);
+  final repsMin = timed ? 30 : (isCompound ? 6 : 8);
+  final repsMax = timed ? 45 : (isCompound ? 10 : 12);
+  final restSec = timed ? 60 : (isCompound ? 150 : 90);
+  final kind = timed ? 'assistance' : (isCompound ? 'compound' : 'assistance');
+  return PlanExercise(
+    dayId: dayId,
+    name: name,
+    orderIdx: orderIdx,
+    sets: sets,
+    repsMin: repsMin,
+    repsMax: repsMax,
+    restSec: restSec,
+    kind: kind,
+    logging: logging,
+    loadType: defaultLoadTypeFor(name),
+    rule: todayRuleFor(
+      sets: sets,
+      repsMin: repsMin,
+      repsMax: repsMax,
+      kind: kind,
     ),
   );
 }

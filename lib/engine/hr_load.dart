@@ -82,9 +82,11 @@ HrLoadResult computeHrLoad(
     return HrLoadResult(
         trimp: 0, zoneSec: const [0, 0, 0, 0, 0], hrMaxUsed: max, hrRestUsed: rest);
   }
-  final zoneSec = List<int>.filled(5, 0);
+  final zoneSecExact = List<double>.filled(5, 0);
+  final hasTs = samples.any((s) => s.ts > 0);
   var trimp = 0.0;
-  for (final s in samples) {
+  for (var i = 0; i < samples.length; i++) {
+    final s = samples[i];
     final pct = (s.bpm - rest) / range;
     final zone = switch (pct) {
       < 0.5 => 0,
@@ -94,10 +96,24 @@ HrLoadResult computeHrLoad(
       < 0.9 => 4,
       _ => 5,
     };
+    final double dtSec;
+    if (!hasTs) {
+      dtSec = 1.0;
+    } else if (i + 1 < samples.length && samples[i + 1].ts >= s.ts) {
+      final diffMs = samples[i + 1].ts - s.ts;
+      // 超过 30 秒的断连空档不把静默整段算进高心率负荷，按单点 1 秒记
+      dtSec = (diffMs <= 0 || diffMs > 30000) ? 1.0 : diffMs / 1000.0;
+    } else if (i > 0 && s.ts > samples[i - 1].ts) {
+      final diffMs = s.ts - samples[i - 1].ts;
+      dtSec = diffMs > 30000 ? 1.0 : diffMs / 1000.0;
+    } else {
+      dtSec = 1.0;
+    }
     if (zone == 0) continue;
-    zoneSec[zone - 1]++;
-    trimp += zone / 60.0; // 1 采样 ≈ 1 秒 = 1/60 分钟
+    zoneSecExact[zone - 1] += dtSec;
+    trimp += zone * (dtSec / 60.0);
   }
+  final zoneSec = [for (final sec in zoneSecExact) sec.round()];
   return HrLoadResult(
       trimp: trimp, zoneSec: zoneSec, hrMaxUsed: max, hrRestUsed: rest);
 }

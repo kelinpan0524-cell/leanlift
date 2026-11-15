@@ -35,6 +35,8 @@ jobs:
           flutter-version: 3.47.5
           cache: true
       - run: flutter pub get
+      - name: Check clean git paths
+        run: python3 -c "import subprocess, sys; bad=[p for p in subprocess.check_output(['git','ls-files','-z']).split(b'\0') if any(c<32 for c in p)]; bad and (print('Control chars in paths:', bad), sys.exit(1))"
       - run: flutter analyze
       # 测试规范检查：禁止「固定睡一段 → 直接断言」（CI 偶发失败的根因）
       - run: dart tool/check_test_sleeps.dart
@@ -68,13 +70,15 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 -d > android/app/release-keystore.jks
-          cat > android/key.properties <<EOF
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/release-keystore.jks
+            cat > android/key.properties <<EOF
           storeFile=release-keystore.jks
           storePassword=$KEYSTORE_PASSWORD
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
+          fi
       - name: 构建 APK（构建号 = CI 运行号，App 内据此判断是否更新）
         run: flutter build apk --release --target-platform android-arm64 --build-number=${{ github.run_number }}
       - name: 发布 GitHub Release
@@ -110,8 +114,8 @@ jobs:
             echo "## ℹ️ 关于 About"
             echo "- 🔒 无服务器 · 数据 100% 本地 · 无广告无统计 — No server, 100% local data, no ads, no analytics"
             echo "- 🌐 App 内置中英双语（设置 → 语言）— In-app Chinese/English (Settings → Language)"
-            echo "- 📖 [中文 README](https://github.com/kelinpan0524-cell/baoji-timer#readme) · [English README](https://github.com/kelinpan0524-cell/baoji-timer/blob/main/README_EN.md)"
-            echo "- 🐛 反馈问题 / Issues: https://github.com/kelinpan0524-cell/baoji-timer/issues"
+            echo "- 📖 [中文 README](${{ github.server_url }}/${{ github.repository }}#readme) · [English README](${{ github.server_url }}/${{ github.repository }}/blob/main/README_EN.md)"
+            echo "- 🐛 反馈问题 / Issues: ${{ github.server_url }}/${{ github.repository }}/issues"
           } > notes.md
           gh release create "$TAG" \
             --title "v${VERSION} (build ${{ github.run_number }})" \

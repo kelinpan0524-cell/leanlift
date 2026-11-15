@@ -32,20 +32,26 @@ const double kLbPerKg = 2.2046226218487757;
 double lbToKg(double lb) => lb * kKgPerLb;
 double kgToLb(double kg) => kg * kLbPerKg;
 
-/// lb 显示/输入统一 snap 到 0.5lb 网格：输入 220lb 存 99.79kg，回显仍 220lb；
-/// kg 存值换算到 lb 也落在这个网格上，来回切换不漂移。
-double lbSnap(double lb) => (lb * 2).roundToDouble() / 2;
+/// lb 显示/输入统一 snap 到 0.25lb 网格（支持 1.25lb 等小片步进）：
+/// 来回切换不漂移，并把 -0.0 归一为 0.0。
+double lbSnap(double lb) {
+  final snapped = (lb * 4).roundToDouble() / 4;
+  return snapped == 0 ? 0.0 : snapped;
+}
 
 /// 当前单位标签（'kg' / 'lb'）。
 String unitLabel() => WeightUnits.isLb ? 'lb' : 'kg';
 
 /// 数值格式化：整数不带小数点，小数去尾零（与 UI 层 fmtKg 同规则）。
-String _trimNum(double v) => v == v.roundToDouble()
-    ? v.toStringAsFixed(0)
-    : v
-        .toStringAsFixed(2)
-        .replaceAll(RegExp(r'0+$'), '')
-        .replaceAll(RegExp(r'\.$'), '');
+String _trimNum(double v) {
+  final clean = v == 0 ? 0.0 : v;
+  return clean == clean.roundToDouble()
+      ? clean.toStringAsFixed(0)
+      : clean
+          .toStringAsFixed(2)
+          .replaceAll(RegExp(r'0+$'), '')
+          .replaceAll(RegExp(r'\.$'), '');
+}
 
 /// kg → 当前单位的数值字符串（不带单位后缀；lb 模式换算并 snap 0.5lb）。
 /// 负值 = 辅助器械配重，取绝对值换算后保留负号。

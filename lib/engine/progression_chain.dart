@@ -54,10 +54,12 @@ class ProgressionChain {
   /// 1. 次数轴：达标目标 +1 次，天花板 = reps_max，触顶进位；
   /// 2. 重量轴：+increment_kg（不设上限），触顶停住，执行后次数复位到 reps_min。
   /// 「加重归下限」由此涌现——派生链与旧引擎的加重行为一致。
-  factory ProgressionChain.defaultFor(ProgressionRule rule) => ProgressionChain([
+  factory ProgressionChain.defaultFor(ProgressionRule rule,
+          {int repStep = 1}) =>
+      ProgressionChain([
         ChainRule(
           axis: 'reps',
-          step: 1,
+          step: repStep.toDouble(),
           ceiling: rule.repsMax.toDouble(),
           advanceOnCap: true,
         ),
@@ -74,11 +76,12 @@ class ProgressionChain {
   /// 天花板 = reps_max、触顶停住（advanceOnCap: false）。没有重量轴，
   /// 0kg 档永远不会进位到负重组件；次数到顶后的渐进表达交给
   /// logging_modes.dart 的 bodyweightExtraSetTarget 建议加组。
-  factory ProgressionChain.defaultBodyweightFor(ProgressionRule rule) =>
+  factory ProgressionChain.defaultBodyweightFor(ProgressionRule rule,
+          {int repStep = 1}) =>
       ProgressionChain([
         ChainRule(
           axis: 'reps',
-          step: 1,
+          step: repStep.toDouble(),
           ceiling: rule.repsMax.toDouble(),
           advanceOnCap: false,
         ),
@@ -87,13 +90,20 @@ class ProgressionChain {
   /// 规则优先级：bodyweight 负荷强制走自重链（显式 chain 里即便配了
   /// 重量轴也不执行——自重渐进不碰重量）；其余 显式配置的 chain >
   /// 旧参数派生的默认双阶梯。缺省 loadType 保证现有调用行为不变。
-  static ProgressionChain of(ProgressionRule rule,
-          {String loadType = LoadMode.weighted}) =>
-      loadType == LoadMode.bodyweight
-          ? ProgressionChain.defaultBodyweightFor(rule)
-          : (rule.chain != null && rule.chain!.isNotEmpty)
-              ? ProgressionChain(rule.chain!)
-              : ProgressionChain.defaultFor(rule);
+  static ProgressionChain of(
+    ProgressionRule rule, {
+    String loadType = LoadMode.weighted,
+    String logging = LoggingMode.reps,
+  }) {
+    final repStep = logging == LoggingMode.repsPerSide ? 2 : 1;
+    if (loadType == LoadMode.bodyweight) {
+      return ProgressionChain.defaultBodyweightFor(rule, repStep: repStep);
+    }
+    if (rule.chain != null && rule.chain!.isNotEmpty) {
+      return ProgressionChain(rule.chain!);
+    }
+    return ProgressionChain.defaultFor(rule, repStep: repStep);
+  }
 
   /// 规则是否「还有空间」（可再推进一步）。
   bool _hasRoom(ChainRule r, ChainState s) {
@@ -110,9 +120,13 @@ class ProgressionChain {
     for (final r in rules) {
       if (_hasRoom(r, s)) {
         if (r.axis == 'reps') {
+          final nextRaw = s.targetReps + r.step.round();
+          final capped = r.ceiling != null && nextRaw > r.ceiling!.round()
+              ? r.ceiling!.round()
+              : nextRaw;
           return ChainState(
             weightKg: s.weightKg,
-            targetReps: s.targetReps + r.step.round(),
+            targetReps: capped,
           );
         }
         return ChainState(
@@ -290,7 +304,8 @@ ChainVerdict evaluateChain({
           en: ' (RIR not recorded — judged by reps)');
 
   if (allMetTarget && lastSetRirOk) {
-    final chain = ProgressionChain.of(rule, loadType: loadType);
+    final chain =
+        ProgressionChain.of(rule, loadType: loadType, logging: logging);
     final next = chain.advance(state, rule);
     if (next == state) {
       // 自重档位（0kg）不展示「重量 0kg 触顶」——0 是档位起点不是天花板
@@ -369,8 +384,8 @@ ChainVerdict evaluateChain({
       ChainState(
           weightKg: round05(state.weightKg + cut),
           targetReps: state.targetReps),
-      tx('有组未达到下限 ${rule.repsMin} $unit → 建议减重约 5%（$cut kg），先稳动作',
-          en: 'Some sets missed the ${enRepPhrase(rule.repsMin, logging)} floor → reduce ~5% ($cut kg) and re-groove the form'),
+      tx('有组未达到下限 ${rule.repsMin} $unit → 建议减重约 5%（${fmtWithUnit(cut)}），先稳动作',
+          en: 'Some sets missed the ${enRepPhrase(rule.repsMin, logging)} floor → reduce ~5% (${fmtWithUnit(cut)}) and re-groove the form'),
     );
   }
   // 次数全达标、只有末组余力不足：单独一类 holdKind（rir_low）。

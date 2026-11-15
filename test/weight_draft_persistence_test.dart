@@ -317,8 +317,8 @@ void main() {
     await c2.startFromDay(day: day, planExercises: [e]);
     expect(
       c2.weightDraft,
-      presetStartOf('深蹲'),
-      reason: '下一场不继承 30kg（本场没记组，回到内置起始重量）',
+      60,
+      reason: '下一场不继承未记组的 30kg 草稿，回落到上一场有效训练（60kg）的处方',
     );
   });
 }

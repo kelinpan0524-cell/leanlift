@@ -6,7 +6,8 @@ import '../engine/engine.dart';
 import '../engine/superset.dart';
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
-import '../presets/exercise_library.dart' show defaultLoadTypeFor;
+import '../presets/exercise_library.dart'
+    show defaultLoadTypeFor, defaultLoggingFor;
 import '../services/plan_repository.dart';
 import 'exercise_picker_page.dart';
 import 'muscle_body_view.dart';
@@ -132,6 +133,8 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
   /// weekly = 换到周几；cycle = 换到轮转第几位（底层同是 weekday 槽位互换）。
   Future<void> _moveToWeekday(int weekday) async {
     if (weekday == _day.weekday) return;
+    await _saveTitle();
+    if (!mounted) return;
     final c = app(context);
     final messenger = ScaffoldMessenger.of(context);
     final all = await c.db.planDays(_day.planId);
@@ -221,20 +224,29 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
     var order = _exercises.length;
     for (final m in picked) {
       final isCompound = m.isCompound;
+      final logging = defaultLoggingFor(m.name);
+      final timed = logging == LoggingMode.time;
+      final sets = timed ? 3 : (isCompound ? 4 : 3);
+      final repsMin = timed ? 30 : (isCompound ? 6 : 8);
+      final repsMax = timed ? 45 : (isCompound ? 10 : 12);
+      final restSec = timed ? 60 : (isCompound ? 150 : 90);
+      final kind = timed ? 'assistance' : (isCompound ? 'compound' : 'assistance');
       await c.db.insertPlanExercise(PlanExercise(
         dayId: _day.id!,
         name: m.name,
         orderIdx: order++,
-        sets: isCompound ? 4 : 3,
-        repsMin: isCompound ? 6 : 8,
-        repsMax: isCompound ? 10 : 12,
-        restSec: isCompound ? 150 : 90,
-        kind: isCompound ? 'compound' : 'assistance',
+        sets: sets,
+        repsMin: repsMin,
+        repsMax: repsMax,
+        restSec: restSec,
+        kind: kind,
+        logging: logging,
+        loadType: defaultLoadTypeFor(m.name),
         rule: ProgressionRule(
-          repsMin: isCompound ? 6 : 8,
-          repsMax: isCompound ? 10 : 12,
-          incrementKg: isCompound ? 2.5 : 1.25,
-          workingSets: isCompound ? 4 : 3,
+          repsMin: repsMin,
+          repsMax: repsMax,
+          incrementKg: kind == 'compound' ? 2.5 : 1.25,
+          workingSets: sets,
         ),
       ));
     }
@@ -382,6 +394,8 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
     await _normalizeAfterMutation();
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
+    final db = c.db;
+    final dayId = _day.id!;
     messenger.showSnackBar(SnackBar(
       content: Text(tx('已删除「${exname(snapshot.name)}」', en: '"${exname(snapshot.name)}" deleted')),
       backgroundColor: AppTheme.cardHi,
@@ -391,10 +405,12 @@ class _PlanEditorPageState extends State<PlanEditorPage> {
         label: tx('撤销', en: 'Undo'),
         onPressed: () async {
           final restored = snapshot.copyWith(id: null, orderIdx: 0);
-          final newId = await c.db.insertPlanExercise(restored);
-          final ids = _exercises.map((e) => e.id!).toList();
+          final newId = await db.insertPlanExercise(restored);
+          final currentRows = await db.dayExercises(dayId);
+          final ids = [for (final e in currentRows) if (e.id != newId) e.id!];
           ids.insert(index.clamp(0, ids.length), newId);
-          await c.db.reorderPlanExercises(_day.id!, ids);
+          await db.reorderPlanExercises(dayId, ids);
+          if (!mounted) return;
           _dirty = true;
           await _normalizeAfterMutation();
         },
@@ -1009,8 +1025,8 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
   // 选到俯卧撑/引体向上等词表自重动作时自动切到「自重」，
   // 手改过则尊重用户选择。
   bool _loadTypeTouched = false;
-  late String? _muscle =
-      widget.initialMuscle ?? widget.initial?.name ?? '';
+  bool _loggingTouched = false;
+  late String? _muscle = widget.initialMuscle ?? '';
   String? _nameError;
   late String _equipment =
       widget.knownMetas.firstWhere((m) => m.name == widget.initial?.name,
@@ -1023,21 +1039,33 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
     if (q.isEmpty) {
       return widget.knownMetas.take(8).map((m) => m.name).toList();
     }
+    final ql = q.toLowerCase();
     return widget.knownMetas
         .map((m) => m.name)
-        .where((n) => n != q && n.contains(q))
+        .where((n) =>
+            n != q &&
+            (n.contains(q) || exname(n).toLowerCase().contains(ql)))
         .take(6)
         .toList();
   }
 
-  /// 动作名变化时按动作库口径同步负荷类型（P2-E 复核）：
-  /// 仅对**新增**动作生效——词表里的自重动作（俯卧撑/引体/双杠/臀桥等）
-  /// 自动切「自重」。编辑已有动作时保存过的负荷类型优先：改名不覆盖，
-  /// 避免自定义自重动作被库外兜底改成负重、或刻意设为负重的引体向上
-  /// 被改回自重；要改就手动点负荷类型。用户手动点过同样不再自动覆盖。
+  /// 动作名变化时按动作库口径同步负荷类型与记录形态（P2-E 复核）：
+  /// 仅对**新增**动作生效——词表里的自重/计时动作自动切到对应默认形态。
   void _syncLoadTypeFromName() {
-    if (widget.initial != null || _loadTypeTouched) return;
-    _loadType = defaultLoadTypeFor(_nameCtrl.text.trim());
+    if (widget.initial != null) return;
+    final name = _nameCtrl.text.trim();
+    if (!_loadTypeTouched) _loadType = defaultLoadTypeFor(name);
+    if (!_loggingTouched) {
+      final nextLogging = defaultLoggingFor(name);
+      if (nextLogging != _logging) {
+        _logging = nextLogging;
+        if (nextLogging == LoggingMode.time && _repsMin == 8 && _repsMax == 12) {
+          _repsMin = 30;
+          _repsMax = 45;
+          _restSec = 60;
+        }
+      }
+    }
   }
 
   @override
@@ -1139,7 +1167,10 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
                 (LoggingMode.repsPerSide, tx('单侧计数', en: 'Per side')),
               ],
               _logging,
-              (v) => setState(() => _logging = v),
+              (v) => setState(() {
+                _loggingTouched = true;
+                _logging = v;
+              }),
             ),
             // 负荷类型（v14）：负重（默认）/自重（引体/俯卧撑类，训练页
             // 无重量列，渐进只走次数轴）。
@@ -1170,7 +1201,7 @@ class _ExerciseEditSheetState extends State<ExerciseEditSheet> {
                 isTimedLogging(_logging)
                     ? tx('时长上限（秒）', en: 'Max duration (s)')
                     : tx('次数上限', en: 'Max reps'),
-                _repsMax, _repsMin, 30, 1,
+                _repsMax, _repsMin, isTimedLogging(_logging) ? 300 : 30, 1,
                 (v) => setState(() => _repsMax = v)),
             _stepper(tx('组间休息（秒）', en: 'Rest between sets (s)'), _restSec,
                 15, 600, 15, (v) => setState(() => _restSec = v)),

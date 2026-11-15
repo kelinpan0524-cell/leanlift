@@ -1,3 +1,6 @@
+import '../engine/exercise_identity.dart'
+    show canonicalExerciseNameOf, exerciseKeyOf;
+
 /// 动作示意图映射（2026-09-27，Arono 需求「图文并茂的动作解析」）。
 ///
 /// 素材来自 free-exercise-db（github.com/yuhonas/free-exercise-db，
@@ -205,9 +208,16 @@ const kExerciseImageIdMap = <String, String>{
   '哑铃交替平举': 'Alternating_Deltoid_Raise',
 };
 
-/// 该动作的示意图片资产路径（0 = 起始 / 1 = 结束姿势）；未映射返回空。
+final Map<String, String> _kExerciseImageIdByKey = {
+  for (final e in kExerciseImageIdMap.entries) exerciseKeyOf(e.key): e.value,
+};
+
+/// 该动作的示意图片资产路径（0 = 起始 / 1 = 结束姿势）；支持别名与规范名兜底，未映射返回空。
 List<String> exerciseImageAssets(String name) {
-  final id = kExerciseImageIdMap[name];
+  final canonical = canonicalExerciseNameOf(name);
+  final id = kExerciseImageIdMap[name] ??
+      kExerciseImageIdMap[canonical] ??
+      _kExerciseImageIdByKey[exerciseKeyOf(canonical)];
   if (id == null) return const [];
   return ['assets/exercises/${id}_0.webp', 'assets/exercises/${id}_1.webp'];
 }

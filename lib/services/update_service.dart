@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -134,9 +135,10 @@ class UpdateService {
           throw UpdateException(
               tx('下载地址跳转异常', en: 'Download redirect missing location'));
         }
-        final urlError = downloadUrlError(next);
+        final resolved = Uri.parse(url).resolve(next).toString();
+        final urlError = downloadUrlError(resolved);
         if (urlError != null) throw UpdateException(urlError);
-        url = next;
+        url = resolved;
         if (++hops > 5) {
           throw UpdateException(
               tx('下载跳转次数过多', en: 'Too many download redirects'));
@@ -160,18 +162,36 @@ class UpdateService {
     }
     final file = File('$dirPath/baoji_update.apk');
     final sink = file.openWrite();
+    Digest? digest;
+    final digestSink = ChunkedConversionSink<Digest>.withCallback(
+        (chunks) => digest = chunks.single);
+    final hashSink = sha256.startChunkedConversion(digestSink);
     var received = 0;
     try {
-      await for (final chunk in stream.stream) {
-        sink.add(chunk);
-        received += chunk.length;
-        onProgress?.call(received, total);
+      try {
+        await for (final chunk in stream.stream.timeout(_timeout)) {
+          sink.add(chunk);
+          hashSink.add(chunk);
+          received += chunk.length;
+          onProgress?.call(received, total);
+        }
+        hashSink.close();
+        await sink.flush();
+      } on TimeoutException {
+        throw UpdateException(
+            tx('下载超时，请重试', en: 'Download timed out, please try again'));
+      } finally {
+        await sink.close();
       }
-      await sink.flush();
-    } finally {
-      await sink.close();
+    } catch (_) {
+      try {
+        if (await file.exists()) await file.delete();
+      } on FileSystemException {
+        // 缓存文件，残留无碍
+      }
+      rethrow;
     }
-    // 完整性双保险：长度对不上（含「JSON 元数据冒充 APK」类问题）一律拒绝
+    // 完整性双保险：长度与 SHA-256 校验，任一不符一律删除并拒绝
     final expected = release.apkSize > 0 ? release.apkSize : total;
     if (expected > 0 && received != expected) {
       try {
@@ -182,6 +202,16 @@ class UpdateService {
       throw UpdateException(
           tx('下载不完整（$received / $expected 字节），请重试',
               en: 'Download incomplete ($received / $expected bytes), please try again'));
+    }
+    final expectedSha = release.sha256;
+    if (expectedSha != null && digest?.toString() != expectedSha) {
+      try {
+        await file.delete();
+      } on FileSystemException {
+        // 缓存文件，残留无碍
+      }
+      throw UpdateException(tx('安装包校验失败，请重试',
+          en: 'Package verification failed, please try again'));
     }
     return file.path;
   }

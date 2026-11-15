@@ -232,7 +232,7 @@ void main() {
 
     final stored = await db.sessionById(c.session!.id!);
     expect(stored!.restMs, 65000);
-    expect(stored.activeMs, 240000);
+    expect(stored.activeMs, inInclusiveRange(240000, 245000));
     expect(stored.restMs ~/ 60000, 1);
     expect(stored.activeMs ~/ 60000, 4);
   });

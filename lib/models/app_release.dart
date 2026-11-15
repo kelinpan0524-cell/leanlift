@@ -12,6 +12,7 @@ class AppRelease {
     required this.apkUrl,
     required this.assetId,
     required this.apkSize,
+    this.sha256,
   });
 
   final int buildNumber;
@@ -28,6 +29,7 @@ class AppRelease {
   /// 带令牌请求 302 到签名 CDN。
   final int assetId;
   final int apkSize;
+  final String? sha256;
 
   /// 从 GitHub Releases API 的 release JSON 解析。
   /// tag 不符约定或找不到 APK 资产时抛 [FormatException]。
@@ -52,6 +54,8 @@ class AppRelease {
     if (assetId <= 0) {
       throw const FormatException('APK 资产缺少 id，无法构造下载地址');
     }
+    final rawDigest = (apk['digest'] as String? ?? '').trim().toLowerCase();
+    final shaMatch = RegExp(r'^sha256:([0-9a-f]{64})$').firstMatch(rawDigest);
     return AppRelease(
       buildNumber: int.parse(match.group(1)!),
       title: (json['name'] as String? ?? '').trim(),
@@ -59,6 +63,7 @@ class AppRelease {
       apkUrl: apk['browser_download_url'] as String? ?? '',
       assetId: assetId,
       apkSize: apk['size'] as int? ?? 0,
+      sha256: shaMatch?.group(1),
     );
   }
 }

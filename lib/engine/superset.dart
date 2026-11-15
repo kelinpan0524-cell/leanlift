@@ -128,6 +128,7 @@ int resumeExerciseIdx({
   required List<int> plannedSets,
   required List<int> doneWorking,
 }) {
+  if (tags.isEmpty) return 0;
   final seq = plannedVisitSequence(tags: tags, plannedSets: plannedSets);
   final taken = List<int>.filled(tags.length, 0);
   for (final idx in seq) {

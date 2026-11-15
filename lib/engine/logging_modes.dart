@@ -85,7 +85,7 @@ String chainTargetWhy({
     return perSide ? '$x reps (${x ~/ 2}/side)' : '$x $enUnit';
   }
 
-  final chain = ProgressionChain.of(rule, loadType: loadType);
+  final chain = ProgressionChain.of(rule, loadType: loadType, logging: logging);
   final next = chain.advance(state, rule);
   if (next == state) {
     if (isBodyweightLoad(loadType)) {

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../engine/engine.dart';
 import '../engine/superset.dart';
-import '../engine/weight_unit.dart' show unitLabel;
+import '../engine/weight_unit.dart' show WeightUnits, fmtVal, lbToKg, unitLabel;
 import '../l10n/lang.dart';
 import '../l10n/names.dart';
 import 'heart_rate_page.dart';
@@ -45,6 +45,7 @@ class _HistoryPageState extends State<HistoryPage> {
   Map<String, List<Session>> _byDate = {};
   bool _loading = true;
   String? _selected;
+  bool _showAllDates = false;
   // 明细 future 按 session id 缓存：点日期切换不再重查全部卡片
   final Map<int, Future<List<Widget>>> _detailFutures = {};
 
@@ -66,6 +67,7 @@ class _HistoryPageState extends State<HistoryPage> {
     if (!mounted) return;
     setState(() {
       _byDate = map;
+      _detailFutures.clear();
       _loading = false;
     });
   }
@@ -214,12 +216,32 @@ class _HistoryPageState extends State<HistoryPage> {
     final dates = (_selected != null) ? [_selected!] : _byDate.keys.toList()
       ..sort((a, b) => b.compareTo(a));
     final out = <Widget>[];
-    for (final date in dates.take(_selected == null ? 10 : 1)) {
+    final visibleDates = _selected != null
+        ? dates.take(1)
+        : (_showAllDates ? dates : dates.take(10));
+    for (final date in visibleDates) {
       final sessions = _byDate[date];
       if (sessions == null) continue;
       for (final s in sessions) {
         out.add(_sessionCard(s));
       }
+    }
+    if (_selected == null && !_showAllDates && dates.length > 10) {
+      out.add(
+        Padding(
+          padding: const EdgeInsets.only(top: 4, bottom: 12),
+          child: SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: () => setState(() => _showAllDates = true),
+              child: Text(
+                tx('展开其余 ${dates.length - 10} 天',
+                    en: 'Show ${dates.length - 10} more days'),
+              ),
+            ),
+          ),
+        ),
+      );
     }
     if (out.isEmpty) {
       out.add(
@@ -310,8 +332,13 @@ class _HistoryPageState extends State<HistoryPage> {
     final c = app(context);
     final ses = await c.db.sessionExercises(s.id!);
     final map = await c.db.setsOfSession(s.id!);
-    final widgets =
-        buildSessionDetailRows(s, ses, map, bodyWeightKg: c.settings.bodyWeightKg);
+    final widgets = buildSessionDetailRows(
+      s,
+      ses,
+      map,
+      bodyWeightKg: c.settings.bodyWeightKg,
+      onTapSet: (ex, set) => _showEditSetSheet(s, ex, set),
+    );
     // 心率曲线（2026-10-17）：该场训练连过心率设备才有采样，
     // 附在明细行末尾（与总结页同一条曲线块，无 AI 按钮）。
     final hr = await c.db.hrSamplesOfSession(s.id!);
@@ -325,6 +352,218 @@ class _HistoryPageState extends State<HistoryPage> {
     }
     return widgets;
   }
+
+  Future<void> _showEditSetSheet(
+    Session s,
+    SessionExercise se,
+    SetEntry set,
+  ) async {
+    final changed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppTheme.card,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => _EditSetSheet(se: se, set: set),
+    );
+    if (changed == true && mounted) {
+      if (s.id != null) _detailFutures.remove(s.id!);
+      await _load();
+      if (mounted) toast(context, tx('记录已更新', en: 'Set updated'));
+    }
+  }
+}
+
+class _EditSetSheet extends StatefulWidget {
+  const _EditSetSheet({
+    required this.se,
+    required this.set,
+  });
+
+  final SessionExercise se;
+  final SetEntry set;
+
+  @override
+  State<_EditSetSheet> createState() => _EditSetSheetState();
+}
+
+class _EditSetSheetState extends State<_EditSetSheet> {
+  late final bool _timed;
+  late final String _initWeightText;
+  late final TextEditingController _weightCtrl;
+  late final TextEditingController _repsCtrl;
+  late String _kind;
+  int? _rir;
+  String? _err;
+
+  @override
+  void initState() {
+    super.initState();
+    _timed = isTimedLogging(widget.se.logging);
+    _initWeightText = fmtVal(widget.set.weightKg);
+    _weightCtrl = TextEditingController(text: _initWeightText);
+    _repsCtrl = TextEditingController(
+      text: '${_timed ? (widget.set.durationSec ?? widget.set.reps) : widget.set.reps}',
+    );
+    _kind = widget.set.kind;
+    _rir = widget.set.rirRecorded ? widget.set.rir : null;
+  }
+
+  @override
+  void dispose() {
+    _weightCtrl.dispose();
+    _repsCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final se = widget.se;
+    final set = widget.set;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        20,
+        16,
+        20,
+        MediaQuery.viewInsetsOf(context).bottom + 20,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              tx('编辑记录 · ${exname(se.name)}',
+                  en: 'Edit Set · ${exname(se.name)}'),
+              style: const TextStyle(
+                  fontSize: 17, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _weightCtrl,
+              keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true, signed: true),
+              decoration: InputDecoration(
+                labelText: tx('重量（${unitLabel()}，0=自重，负数为辅助配重）',
+                    en: 'Weight (${unitLabel()}, 0=BW, negative=assisted)'),
+                errorText: _err,
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _repsCtrl,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: _timed
+                    ? tx('时长（秒）', en: 'Duration (s)')
+                    : tx('次数', en: 'Reps'),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              children: [
+                for (final k in [
+                  (SetKind.warmup, tx('热身', en: 'Warm-up')),
+                  (SetKind.working, tx('正式', en: 'Working')),
+                  (SetKind.failure, tx('力竭', en: 'Failure')),
+                ])
+                  ChoiceChip(
+                    label: Text(k.$2),
+                    selected: _kind == k.$1,
+                    onSelected: (_) => setState(() => _kind = k.$1),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              children: [
+                ChoiceChip(
+                  label: Text(tx('余力未记', en: 'RIR —')),
+                  selected: _rir == null,
+                  onSelected: (_) => setState(() => _rir = null),
+                ),
+                for (var v = 0; v <= 5; v++)
+                  ChoiceChip(
+                    label: Text('RIR $v'),
+                    selected: _rir == v,
+                    onSelected: (_) => setState(() => _rir = v),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                TextButton.icon(
+                  style: TextButton.styleFrom(
+                      foregroundColor: AppTheme.danger),
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: Text(tx('删除本组', en: 'Delete set')),
+                  onPressed: set.id == null
+                      ? null
+                      : () async {
+                          final db = app(context).db;
+                          final nav = Navigator.of(context);
+                          final ok = await confirmDialog(
+                            context,
+                            tx('删除这组记录？', en: 'Delete this set?'),
+                            tx('删除后无法恢复。',
+                                en: 'This cannot be undone.'),
+                            okLabel: tx('删除', en: 'Delete'),
+                          );
+                          if (!ok || !mounted) return;
+                          await db.deleteSet(set.id!);
+                          if (mounted) nav.pop(true);
+                        },
+                ),
+                const Spacer(),
+                FilledButton(
+                  onPressed: () async {
+                    final rawW = double.tryParse(
+                        _weightCtrl.text.trim().replaceAll(',', '.'));
+                    final rawR = int.tryParse(_repsCtrl.text.trim());
+                    if (rawW == null || rawR == null || rawR <= 0) {
+                      setState(() {
+                        _err = tx('请输入有效重量与正整数次数/秒数',
+                            en: 'Enter a valid weight and positive reps/seconds');
+                      });
+                      return;
+                    }
+                    final db = app(context).db;
+                    final nav = Navigator.of(context);
+                    final wKg = _weightCtrl.text.trim() == _initWeightText
+                        ? set.weightKg
+                        : (WeightUnits.isLb ? lbToKg(rawW) : rawW);
+                    await db.updateSet(SetEntry(
+                      id: set.id,
+                      sessionExerciseId: set.sessionExerciseId,
+                      weightKg: wKg,
+                      reps: rawR,
+                      rir: _rir ?? 2,
+                      kind: _kind,
+                      doneAt: set.doneAt,
+                      note: set.note,
+                      targetWeightKg: set.targetWeightKg,
+                      targetReps: set.targetReps,
+                      isExtra: set.isExtra,
+                      durationSec: _timed ? rawR : set.durationSec,
+                      rirRecorded: _rir != null,
+                      painLevel: set.painLevel,
+                      painArea: set.painArea,
+                    ));
+                    if (mounted) nav.pop(true);
+                  },
+                  child: Text(tx('保存', en: 'Save')),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// 单次训练的明细行（2026-09-26 Arono：历史卡排版改格子）。
@@ -336,6 +575,7 @@ List<Widget> buildSessionDetailRows(
   List<SessionExercise> ses,
   Map<int, List<SetEntry>> map, {
   required double bodyWeightKg,
+  void Function(SessionExercise ex, SetEntry set)? onTapSet,
 }) {
   final widgets = <Widget>[];
   // 计划标题（日期下方第一行，加粗）：标题位只放日期后挪到这里
@@ -516,7 +756,9 @@ List<Widget> buildSessionDetailRows(
                   TableRow(
                     children: [
                       for (final cell in [
-                        sets[i].isExtra ? '${i + 1}（加练）' : '${i + 1}',
+                        sets[i].isExtra
+                            ? tx('${i + 1}（加练）', en: '${i + 1} (+)')
+                            : '${i + 1}',
                         fmtKgDisp(sets[i].weightKg),
                         // 次数列按记录形态（v14）：计时→「45s」（durationSec
                         // 优先）、单侧→「总 16 次（每边 8）」、其余原样
@@ -545,14 +787,28 @@ List<Widget> buildSessionDetailRows(
                                 )
                               : '—',
                       ])
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Text(
-                            cell,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 13),
+                        if (onTapSet == null)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Text(
+                              cell,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          )
+                        else
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => onTapSet(se, sets[i]),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Text(
+                                cell,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                            ),
                           ),
-                        ),
                     ],
                   ),
               ],

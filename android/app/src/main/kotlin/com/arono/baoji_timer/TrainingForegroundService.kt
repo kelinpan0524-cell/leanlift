@@ -1,5 +1,6 @@
 package com.arono.baoji_timer
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -56,6 +58,9 @@ class TrainingForegroundService : Service() {
         @JvmStatic
         var actionSink: ((String) -> Unit)? = null
 
+        @Volatile
+        private var isServiceRunning = false
+
         /** Dart → 原生：启动（或幂等更新）前台服务与训练卡通知。 */
         fun start(context: Context, args: Map<*, *>?) {
             val intent = Intent(context, TrainingForegroundService::class.java)
@@ -76,22 +81,30 @@ class TrainingForegroundService : Service() {
         }
 
         fun stop(context: Context) {
-            // 沿用原行为：训练可能在前台/后台结束，用 startForegroundService
-            // 保证命令一定送达（服务已在跑时不会触发新的 5 秒配额问题）。
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, TrainingForegroundService::class.java)
-                    .setAction(ACTION_STOP)
-            )
+            if (!isServiceRunning) return
+            startCommand(context, ACTION_STOP)
         }
 
         /** Dart → 原生：心率已连接，拉起 connectedDevice 类型的前台服务。 */
         fun startHr(context: Context) {
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, TrainingForegroundService::class.java)
-                    .setAction(ACTION_START_HR)
-            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.BLUETOOTH_CONNECT
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.w(TAG, "BLUETOOTH_CONNECT not granted; skip startHr")
+                return
+            }
+            try {
+                ContextCompat.startForegroundService(
+                    context,
+                    Intent(context, TrainingForegroundService::class.java)
+                        .setAction(ACTION_START_HR)
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "startForegroundService(ACTION_START_HR) failed: ${e.message}")
+            }
         }
 
         /** Dart → 原生：心率已断开且不在训练中，停掉心率前台服务。 */
@@ -172,7 +185,7 @@ class TrainingForegroundService : Service() {
                 startForegroundCompat(
                     buildHrNotification(),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-                    allowSpecialUseFallback = false
+                    allowSpecialUseFallback = true
                 )
                 return START_NOT_STICKY
             }
@@ -236,7 +249,13 @@ class TrainingForegroundService : Service() {
         }
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        isServiceRunning = true
+    }
+
     private fun stopAll() {
+        isServiceRunning = false
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         foregroundTypes = 0
         lastTrainingNotification = null
@@ -246,6 +265,7 @@ class TrainingForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        isServiceRunning = false
         mode = MODE_NONE
         foregroundTypes = 0
         lastTrainingNotification = null

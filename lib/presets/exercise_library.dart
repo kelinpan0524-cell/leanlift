@@ -1,4 +1,6 @@
-import '../engine/exercise_identity.dart' show exerciseKeyOf;
+import '../engine/exercise_identity.dart'
+    show canonicalExerciseNameOf, exerciseKeyOf;
+import '../l10n/lang.dart';
 import '../models/models.dart';
 
 
@@ -330,6 +332,26 @@ bool isLibraryBodyweightExercise(String name) {
 String defaultLoadTypeFor(String name) =>
     isLibraryBodyweightExercise(name) ? LoadMode.bodyweight : LoadMode.weighted;
 
+/// 动作默认按时间计时的词表规范名（等长支撑 / 静蹲 / 农夫行走 / 战绳）。
+const kTimedExerciseNames = <String>{
+  '平板支撑',
+  '侧平板支撑',
+  '靠墙静蹲',
+  '哑铃农夫行走',
+  '战绳（双甩）',
+};
+
+/// 新动作的默认记录形态：计时类动作返回 [LoggingMode.time]，其余 [LoggingMode.reps]。
+String defaultLoggingFor(String name) {
+  final canonical = canonicalExerciseNameOf(name);
+  if (kTimedExerciseNames.contains(canonical)) return LoggingMode.time;
+  final key = exerciseKeyOf(canonical);
+  for (final n in kTimedExerciseNames) {
+    if (exerciseKeyOf(n) == key) return LoggingMode.time;
+  }
+  return LoggingMode.reps;
+}
+
 /// 首次训练没有历史时的起始重量（P2-A）：
 /// 按「细分器械 + 复合/单关节」推导，不给每个动作逐个手填。
 /// 单位 kg；哑铃/壶铃为每只重量（与内置计划口径一致）。
@@ -386,28 +408,45 @@ class PresetExercise {
   const PresetExercise(this.name, this.sets, this.repsMin, this.repsMax,
       this.restSec, this.kind);
 
-  PlanExercise toPlanExercise(int dayId, int orderIdx) => PlanExercise(
-        dayId: dayId,
-        name: name,
-        orderIdx: orderIdx,
-        sets: sets,
+  PlanExercise toPlanExercise(int dayId, int orderIdx) {
+    final loadType = defaultLoadTypeFor(name);
+    final logging = defaultLoggingFor(name);
+    final unit = logging == LoggingMode.time ? '秒' : '次';
+    final enUnit = logging == LoggingMode.time ? 's' : 'reps';
+    final String desc;
+    if (loadType == LoadMode.bodyweight) {
+      desc = tx('全部正式组达 $repsMax $unit且末组余力≥1 → 准备进阶变式或加练一组',
+          en: 'All working sets hit $repsMax $enUnit with ≥1 RIR → try next variation or extra set');
+    } else if (kind == 'compound') {
+      desc = tx(
+          '全部正式组达 $repsMax $unit且末组余力≥1 → 加 2.5kg；有组低于 $repsMin $unit → 减 5%',
+          en: 'All working sets hit $repsMax $enUnit with ≥1 RIR → add 2.5kg; any set below $repsMin $enUnit → reduce 5%');
+    } else {
+      desc = tx('全部正式组达 $repsMax $unit且末组余力≥1 → 加 1.25kg',
+          en: 'All working sets hit $repsMax $enUnit with ≥1 RIR → add 1.25kg');
+    }
+    return PlanExercise(
+      dayId: dayId,
+      name: name,
+      orderIdx: orderIdx,
+      sets: sets,
+      repsMin: repsMin,
+      repsMax: repsMax,
+      restSec: restSec,
+      kind: kind,
+      // 自重动作（俯卧撑/引体/双杠/臀桥等）按自重口径落库，
+      // 不再吃 PlanExercise 的默认 weighted（P2-E 复核修复）。
+      loadType: loadType,
+      logging: logging,
+      rule: ProgressionRule(
         repsMin: repsMin,
         repsMax: repsMax,
-        restSec: restSec,
-        kind: kind,
-        // 自重动作（俯卧撑/引体/双杠/臀桥等）按自重口径落库，
-        // 不再吃 PlanExercise 的默认 weighted（P2-E 复核修复）。
-        loadType: defaultLoadTypeFor(name),
-        rule: ProgressionRule(
-          repsMin: repsMin,
-          repsMax: repsMax,
-          incrementKg: kind == 'compound' ? 2.5 : 1.25,
-          workingSets: sets,
-          desc: kind == 'compound'
-              ? '全部正式组达 $repsMax 次且末组余力≥1 → 加 2.5kg；有组低于 $repsMin 次 → 减 5%'
-              : '全部正式组达 $repsMax 次且末组余力≥1 → 加 1.25kg',
-        ),
-      );
+        incrementKg: kind == 'compound' ? 2.5 : 1.25,
+        workingSets: sets,
+        desc: desc,
+      ),
+    );
+  }
 }
 
 class PlanTemplate {

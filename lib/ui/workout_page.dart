@@ -1965,9 +1965,9 @@ Future<void> showWeightInputSheet(BuildContext context, SessionController s) {
                   ),
                   inputFormatters: [
                     FilteringTextInputFormatter.allow(
-                      RegExp(r'^-?\d{0,3}(\.\d{0,2})?$'),
+                      RegExp(r'^-?\d{0,4}([.,]\d{0,2})?$'),
                     ),
-                    LengthLimitingTextInputFormatter(7),
+                    LengthLimitingTextInputFormatter(8),
                   ],
                   onSubmitted: (_) => submit(),
                   style: AppTheme.bigNum(30),
@@ -2235,11 +2235,18 @@ class _ActionPanelState extends State<_ActionPanel> {
       loadType: widget.ex.loadType,
     );
     final reduce = protocol.action == 'reduce';
+    final timed = isTimedLogging(widget.ex.logging);
+    final bodyweight = isBodyweightUi(
+        exerciseName: widget.ex.name, loadType: widget.ex.loadType);
     final msg = protocol.action != 'none'
         ? protocol.reason
-        : tx(
-            '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——次数冲到 ${rule.repsMax} 就该 +${fmtWt(rule.incrementKg)}',
-            en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — once you reach ${rule.repsMax} reps, add +${fmtWt(rule.incrementKg)}');
+        : bodyweight
+            ? tx(
+                '已连续 ${info.sessions} 次·${info.days} 天——${timed ? '时长' : '次数'}稳定到 ${rule.repsMax}${timed ? ' 秒' : ' 次'} 可加组或进阶变式',
+                en: '${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax}${timed ? 's' : ' reps'} cleanly, then add sets or progress')
+            : tx(
+                '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——${timed ? '时长' : '次数'}冲到 ${rule.repsMax}${timed ? ' 秒' : ''} 就该 +${fmtWt(rule.incrementKg)}',
+                en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — once you reach ${rule.repsMax}${timed ? 's' : ' reps'}, add +${fmtWt(rule.incrementKg)}');
     final color = reduce ? AppTheme.warn : AppTheme.primary;
     return [
       const SizedBox(height: 4),
@@ -2366,7 +2373,12 @@ class _ActionPanelState extends State<_ActionPanel> {
     final doneAll = s.workingSetsDone >= plannedSetsOf(ex);
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      padding: EdgeInsets.fromLTRB(
+        16,
+        compact ? 8 : 12,
+        16,
+        compact ? 10 : 16,
+      ),
       decoration: const BoxDecoration(
         color: AppTheme.card,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -2620,17 +2632,37 @@ class _ActionPanelState extends State<_ActionPanel> {
           // 挤不进一行的窄屏时自动换行，不再 RenderFlex 溢出
           Wrap(
             alignment: WrapAlignment.center,
-            spacing: 8,
+            spacing: compact ? 6 : 8,
+            runSpacing: 6,
             children: [
-              _kindChip(tx('热身', en: 'Warm-up'), SetKind.warmup),
-              _kindChip(tx('正式', en: 'Working'), SetKind.working),
-              _kindChip(tx('力竭', en: 'Failure'), SetKind.failure),
+              _kindChip(tx('热身', en: 'Warm-up'), SetKind.warmup,
+                  compact: compact),
+              _kindChip(tx('正式', en: 'Working'), SetKind.working,
+                  compact: compact),
+              _kindChip(tx('力竭', en: 'Failure'), SetKind.failure,
+                  compact: compact),
               // 疼痛小标记（P2-B）：与组类型同排的「＋疼痛」小 chip，
               // 收起时只占一枚 chip 的横向位置（不占纵向空间），
               // 点开才展开部位/程度。不弹窗、不拦「完成本组」。
-              _painChip(),
+              _painChip(compact: compact),
+              if (compact) _noteChip(),
             ],
           ),
+          if (compact && _noteOpen)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: TextField(
+                controller: _noteCtrl,
+                autofocus: false,
+                maxLines: 1,
+                onChanged: (v) => _note = v,
+                decoration: InputDecoration(
+                  hintText: tx('这组的感受/状态（可选）',
+                      en: 'How this set felt (optional)'),
+                  isDense: true,
+                ),
+              ),
+            ),
           if (_painOpen) ...[
             const SizedBox(height: 8),
             Container(
@@ -2699,7 +2731,7 @@ class _ActionPanelState extends State<_ActionPanel> {
               ),
             ),
           ],
-          const SizedBox(height: 8),
+          SizedBox(height: compact ? 6 : 8),
           // RIR（余力）：默认用计划目标值，可点选覆盖。
           // Wrap 而非 Row：系统大字号（1.6x）下窄屏一行放不下时自动换行。
           // _rirPrompt：忘了填余力时整行高亮 + 行下提示（第一按不落库）。
@@ -2895,7 +2927,7 @@ class _ActionPanelState extends State<_ActionPanel> {
                 ),
               ),
           ],
-          const SizedBox(height: 12),
+          SizedBox(height: compact ? 8 : 12),
           // key 仅供 widget 测试定位（test/widget_layout_test.dart），无行为含义。
           // 计划组练满后按钮变成"加练一组"（加练组按正式组记录），不再是死灰按钮。
           // 计时动作（v14）：「完成」记录实际用时；旁边「跳过」放弃本次
@@ -3056,7 +3088,7 @@ class _ActionPanelState extends State<_ActionPanel> {
     }
   }
 
-  Widget _kindChip(String label, String kind) {
+  Widget _kindChip(String label, String kind, {bool compact = false}) {
     final sel = _kind == kind;
     return GestureDetector(
       onTap: () {
@@ -3064,7 +3096,8 @@ class _ActionPanelState extends State<_ActionPanel> {
         setState(() => _kind = kind);
       },
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: EdgeInsets.symmetric(
+            horizontal: compact ? 10 : 16, vertical: 8),
         decoration: BoxDecoration(
           color: sel ? AppTheme.accent : AppTheme.cardHi,
           borderRadius: BorderRadius.circular(10),
@@ -3072,7 +3105,7 @@ class _ActionPanelState extends State<_ActionPanel> {
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 15,
+            fontSize: compact ? 13 : 15,
             fontWeight: FontWeight.w600,
             color: sel ? const Color(0xFF06220F) : AppTheme.textDim,
           ),
@@ -3084,7 +3117,7 @@ class _ActionPanelState extends State<_ActionPanel> {
   /// 疼痛入口 chip（P2-B）：收起时是一枚与组类型同排的小 chip；
   /// 已标记时显示「部位 + 等级」并转暖色，点按展开/收起编辑区。
   /// 【不打断】只是本面板内的展开，不弹窗、不挡「完成本组」。
-  Widget _painChip() {
+  Widget _painChip({bool compact = false}) {
     final active = _painLevel > 0;
     final label = active
         ? tx('疼痛 ${painname(_painArea)} · $_painLevel',
@@ -3105,7 +3138,8 @@ class _ActionPanelState extends State<_ActionPanel> {
           setState(() => _painOpen = !_painOpen);
         },
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: EdgeInsets.symmetric(
+              horizontal: compact ? 9 : 12, vertical: 8),
           decoration: BoxDecoration(
             color: active ? AppTheme.warn : AppTheme.cardHi,
             borderRadius: BorderRadius.circular(10),
@@ -3122,9 +3156,57 @@ class _ActionPanelState extends State<_ActionPanel> {
               Text(
                 label,
                 style: TextStyle(
-                  fontSize: 14,
+                  fontSize: compact ? 13 : 14,
                   fontWeight: FontWeight.w600,
                   color: active ? AppTheme.bgDeep : AppTheme.textDim,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 窄屏（<600dp）下的单组备注 chip：收起时并入组类型 Wrap 行（零额外纵向高度），
+  /// 不含「+ 备注（可选）」文案（保留 widget_layout_test 对紧凑模式的断言）。
+  Widget _noteChip() {
+    final hasNote = _note.trim().isNotEmpty;
+    return Semantics(
+      button: true,
+      toggled: _noteOpen,
+      label: tx('本组备注', en: 'Set note'),
+      child: GestureDetector(
+        key: const Key('workoutNoteMarker'),
+        onTap: () {
+          HapticFeedback.selectionClick();
+          setState(() => _noteOpen = !_noteOpen);
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
+          decoration: BoxDecoration(
+            color: (hasNote || _noteOpen) ? AppTheme.accent : AppTheme.cardHi,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.edit_note,
+                size: 14,
+                color: (hasNote || _noteOpen)
+                    ? const Color(0xFF06220F)
+                    : AppTheme.textDim,
+              ),
+              const SizedBox(width: 3),
+              Text(
+                hasNote ? tx('备注 ✓', en: 'Note ✓') : tx('＋备注', en: '+ Note'),
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: (hasNote || _noteOpen)
+                      ? const Color(0xFF06220F)
+                      : AppTheme.textDim,
                 ),
               ),
             ],
@@ -3227,16 +3309,18 @@ class _RestViewState extends State<_RestView> {
     // 或收尾确认选「继续训练」后的加练态——含轮转末组落在非末位动作的
     // 情形）。练满必已切走或回退，不存在「练满且未练满下一动作」的
     // 普通推进休息，所以不再有「下一个动作：X」分支（2026-10-17）。
+    final nextTimed = ex != null && isTimedLogging(ex.logging);
+    final nextUnit = nextTimed ? tx(' 秒', en: 's') : tx(' 次', en: ' reps');
     final nextText = doneAll
         ? (isLastEx
               ? tx('准备结束训练', en: 'Ready to Finish')
-              : tx('下一组 · ${exname(ex?.name ?? '')} 加练：${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} 次',
-                  en: 'Next · ${exname(ex?.name ?? '')} extra: ${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} reps'))
+              : tx('下一组 · ${exname(ex?.name ?? '')} 加练：${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax}$nextUnit',
+                  en: 'Next · ${exname(ex?.name ?? '')} extra: ${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax}$nextUnit'))
         // 下一组带动作名 + 组号（2026-09-26 Arono：休息中要知道接下来
         // 练什么动作、第几组、做多少次）。尾巴不放操作提示：412 宽会
         // 折成两行，破坏休息页"一眼看完"的极简版式（点按展开本就是常态）
-        : tx('下一组 · ${exname(ex?.name ?? '')} 第 ${s.workingSetsDone + 1}/$plannedWorking 组：${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} 次',
-            en: 'Next · ${exname(ex?.name ?? '')} set ${s.workingSetsDone + 1}/$plannedWorking · ${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax} reps');
+        : tx('下一组 · ${exname(ex?.name ?? '')} 第 ${s.workingSetsDone + 1}/$plannedWorking 组：${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax}$nextUnit',
+            en: 'Next · ${exname(ex?.name ?? '')} set ${s.workingSetsDone + 1}/$plannedWorking · ${fmtLoadU(s.weightDraft)} × ${ex?.rule.repsMin}-${ex?.rule.repsMax}$nextUnit');
 
     // 上半（倒计时）+ 底部操作区装进同一滚动区：装得下时 min-height 撑满
     // 视口（操作区贴底，与原布局一致）；横屏/矮屏装不下时可滚动，
@@ -3776,8 +3860,10 @@ class _ProgressNudges extends StatelessWidget {
     // 空历史不算 PR——新动作第一组不弹"此前最佳 0kg"）
     final history = s.historyBefore[ex.name] ?? const <SetEntry>[];
     if (history.isNotEmpty) {
-      final priorBest =
-          history.fold(0.0, (m, e) => e.weightKg > m ? e.weightKg : m);
+      final priorBest = history.skip(1).fold(
+            history.first.weightKg,
+            (m, e) => e.weightKg > m ? e.weightKg : m,
+          );
       if (last.weightKg > priorBest + 0.01) {
         banners.add(_nudge(
           context,
@@ -3815,13 +3901,20 @@ class _ProgressNudges extends StatelessWidget {
           text: protocol.reason,
         ));
       } else {
+        final timed = isTimedLogging(ex.logging);
+        final bodyweight =
+            isBodyweightUi(exerciseName: ex.name, loadType: ex.loadType);
         banners.add(_nudge(
           context,
           icon: Icons.trending_up,
           color: AppTheme.primary,
-          text: tx(
-              '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——次数冲到 ${rule.repsMax} 就 +${fmtWt(rule.incrementKg)}',
-              en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax} reps, then +${fmtWt(rule.incrementKg)}'),
+          text: bodyweight
+              ? tx(
+                  '已连续 ${info.sessions} 次·${info.days} 天——${timed ? '时长' : '次数'}稳定到 ${rule.repsMax}${timed ? ' 秒' : ' 次'} 可加组或进阶变式',
+                  en: '${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax}${timed ? 's' : ' reps'} cleanly, then add sets or progress')
+              : tx(
+                  '已连续 ${info.sessions} 次·${info.days} 天 ${fmtWt(info.weightKg)}——${timed ? '时长' : '次数'}冲到 ${rule.repsMax}${timed ? ' 秒' : ''} 就 +${fmtWt(rule.incrementKg)}',
+                  en: '${fmtWt(info.weightKg)} for ${info.sessions} sessions · ${info.days} days — reach ${rule.repsMax}${timed ? 's' : ' reps'}, then +${fmtWt(rule.incrementKg)}'),
         ));
       }
     }
@@ -4346,21 +4439,25 @@ class _PlateHintStripState extends State<_PlateHintStrip> {
   /// 上次见到的重量草稿：s 是同一个控制器对象，old.s.weightDraft 与
   /// widget.s.weightDraft 读到的都是当前值（永远相等），判变化只能自己记。
   double? _lastDraft;
+  bool _lastUseLb = WeightUnits.isLb;
 
   @override
   void initState() {
     super.initState();
     _lastDraft = widget.s.weightDraft;
+    _lastUseLb = WeightUnits.isLb;
   }
 
   @override
   void didUpdateWidget(_PlateHintStrip old) {
     super.didUpdateWidget(old);
-    // 只在重量变化时闪现；切动作但重量没动不闪（换动作的推荐值变化除外，
+    // 只在重量变化或单位切换时闪现；切动作但重量没动不闪（换动作的推荐值变化除外，
     // 那也是一次"该挂几片"的有效提示）
     final draft = widget.s.weightDraft;
-    if (draft != _lastDraft) _flash();
+    final useLb = WeightUnits.isLb;
+    if (draft != _lastDraft || useLb != _lastUseLb) _flash();
     _lastDraft = draft;
+    _lastUseLb = useLb;
   }
 
   @override
@@ -4413,8 +4510,13 @@ class _PlateHintStripState extends State<_PlateHintStrip> {
     setState(() => _visible = false);
   }
 
-  static String _fmtPlate(double v) =>
-      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+  static String _fmtPlate(double v) {
+    if ((v - v.roundToDouble()).abs() < 1e-6) return v.round().toString();
+    final two = double.parse(v.toStringAsFixed(2));
+    return (two * 10 - (two * 10).round()).abs() < 1e-6
+        ? two.toStringAsFixed(1)
+        : two.toStringAsFixed(2);
+  }
 
   @override
   Widget build(BuildContext context) {

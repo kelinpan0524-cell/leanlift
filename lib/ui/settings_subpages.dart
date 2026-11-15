@@ -245,9 +245,9 @@ class TrainingPrefsPage extends StatelessWidget {
                         hour: s.trainReminderMinOfDay ~/ 60,
                         minute: s.trainReminderMinOfDay % 60),
                   );
-                  if (picked == null) return;
+                  if (picked == null || !context.mounted) return;
                   s.trainReminderMinOfDay = picked.hour * 60 + picked.minute;
-                  s.save();
+                  await s.save();
                   c.trainReminders.reschedule();
                 },
               ),
@@ -315,9 +315,9 @@ class TrainingPrefsPage extends StatelessWidget {
                         hour: s.weeklyRecapMinOfDay ~/ 60,
                         minute: s.weeklyRecapMinOfDay % 60),
                   );
-                  if (picked == null) return;
+                  if (picked == null || !context.mounted) return;
                   s.weeklyRecapMinOfDay = picked.hour * 60 + picked.minute;
-                  s.save();
+                  await s.save();
                   c.rescheduleWeeklyRecap();
                 },
               ),
@@ -732,6 +732,7 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
   late final _ctrlKey = TextEditingController(text: app(context).settings.aiApiKey);
   late final _ctrlModel = TextEditingController(text: app(context).settings.aiModel);
   bool _testing = false;
+  bool _testOk = false;
   String? _testResult; // null=没测过；成功文案 / 失败原因都放这
 
   @override
@@ -753,6 +754,7 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
     await s.save();
     setState(() {
       _testing = true;
+      _testOk = false;
       _testResult = null;
     });
     try {
@@ -760,13 +762,17 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
       if (!mounted) return;
       setState(() {
         _testing = false;
-        _testResult =
-            '连接成功 ✓${reply.isEmpty ? '' : '（模型回复：${_brief(reply)}）'} · 用时 ${(ms / 1000).toStringAsFixed(1)} 秒';
+        _testOk = true;
+        _testResult = tx(
+          '连接成功 ✓${reply.isEmpty ? '' : '（模型回复：${_brief(reply)}）'} · 用时 ${(ms / 1000).toStringAsFixed(1)} 秒',
+          en: 'Connected ✓${reply.isEmpty ? '' : ' (Reply: ${_brief(reply)})'} · ${(ms / 1000).toStringAsFixed(1)}s',
+        );
       });
     } on AiException catch (e) {
       if (mounted) {
         setState(() {
           _testing = false;
+          _testOk = false;
           _testResult =
             tx('连接失败：${e.message}', en: 'Connection failed: ${e.message}');
         });
@@ -775,6 +781,7 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
       if (mounted) {
         setState(() {
           _testing = false;
+          _testOk = false;
           _testResult = tx('连接失败：$e', en: 'Connection failed: $e');
         });
       }
@@ -867,9 +874,7 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
                     child: Text(
                       _testResult!,
                       style: TextStyle(
-                        color: _testResult!.startsWith('连接成功')
-                            ? AppTheme.primary
-                            : AppTheme.danger,
+                        color: _testOk ? AppTheme.primary : AppTheme.danger,
                         fontSize: 13,
                       ),
                     ),
